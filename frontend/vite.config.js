@@ -30,6 +30,7 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    strictPort: true,  // 端口被占用时报错，不会静默切到3001
     host: '0.0.0.0',
     headers: {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -41,21 +42,25 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 600000,  // OCR/大文件上传需要10分钟
       },
       '^/media/': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 600000,
       },
       '^/app-automation-templates/': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 600000,
       },
       '^/app-automation-reports/': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 600000,
       },
       '^/ws/': {
         target: 'ws://127.0.0.1:8000',

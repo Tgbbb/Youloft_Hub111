@@ -1463,6 +1463,371 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
         return queryset.order_by('-created_at')
 
+    @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
+             url_path='generate_multimodal')
+    def generate_multimodal(self, request):
+        """多模态测试用例生成（文本+图片→视觉模型）"""
+        import tempfile
+
+        try:
+            file = request.FILES.get('file')
+            if not file:
+                return Response(
+                    {'error': '请上传PDF文件'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if not file.name.lower().endswith('.pdf'):
+                return Response(
+                    {'error': '多模态模式仅支持PDF文件'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            title = request.data.get('title', file.name.rsplit('.', 1)[0])
+
+            # 保存文件到临时目录
+            temp_dir = tempfile.mkdtemp()
+            temp_path = os.path.join(temp_dir, file.name)
+
+            try:
+                with open(temp_path, 'wb+') as dest:
+                    for chunk in file.chunks():
+                        dest.write(chunk)
+
+                # 提取文本
+                from .services import DocumentProcessor
+                text = DocumentProcessor.extract_text_from_pdf(temp_path)
+
+                # 渲染页面图片
+                page_images = DocumentProcessor.extract_page_images_as_base64(
+                    temp_path, dpi=150, output_format='JPEG'
+                )
+
+                logger.info(
+                    f"多模态PDF处理: file={file.name}, text={len(text)}, pages={len(page_images)}"
+                )
+
+            finally:
+                try:
+                    os.remove(temp_path)
+                    os.rmdir(temp_dir)
+                except Exception:
+                    pass
+
+            if not text or len(text.strip()) < 10:
+                return Response(
+                    {'error': 'PDF文本提取失败，请检查文件内容'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 查找支持视觉的writer模型
+            writer_config = AIModelConfig.objects.filter(
+                role='writer', is_active=True, supports_vision=True
+            ).first()
+
+            if not writer_config:
+                return Response(
+                    {
+                        'error': (
+                            '未找到支持多模态的编写模型配置。'
+                            '请先在 AI模型配置 中配置一个视觉模型（如硅基流动的 Qwen2-VL），'
+                            '并勾选「支持多模态」后设为 writer 角色。'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            writer_prompt = PromptConfig.get_active_config('writer')
+            if not writer_prompt:
+                return Response(
+                    {'error': '未找到可用的测试用例编写提示词配置'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            reviewer_config = AIModelConfig.objects.filter(
+                role='reviewer', is_active=True
+            ).first()
+            reviewer_prompt = PromptConfig.get_active_config('reviewer')
+
+            # 输出模式
+            output_mode = request.data.get('output_mode', 'stream')
+            if output_mode not in ['stream', 'complete']:
+                from .models import GenerationConfig
+                gen_config = GenerationConfig.get_active_config()
+                output_mode = gen_config.default_output_mode if gen_config else 'stream'
+
+            # 创建任务
+            task_data = {
+                'title': title,
+                'requirement_text': text,
+                'writer_model_config': writer_config.id,
+                'reviewer_model_config': reviewer_config.id if reviewer_config else None,
+                'writer_prompt_config': writer_prompt.id,
+                'reviewer_prompt_config': reviewer_prompt.id if reviewer_prompt else None,
+                'multimodal_mode': True,
+                'page_images_base64': page_images,
+                'output_mode': output_mode,
+            }
+
+            if request.data.get('project'):
+                try:
+                    task_data['project'] = int(request.data['project'])
+                except (ValueError, TypeError):
+                    pass
+
+            task_serializer = TestCaseGenerationTaskSerializer(
+                data=task_data, context={'request': request}
+            )
+
+            if not task_serializer.is_valid():
+                return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            task = task_serializer.save()
+
+            # 异步执行（复用 generate 的 run_generation_task）
+            def run_generation_task():
+                try:
+                    import threading
+
+                    def execute_task():
+                        try:
+                            task.status = 'generating'
+                            task.progress = 10
+                            task.save()
+
+                            from .models import GenerationConfig
+                            gen_config = GenerationConfig.get_active_config()
+                            enable_auto_review = gen_config.enable_auto_review if gen_config else True
+                            review_timeout = gen_config.review_timeout if gen_config else 120
+
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                            try:
+                                if task.output_mode == 'stream':
+                                    task.stream_buffer = ''
+                                    task.stream_position = 0
+                                    task.save()
+
+                                    def save_stream_buffer(content):
+                                        task.stream_buffer = content
+                                        task.stream_position = len(content)
+                                        task.last_stream_update = timezone.now()
+                                        task.save(update_fields=[
+                                            'stream_buffer', 'stream_position',
+                                            'last_stream_update'
+                                        ])
+
+                                    async_save_stream_buffer = sync_to_async(save_stream_buffer)
+
+                                    async def stream_callback(chunk):
+                                        task.stream_buffer += chunk
+                                        task.stream_position = len(task.stream_buffer)
+                                        task.last_stream_update = timezone.now()
+                                        if task.stream_position % 500 < 20 or len(chunk) > 100:
+                                            try:
+                                                await async_save_stream_buffer(task.stream_buffer)
+                                            except Exception as save_error:
+                                                logger.warning(f"保存流式内容失败: {save_error}")
+
+                                    task.progress = 30
+                                    task.save()
+
+                                    generated_cases = loop.run_until_complete(
+                                        AIModelService.generate_test_cases_multimodal(
+                                            task, callback=stream_callback
+                                        )
+                                    )
+
+                                    if task.stream_buffer:
+                                        save_stream_buffer(task.stream_buffer)
+
+                                    task.generated_test_cases = generated_cases
+                                    task.progress = 60
+                                    task.save()
+
+                                    if enable_auto_review and task.reviewer_model_config and task.reviewer_prompt_config:
+                                        try:
+                                            task.status = 'reviewing'
+                                            task.progress = 70
+                                            task.save()
+
+                                            review_buffer = []
+
+                                            def save_review_buffer(content):
+                                                task.review_feedback = content
+                                                task.save(update_fields=['review_feedback'])
+
+                                            async_save_review = sync_to_async(save_review_buffer)
+
+                                            async def review_stream_callback(chunk):
+                                                review_buffer.append(chunk)
+                                                current_length = sum(len(c) for c in review_buffer)
+                                                if current_length % 100 < 20 or len(chunk) > 50:
+                                                    try:
+                                                        await async_save_review(''.join(review_buffer))
+                                                    except Exception as save_error:
+                                                        logger.warning(f"保存评审内容失败: {save_error}")
+
+                                            review_feedback = loop.run_until_complete(
+                                                AIModelService.review_test_cases_stream(
+                                                    task, generated_cases,
+                                                    callback=review_stream_callback
+                                                )
+                                            )
+                                            if review_buffer:
+                                                task.review_feedback = ''.join(review_buffer)
+                                                task.save(update_fields=['review_feedback'])
+
+                                            if task.review_feedback and isinstance(task.review_feedback,
+                                                                                  str) and task.review_feedback.strip():
+                                                task.status = 'revising'
+                                                task.progress = 85
+                                                task.save()
+
+                                                final_buffer = []
+
+                                                def save_final_cases(content):
+                                                    task.final_test_cases = content
+                                                    task.save(update_fields=['final_test_cases'])
+
+                                                async_save_final = sync_to_async(save_final_cases)
+
+                                                async def revise_callback(chunk):
+                                                    final_buffer.append(chunk)
+                                                    if len(chunk) > 50:
+                                                        try:
+                                                            await async_save_final(''.join(final_buffer))
+                                                        except Exception:
+                                                            pass
+
+                                                revised = loop.run_until_complete(
+                                                    AIModelService.revise_test_cases_based_on_review(
+                                                        task, generated_cases, task.review_feedback,
+                                                        callback=revise_callback
+                                                    )
+                                                )
+                                                if final_buffer:
+                                                    task.final_test_cases = ''.join(final_buffer)
+                                                    task.save(update_fields=['final_test_cases'])
+                                            else:
+                                                task.final_test_cases = generated_cases
+                                                task.save(update_fields=['final_test_cases'])
+                                        except Exception as review_error:
+                                            logger.error(f"评审/改进失败: {review_error}")
+                                            task.final_test_cases = generated_cases
+                                            task.save(update_fields=['final_test_cases'])
+                                    else:
+                                        task.final_test_cases = generated_cases
+                                        task.save(update_fields=['final_test_cases'])
+
+                                    task.refresh_from_db()
+                                    task.status = 'completed'
+                                    task.progress = 100
+                                    task.completed_at = timezone.now()
+
+                                    # 兜底：如果改进阶段清空了最终用例，回退到生成内容
+                                    if not task.final_test_cases and task.generated_test_cases:
+                                        logger.warning(f"final_test_cases为空，回退使用generated_test_cases ({len(task.generated_test_cases)}字符)")
+                                        task.final_test_cases = task.generated_test_cases
+
+                                    update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
+                                    if task.multimodal_mode and task.page_images_base64:
+                                        task.page_images_base64 = None
+                                        update_fields.append('page_images_base64')
+                                    task.save(update_fields=update_fields)
+
+                                else:
+                                    # Complete模式
+                                    task.progress = 30
+                                    task.save()
+                                    generated_cases = loop.run_until_complete(
+                                        AIModelService.generate_test_cases_multimodal(task)
+                                    )
+                                    task.generated_test_cases = generated_cases
+                                    task.progress = 60
+                                    task.save()
+
+                                    if enable_auto_review and task.reviewer_model_config and task.reviewer_prompt_config:
+                                        try:
+                                            task.status = 'reviewing'
+                                            task.progress = 70
+                                            task.save()
+                                            review_feedback = loop.run_until_complete(
+                                                AIModelService.review_test_cases(
+                                                    task, generated_cases
+                                                )
+                                            )
+                                            task.review_feedback = review_feedback
+                                            task.save(update_fields=['review_feedback'])
+
+                                            if review_feedback and review_feedback.strip():
+                                                task.status = 'revising'
+                                                task.progress = 85
+                                                task.save()
+                                                revised = loop.run_until_complete(
+                                                    AIModelService.revise_test_cases_based_on_review(
+                                                        task, generated_cases, review_feedback
+                                                    )
+                                                )
+                                                task.final_test_cases = revised
+                                            else:
+                                                task.final_test_cases = generated_cases
+                                            task.save(update_fields=['final_test_cases'])
+                                        except Exception as review_error:
+                                            logger.error(f"评审/改进失败: {review_error}")
+                                            task.final_test_cases = generated_cases
+                                            task.save(update_fields=['final_test_cases'])
+                                    else:
+                                        task.final_test_cases = generated_cases
+                                        task.save(update_fields=['final_test_cases'])
+
+                                    task.refresh_from_db()
+                                    task.status = 'completed'
+                                    task.progress = 100
+                                    task.completed_at = timezone.now()
+
+                                    if not task.final_test_cases and task.generated_test_cases:
+                                        logger.warning(f"final_test_cases为空，回退使用generated_test_cases")
+                                        task.final_test_cases = task.generated_test_cases
+
+                                    update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
+                                    if task.multimodal_mode and task.page_images_base64:
+                                        task.page_images_base64 = None
+                                        update_fields.append('page_images_base64')
+                                    task.save(update_fields=update_fields)
+
+                            finally:
+                                loop.close()
+
+                        except Exception as e:
+                            logger.error(f"多模态生成任务执行失败: {e}")
+                            task.status = 'failed'
+                            task.error_message = str(e)
+                            task.save(update_fields=['status', 'error_message'])
+
+                    thread = threading.Thread(target=execute_task)
+                    thread.daemon = True
+                    thread.start()
+
+                except Exception as e:
+                    logger.error(f"多模态生成线程启动失败: {e}")
+
+            run_generation_task()
+
+            return Response({
+                'message': '多模态测试用例生成任务已创建',
+                'task_id': task.task_id,
+                'task': task_serializer.data
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.error(f"创建多模态生成任务时出错: {e}")
+            return Response(
+                {'error': f'创建任务失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(detail=False, methods=['post'])
     def generate(self, request):
         """创建新的测试用例生成任务"""
@@ -1610,13 +1975,22 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                                 except Exception as save_error:
                                                     logger.warning(f"保存流式内容失败: {save_error}")
 
-                                        # 生成测试用例
+                                        # 生成测试用例（根据是否多模态选择不同的生成方法）
                                         task.progress = 30
                                         task.save()
 
-                                        generated_cases = loop.run_until_complete(
-                                            AIModelService.generate_test_cases_stream(task, callback=stream_callback)
-                                        )
+                                        if task.multimodal_mode:
+                                            generated_cases = loop.run_until_complete(
+                                                AIModelService.generate_test_cases_multimodal(
+                                                    task, callback=stream_callback
+                                                )
+                                            )
+                                        else:
+                                            generated_cases = loop.run_until_complete(
+                                                AIModelService.generate_test_cases_stream(
+                                                    task, callback=stream_callback
+                                                )
+                                            )
 
                                         # 生成完成后，确保最终的流式内容被保存
                                         if task.stream_buffer:
@@ -1703,21 +2077,17 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                                                 except Exception as save_error:
                                                                     logger.warning(f"保存最终用例失败: {save_error}")
 
-                                                        # 添加超时保护，避免任务一直卡住（使用配置的超时时间）
+                                                        # 移除超时限制，模型需要多久就等多久，只有真正报错才回退
                                                         try:
                                                             revised_cases = loop.run_until_complete(
-                                                                asyncio.wait_for(
-                                                                    AIModelService.revise_test_cases_based_on_review(
-                                                                        task, generated_cases, task.review_feedback,
-                                                                        callback=final_callback
-                                                                    ),
-                                                                    timeout=review_timeout  # 使用配置的超时时间（秒）
+                                                                AIModelService.revise_test_cases_based_on_review(
+                                                                    task, generated_cases, task.review_feedback,
+                                                                    callback=final_callback
                                                                 )
                                                             )
-                                                        except asyncio.TimeoutError:
+                                                        except Exception as revise_error:
                                                             logger.error(
-                                                                f"任务 {task.task_id} 改进阶段超时（{review_timeout}秒），使用原始用例")
-                                                            # 超时时使用原始生成的用例，不再抛出异常
+                                                                f"任务 {task.task_id} 改进阶段失败: {revise_error}，使用原始用例")
                                                             revised_cases = generated_cases
                                                         # 始终使用返回的完整内容，避免流式输出被截断导致数据丢失
                                                         # revised_cases 是完整的返回值，task.final_test_cases 只是流式回调的中间状态
@@ -1781,9 +2151,14 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         task.progress = 30
                                         task.save()
 
-                                        generated_cases = loop.run_until_complete(
-                                            AIModelService.generate_test_cases(task)
-                                        )
+                                        if task.multimodal_mode:
+                                            generated_cases = loop.run_until_complete(
+                                                AIModelService.generate_test_cases_multimodal(task)
+                                            )
+                                        else:
+                                            generated_cases = loop.run_until_complete(
+                                                AIModelService.generate_test_cases(task)
+                                            )
 
                                         task.generated_test_cases = generated_cases
                                         task.progress = 60
@@ -1838,21 +2213,17 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                                                 except Exception as save_error:
                                                                     logger.warning(f"保存最终用例失败: {save_error}")
 
-                                                        # 添加超时保护，避免任务一直卡住（使用配置的超时时间）
+                                                        # 移除超时限制，模型需要多久就等多久，只有真正报错才回退
                                                         try:
                                                             revised_cases = loop.run_until_complete(
-                                                                asyncio.wait_for(
-                                                                    AIModelService.revise_test_cases_based_on_review(
-                                                                        task, generated_cases, task.review_feedback,
-                                                                        callback=final_callback_full
-                                                                    ),
-                                                                    timeout=review_timeout  # 使用配置的超时时间（秒）
+                                                                AIModelService.revise_test_cases_based_on_review(
+                                                                    task, generated_cases, task.review_feedback,
+                                                                    callback=final_callback_full
                                                                 )
                                                             )
-                                                        except asyncio.TimeoutError:
+                                                        except Exception as revise_error:
                                                             logger.error(
-                                                                f"任务 {task.task_id} 改进阶段超时（{review_timeout}秒），使用原始用例")
-                                                            # 超时时使用原始生成的用例，不再抛出异常
+                                                                f"任务 {task.task_id} 改进阶段失败: {revise_error}，使用原始用例")
                                                             revised_cases = generated_cases
                                                         # 始终使用返回的完整内容，避免流式输出被截断导致数据丢失
                                                         # revised_cases 是完整的返回值，task.final_test_cases 只是流式回调的中间状态
@@ -1919,7 +2290,19 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                     task.status = 'completed'
                                     task.progress = 100
                                     task.completed_at = timezone.now()
-                                    task.save(update_fields=['status', 'progress', 'completed_at', 'final_test_cases'])
+
+                                    # 兜底：如果改进阶段清空了最终用例，回退到生成内容
+                                    if not task.final_test_cases and task.generated_test_cases:
+                                        logger.warning(f"final_test_cases为空，回退使用generated_test_cases ({len(task.generated_test_cases)}字符)")
+                                        task.final_test_cases = task.generated_test_cases
+
+                                    # 多模态完成后清除图片数据，释放数据库空间
+                                    update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
+                                    if task.multimodal_mode and task.page_images_base64:
+                                        task.page_images_base64 = None
+                                        update_fields.append('page_images_base64')
+
+                                    task.save(update_fields=update_fields)
                                     logger.info(f"任务 {task.task_id} 已完成")
 
                                 finally:

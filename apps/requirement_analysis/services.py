@@ -29,18 +29,165 @@ class DocumentProcessor:
     
     @staticmethod
     def extract_text_from_pdf(file_path: str) -> str:
-        """从PDF文件提取文本"""
+        """从PDF文件提取文本，支持OCR回退至图像型PDF"""
         try:
+            # 首先尝试 PyPDF2 直接提取文本（适用于文本型PDF）
             text = ""
             with open(file_path, 'rb') as file:
                 pdf_reader = PdfReader(file)
                 for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            return text.strip()
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            text = text.strip()
+
+            # 如果提取的文本太少（图像型PDF），使用OCR
+            if len(text) < 50:
+                logger.info(f"PyPDF2仅提取到{len(text)}字符，尝试OCR识别...")
+                ocr_text = DocumentProcessor._extract_pdf_with_ocr(file_path)
+                if ocr_text and len(ocr_text) > len(text):
+                    return ocr_text
+            return text if text else ""
         except Exception as e:
             logger.error(f"PDF文本提取失败: {e}")
-            return f"PDF文本提取失败: {str(e)}"
-    
+            # 尝试OCR作为最后的回退
+            try:
+                return DocumentProcessor._extract_pdf_with_ocr(file_path)
+            except Exception:
+                return f"PDF文本提取失败: {str(e)}"
+
+    @staticmethod
+    def _extract_pdf_with_ocr(file_path: str) -> str:
+        """使用Tesseract OCR从扫描版PDF提取文本（本地OCR，无需联网）"""
+        try:
+            import pytesseract
+            from PIL import Image
+            import fitz  # PyMuPDF
+        except ImportError as e:
+            logger.error(f"OCR依赖未安装: {e}")
+            return f"OCR依赖未安装: {str(e)}"
+
+        try:
+            # 配置 Tesseract 路径
+            pytesseract.pytesseract.tesseract_cmd = r'E:\ocr\tesseract.exe'
+
+            pdf_doc = fitz.open(file_path)
+            all_text = []
+
+            for page_num in range(len(pdf_doc)):
+                page = pdf_doc[page_num]
+                # 渲染页面为图片（200 DPI 提高OCR精度）
+                pix = page.get_pixmap(dpi=200)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+                # Tesseract OCR（中英文混合识别）
+                page_text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+                if page_text.strip():
+                    all_text.append(page_text.strip())
+
+            pdf_doc.close()
+            text = '\n'.join(all_text)
+            logger.info(f"OCR提取完成(Tesseract)，共{len(all_text)}页，{len(text)}字符")
+            return text
+        except Exception as e:
+            logger.error(f"OCR提取失败: {e}")
+            # 回退到easyocr（如果可用）
+            try:
+                logger.info("Tesseract失败，尝试EasyOCR回退...")
+                return DocumentProcessor._extract_pdf_with_easyocr(file_path)
+            except Exception:
+                return f"OCR提取失败: {str(e)}"
+
+    @staticmethod
+    def _extract_pdf_with_easyocr(file_path: str) -> str:
+        """使用EasyOCR从扫描版PDF提取文本（备选方案，需要联网下载模型）"""
+        import fitz
+        try:
+            import easyocr
+            import numpy as np
+        except ImportError:
+            return "EasyOCR未安装"
+        reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
+        pdf_doc = fitz.open(file_path)
+        all_text = []
+        for page_num in range(len(pdf_doc)):
+            page = pdf_doc[page_num]
+            pix = page.get_pixmap(dpi=150)
+            img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )
+            result = reader.readtext(img_data, detail=0)
+            page_text = '\n'.join(result)
+            if page_text.strip():
+                all_text.append(page_text)
+        pdf_doc.close()
+        return '\n'.join(all_text)
+
+    MAX_VISION_PAGES = 20  # 多模态模式下最多渲染的页数
+
+    @staticmethod
+    def extract_page_images_as_base64(
+        file_path: str,
+        dpi: int = 150,
+        max_dimension: int = 2000,
+        output_format: str = 'JPEG'
+    ) -> list:
+        """
+        将PDF页面渲染为base64编码图片，用于多模态视觉模型。
+
+        Args:
+            file_path: PDF文件路径
+            dpi: 渲染DPI（150是平衡值）
+            max_dimension: 图片最大尺寸，超出等比缩放
+            output_format: PNG或JPEG（JPEG体积小3-5倍）
+
+        Returns:
+            [{"page": 1, "data": "base64...", "media_type": "image/jpeg"}, ...]
+        """
+        import fitz
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        pdf_doc = fitz.open(file_path)
+        page_images = []
+        max_pages = min(len(pdf_doc), DocumentProcessor.MAX_VISION_PAGES)
+
+        if len(pdf_doc) > DocumentProcessor.MAX_VISION_PAGES:
+            logger.warning(
+                f"PDF共{len(pdf_doc)}页，多模态仅取前{DocumentProcessor.MAX_VISION_PAGES}页"
+            )
+
+        for page_num in range(max_pages):
+            page = pdf_doc[page_num]
+            pix = page.get_pixmap(dpi=dpi)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            if max_dimension and (pix.width > max_dimension or pix.height > max_dimension):
+                ratio = min(max_dimension / pix.width, max_dimension / pix.height)
+                new_size = (int(pix.width * ratio), int(pix.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+
+            buffer = BytesIO()
+            if output_format.upper() == 'JPEG':
+                img.save(buffer, format='JPEG', quality=85)
+                media_type = 'image/jpeg'
+            else:
+                img.save(buffer, format='PNG')
+                media_type = 'image/png'
+
+            base64_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            page_images.append({
+                'page': page_num + 1,
+                'data': base64_data,
+                'media_type': media_type
+            })
+
+        pdf_doc.close()
+        total_kb = sum(len(img['data']) * 3 / 4 / 1024 for img in page_images)
+        logger.info(f"PDF页面渲染完成: 共{len(page_images)}页, 总大小{total_kb:.0f}KB")
+        return page_images
+
     @staticmethod
     def extract_text_from_docx(file_path: str) -> str:
         """从Word文档提取文本"""

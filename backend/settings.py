@@ -237,15 +237,8 @@ cors_origins_str = config('CORS_ALLOWED_ORIGINS', default='')
 parsed_cors_origins = parse_csv(cors_origins_str)
 
 if DEBUG:
-    # 开发环境默认允许本地地址，同时合并环境变量里的配置
-    # 优先使用环境变量配置的地址，确保服务器IP优先级最高
-    CORS_ALLOWED_ORIGINS = [
-        *parsed_cors_origins,  # 环境变量配置的地址优先
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ]
+    # 开发/内网环境：允许所有来源（方便同事通过内网IP访问）
+    CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = True
     # 支持EventSource (SSE) 的额外CORS头部
     CORS_ALLOW_HEADERS = [

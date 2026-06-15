@@ -221,6 +221,23 @@
               </select>
             </div>
 
+            <!-- 多模态模式选择 -->
+            <div v-if="isPdfFile" class="multimodal-toggle">
+              <label class="multimodal-checkbox">
+                <input
+                  type="checkbox"
+                  v-model="enableMultimodal"
+                  :disabled="isGenerating">
+                <span class="multimodal-label">
+                  <strong>多模态生成模式</strong>
+                  <span class="multimodal-hint">将PDF中的图片（流程图、原型图）发送给视觉模型分析，生成更精准的测试用例</span>
+                </span>
+              </label>
+              <div v-if="enableMultimodal" class="multimodal-info">
+                <span class="info-badge">⚠ 需先配置硅基流动的视觉模型（如 Qwen2-VL），并勾选「支持多模态」后设为 writer 角色</span>
+              </div>
+            </div>
+
             <button
               class="generate-btn"
               @click="generateFromDocument"
@@ -426,7 +443,10 @@ export default {
       },
       showConfigGuide: false,
       checkingConfig: true,
-      modalKey: 0  // 用于强制重新渲染弹窗
+      modalKey: 0,  // 用于强制重新渲染弹窗
+
+      // 多模态模式
+      enableMultimodal: false
     }
   },
 
@@ -435,6 +455,10 @@ export default {
       return this.manualInput.title.trim() &&
              this.manualInput.description.trim() &&
              this.manualInput.description.length <= 2000
+    },
+
+    isPdfFile() {
+      return this.selectedFile && this.selectedFile.name.toLowerCase().endsWith('.pdf')
     }
   },
 
@@ -646,6 +670,7 @@ export default {
     removeFile() {
       this.selectedFile = null
       this.documentTitle = ''
+      this.enableMultimodal = false
       this.$refs.fileInput.value = ''
     },
 
@@ -679,8 +704,14 @@ export default {
         return
       }
 
+      // 多模态模式：直接上传PDF到多模态端点
+      if (this.enableMultimodal && this.isPdfFile) {
+        await this.startMultimodalGeneration()
+        return
+      }
+
       try {
-        // 首先上传并提取文档内容
+        // 文本模式：首先上传并提取文档内容
         const formData = new FormData()
         formData.append('title', this.documentTitle)
         formData.append('file', this.selectedFile)
@@ -693,10 +724,14 @@ export default {
           headers: {
             'Content-Type': 'multipart/form-data',
           },
+          timeout: 120000,  // 文件上传超时2分钟
         })
 
-        // 提取文档内容
-        const extractResponse = await api.get(`/requirement-analysis/documents/${uploadResponse.data.id}/extract_text/`)
+        // 提取文档内容（OCR可能需要较长时间，设置10分钟超时）
+        ElMessage.info(this.$t('requirementAnalysis.extractingContent'))
+        const extractResponse = await api.get(`/requirement-analysis/documents/${uploadResponse.data.id}/extract_text/`, {
+          timeout: 600000,  // OCR提取超时10分钟
+        })
         const extractedText = extractResponse.data.extracted_text
 
         if (!extractedText || extractedText.trim().length === 0) {
@@ -716,6 +751,51 @@ export default {
       } catch (error) {
         console.error(this.$t('requirementAnalysis.documentProcessingFailed'), error)
         ElMessage.error(this.$t('requirementAnalysis.documentProcessingFailed') + ': ' + (error.response?.data?.error || error.message))
+      }
+    },
+
+    async startMultimodalGeneration() {
+      this.isGenerating = true
+      this.currentStep = 1
+      this.progressText = '准备多模态生成...'
+      this.streamedContent = ''
+      this.finalTestCases = ''
+      this.streamedReviewContent = ''
+      this.hasShownCompletionMessage = false
+      this.showResults = false
+
+      try {
+        const formData = new FormData()
+        formData.append('title', this.documentTitle)
+        formData.append('file', this.selectedFile)
+        formData.append('output_mode', this.globalOutputMode)
+        if (this.selectedProject) {
+          formData.append('project', this.selectedProject)
+        }
+
+        ElMessage.info('正在上传PDF并提取图文...')
+        const response = await api.post(
+          '/requirement-analysis/testcase-generation/generate_multimodal/',
+          formData,
+          {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 600000  // 10分钟超时（包含上传+图片提取+AI生成）
+          }
+        )
+
+        this.currentTaskId = response.data.task_id
+        this.progressText = '视觉模型正在分析文档图片...'
+
+        if (this.globalOutputMode === 'stream') {
+          this.startStreamingProgress()
+        } else {
+          this.startPolling()
+        }
+
+      } catch (error) {
+        console.error('多模态生成任务创建失败:', error)
+        ElMessage.error('多模态生成失败: ' + (error.response?.data?.error || error.message))
+        this.isGenerating = false
       }
     },
 
@@ -2550,5 +2630,51 @@ export default {
 .guide-actions .skip-action:hover {
   color: #64748b;
   text-decoration: underline;
+}
+
+/* ========== 多模态模式选择 ========== */
+.multimodal-toggle {
+  margin: 16px 0;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8f0fe 100%);
+  border: 1px solid #c8d6ff;
+  border-radius: 10px;
+}
+.multimodal-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+.multimodal-checkbox input[type="checkbox"] {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  accent-color: #4f46e5;
+  cursor: pointer;
+}
+.multimodal-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.multimodal-hint {
+  font-size: 0.8rem;
+  color: #666;
+  font-weight: normal;
+  line-height: 1.4;
+}
+.multimodal-info {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  font-size: 0.83rem;
+}
+.info-badge {
+  color: #856404;
+  line-height: 1.5;
 }
 </style>

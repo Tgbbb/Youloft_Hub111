@@ -224,6 +224,11 @@ class AIModelConfig(models.Model):
     temperature = models.FloatField(default=0.7, verbose_name='温度参数')
     top_p = models.FloatField(default=0.9, verbose_name='Top P参数')
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    supports_vision = models.BooleanField(
+        default=False,
+        verbose_name='支持多模态',
+        help_text='该模型是否支持图像识别（如硅基流动的Qwen2-VL等视觉模型）'
+    )
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
@@ -406,6 +411,18 @@ class TestCaseGenerationTask(models.Model):
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name='完成时间')
     is_saved_to_records = models.BooleanField(default=False, verbose_name='是否已保存到记录')
+
+    # 多模态生成
+    multimodal_mode = models.BooleanField(
+        default=False,
+        verbose_name='多模态模式',
+        help_text='是否使用多模态（图像+文本）生成模式'
+    )
+    page_images_base64 = models.JSONField(
+        null=True, blank=True,
+        verbose_name='页面图片Base64数据',
+        help_text='PDF各页面渲染后的Base64图片数据 [{"page": 1, "data": "...", "media_type": "image/jpeg"}]'
+    )
     saved_at = models.DateTimeField(null=True, blank=True, verbose_name='保存到记录时间')
 
     class Meta:
@@ -1045,6 +1062,124 @@ class AIModelService:
         case_count = full_content.count('TC-') + full_content.count('**TC-') + full_content.count('测试用例')
         logger.info(f"改进用例统计: 约检测到{case_count}个用例编号标记")
 
+        return full_content
+
+    @staticmethod
+    def build_multimodal_messages(
+        requirement_text: str,
+        page_images: list,
+    ) -> list:
+        """
+        构建带图片的多模态消息（OpenAI vision格式，硅基流动兼容）。
+
+        Args:
+            requirement_text: 提炼出来的需求文档文本
+            page_images: extract_page_images_as_base64()的输出
+
+        Returns:
+            OpenAI格式的messages列表
+        """
+        content_blocks = []
+
+        # 文本部分
+        text_content = (
+            f"以下是一份需求文档的内容及其各页面的截图，请结合文字和图片信息来设计测试用例。\n\n"
+            f"【文档文本内容】\n{requirement_text}"
+        )
+        content_blocks.append({"type": "text", "text": text_content})
+
+        # 图片部分
+        for img in page_images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['media_type']};base64,{img['data']}"
+                }
+            })
+
+        # 后续指导
+        content_blocks.append({
+            "type": "text",
+            "text": (
+                "\n\n请结合上述文档文本和各页面的截图（包含流程图、原型图、UI设计稿等视觉信息），"
+                "设计覆盖全面的测试用例。特别注意截图中的UI元素布局、流程连接、数据展示等视觉内容。"
+            )
+        })
+
+        return [{"role": "user", "content": content_blocks}]
+
+    @staticmethod
+    async def generate_test_cases_multimodal(
+        task: TestCaseGenerationTask,
+        callback=None
+    ) -> str:
+        """
+        多模态测试用例生成（文本+图片→视觉模型）。
+
+        Args:
+            task: 生成任务（multimodal_mode=True, page_images_base64已设置）
+            callback: 可选回调函数，每收到一个chunk就调用
+
+        Returns:
+            str: 完整的测试用例内容
+        """
+        writer_prompt = task.writer_prompt_config.content
+        config = task.writer_model_config
+
+        if not config:
+            raise ValueError("未找到可用的AI模型配置")
+
+        if not config.supports_vision:
+            raise ValueError(
+                f"模型 {config.get_model_type_display()} ({config.model_name}) "
+                f"不支持多模态视觉识别，请勾选「支持多模态」后重试"
+            )
+
+        # 构建多模态消息
+        page_images = task.page_images_base64 or []
+        messages = AIModelService.build_multimodal_messages(
+            task.requirement_text,
+            page_images,
+        )
+
+        total_kb = sum(len(img['data']) * 3 / 4 / 1024 for img in page_images)
+        logger.info(
+            f"多模态生成开始: model={config.model_name}, "
+            f"pages={len(page_images)}, images_size={total_kb:.0f}KB, "
+            f"text_length={len(task.requirement_text)}"
+        )
+
+        # 构建完整消息列表（system + user）
+        openai_messages = [
+            {"role": "system", "content": writer_prompt},
+            messages[0]  # 已构建好的user消息（含text+image blocks）
+        ]
+
+        # 使用现有流式调用
+        generator = AIModelService.call_openai_compatible_api_stream(
+            config,
+            openai_messages,
+            callback=callback
+        )
+
+        full_content = ""
+        chunk_count = 0
+        try:
+            async for chunk in generator:
+                full_content += chunk
+                chunk_count += 1
+        except Exception as e:
+            logger.error(f"多模态流式生成失败: {e}")
+            raise
+        finally:
+            try:
+                await generator.aclose()
+            except Exception as e:
+                logger.warning(f"关闭generator时出错: {e}")
+
+        logger.info(
+            f"多模态生成完成: chunks={chunk_count}, chars={len(full_content)}"
+        )
         return full_content
 
     @staticmethod

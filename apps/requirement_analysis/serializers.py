@@ -166,8 +166,8 @@ class AIModelConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIModelConfig
         fields = ['id', 'name', 'model_type', 'model_type_display', 'role', 'role_display',
-                 'api_key', 'api_key_masked', 'base_url', 'model_name', 'max_tokens', 'temperature', 'top_p', 
-                 'is_active', 'created_by', 'created_by_name', 'created_at', 'updated_at']
+                 'api_key', 'api_key_masked', 'base_url', 'model_name', 'max_tokens', 'temperature', 'top_p',
+                 'is_active', 'supports_vision', 'created_by', 'created_by_name', 'created_at', 'updated_at']
         read_only_fields = ['created_by', 'created_by_name']
         extra_kwargs = {
             'api_key': {'write_only': True}  # API Key只用于写入，不在响应中返回
@@ -257,13 +257,14 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestCaseGenerationTask
         fields = ['id', 'task_id', 'title', 'requirement_text', 'status', 'status_display',
-                 'progress', 'project', 'project_name', 'writer_model_config', 'writer_model_name', 
+                 'progress', 'project', 'project_name', 'writer_model_config', 'writer_model_name',
                  'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
                  'reviewer_prompt_config', 'reviewer_prompt_name', 'generated_test_cases',
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
+                 'output_mode', 'multimodal_mode', 'page_images_base64',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
-        read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases', 
-                          'review_feedback', 'final_test_cases', 'generation_log', 
+        read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases',
+                          'review_feedback', 'final_test_cases', 'generation_log',
                           'error_message', 'created_by', 'completed_at']
     
     def create(self, validated_data):

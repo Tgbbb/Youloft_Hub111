@@ -276,6 +276,19 @@
               </label>
             </div>
 
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input
+                  v-model="configForm.supports_vision"
+                  type="checkbox">
+                <span class="checkmark"></span>
+                支持多模态（视觉识别）
+              </label>
+              <small class="form-hint" style="margin-left: 26px;">
+                勾选后可用于多模态生成模式。硅基流动的 Qwen2-VL、Qwen2.5-VL 等视觉模型需勾选此项。
+              </small>
+            </div>
+
             <div class="modal-actions">
               <button type="button" class="cancel-btn" @click="closeModals">{{ $t('configuration.common.cancel') }}</button>
               <button
@@ -362,7 +375,8 @@ export default {
         max_tokens: 4096,
         temperature: 0.7,
         top_p: 0.9,
-        is_active: true
+        is_active: true,
+        supports_vision: false
       },
       // 模型类型与API Base URL的映射关系
       modelBaseUrlMap: {
