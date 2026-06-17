@@ -18,6 +18,8 @@ export default {
     requirementDescription: '需求描述',
     relatedProject: '关联项目（可选）',
     associatedProject: '关联项目（可选）',
+    associatedVersions: '关联版本（可选，可多选）',
+    multiSelectTip: '按住 Ctrl/⌘ 键可多选',
     titlePlaceholder: '请输入需求标题，如：用户登录功能需求',
     descriptionPlaceholder: '请详细描述您的需求，包括功能描述、使用场景、业务流程等',
     selectProject: '请选择项目',

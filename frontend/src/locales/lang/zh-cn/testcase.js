@@ -64,6 +64,7 @@ export default {
     stepsPlaceholder: '请输入详细的操作步骤，如：\n1. 打开登录页面\n2. 输入用户名和密码\n3. 点击登录按钮\n4. 验证登录结果',
     expectedResultPlaceholder: '请输入整体预期结果',
     priorityFilter: '优先级筛选',
+    versionFilter: '版本筛选',
     statusFilter: '状态筛选',
     importDialogTitle: '导入测试用例',
     uploadTip: '请先下载模板，按模板填写后上传 .xlsx 文件',

@@ -63,11 +63,33 @@
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <!-- 添加成员弹窗 -->
+    <el-dialog v-model="showAddMemberDialog" title="添加成员" width="400px">
+      <el-form>
+        <el-form-item label="用户名">
+          <el-input v-model="newMember.username" placeholder="输入用户名" />
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="newMember.role" style="width: 100%">
+            <el-option label="观察者" value="viewer" />
+            <el-option label="测试者" value="tester" />
+            <el-option label="开发者" value="developer" />
+            <el-option label="管理员" value="admin" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAddMemberDialog = false">取消</el-button>
+        <el-button type="primary" @click="addMember" :loading="addingMember">添加</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -80,6 +102,8 @@ const project = ref(null)
 const activeTab = ref('info')
 const showAddMemberDialog = ref(false)
 const showAddEnvDialog = ref(false)
+const addingMember = ref(false)
+const newMember = reactive({ username: '', role: 'tester' })
 
 const fetchProject = async () => {
   try {
@@ -112,6 +136,29 @@ const getStatusText = (status) => {
 
 const formatDate = (dateString) => {
   return dayjs(dateString).format('YYYY-MM-DD HH:mm')
+}
+
+const addMember = async () => {
+  if (!newMember.username.trim()) {
+    ElMessage.warning('请输入用户名')
+    return
+  }
+  addingMember.value = true
+  try {
+    await api.post(`/projects/${route.params.id}/members/add/`, {
+      username: newMember.username.trim(),
+      role: newMember.role
+    })
+    ElMessage.success('成员添加成功')
+    showAddMemberDialog.value = false
+    newMember.username = ''
+    newMember.role = 'tester'
+    fetchProject()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '添加失败')
+  } finally {
+    addingMember.value = false
+  }
 }
 
 const removeMember = async (member) => {

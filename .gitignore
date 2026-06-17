@@ -72,4 +72,5 @@ docker-compose*.yml
 .dockerignore
 nginx.conf
 Makefile
-build-multiplatform.sh
+build-multiplatform.shDEPLOYMENT.md
+CHANGELOG.md

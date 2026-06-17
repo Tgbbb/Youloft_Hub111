@@ -123,6 +123,14 @@
             >
               查看错误
             </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              text
+              @click="deleteRecord(row)"
+            >
+              删除
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -165,6 +173,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getExecutionList,
   stopExecution as apiStopExecution,
+  deleteExecution,
   getAppProjects
 } from '@/api/app-automation'
 import { Search, Refresh } from '@element-plus/icons-vue'
@@ -225,6 +234,27 @@ const stopExecution = async (execution) => {
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error('停止失败: ' + (error.message || '未知错误'))
+    }
+  }
+}
+
+const deleteRecord = async (execution) => {
+  try {
+    await ElMessageBox.confirm(
+      '确定要删除该执行记录吗？此操作不可恢复。',
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await deleteExecution(execution.id)
+    ElMessage.success('已删除')
+    loadExecutions()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败: ' + (error.message || '未知错误'))
     }
   }
 }

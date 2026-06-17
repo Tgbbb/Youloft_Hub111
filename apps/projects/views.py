@@ -36,9 +36,14 @@ def get_all_projects(request):
     return Response(list(projects))
 
 class ProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Project.objects.all()
     serializer_class = ProjectSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return Project.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
@@ -70,21 +75,21 @@ def get_project_members(request, project_id):
         # 获取项目成员，包括项目所有者
         members = []
         
-        # 添加项目所有者
+        # 添加项目所有者（id=0 特殊标记，不允许移除）
         members.append({
-            'id': project.owner.id,
+            'id': 0,
             'username': project.owner.username,
             'email': project.owner.email,
             'first_name': project.owner.first_name,
             'last_name': project.owner.last_name,
             'role': 'owner'
         })
-        
-        # 添加项目成员
+
+        # 添加项目成员（id=ProjectMember.id，用于移除操作）
         project_members = ProjectMember.objects.filter(project=project).select_related('user')
         for member in project_members:
             members.append({
-                'id': member.user.id,
+                'id': member.id,
                 'username': member.user.username,
                 'email': member.user.email,
                 'first_name': member.user.first_name,

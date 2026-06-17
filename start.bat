@@ -24,12 +24,18 @@ timeout /t 1 /nobreak >nul
 echo   Redis started
 
 echo.
-echo [4/5] Starting Django backend...
+echo [4/6] Starting Django backend...
 start "Django" cmd /c "cd /d E:\TestHub\testhub_platform && call venv\Scripts\activate.bat && python manage.py runserver 0.0.0.0:8000"
 timeout /t 4 /nobreak >nul
 
 echo.
-echo [5/5] Starting Vite frontend...
+echo [5/6] Starting Celery worker...
+start "Celery" cmd /c "cd /d E:\TestHub\testhub_platform && call venv\Scripts\activate.bat && celery -A backend worker --loglevel=info --pool=solo"
+timeout /t 3 /nobreak >nul
+echo   Celery worker started
+
+echo.
+echo [6/6] Starting Vite frontend...
 start "Vite" cmd /c "cd /d E:\TestHub\testhub_platform\frontend && npm run dev"
 
 echo.

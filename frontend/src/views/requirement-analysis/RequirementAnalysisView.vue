@@ -140,12 +140,22 @@
 
             <div class="form-group">
               <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
-              <select v-model="manualInput.selectedProject" class="form-select">
+              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
                 <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
                 <option v-for="project in projects" :key="project.id" :value="project.id">
                   {{ project.name }}
                 </option>
               </select>
+            </div>
+
+            <div class="form-group" v-if="manualInput.selectedProject">
+              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
+              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4">
+                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
+                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
+                </option>
+              </select>
+              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
             </div>
 
             <button
@@ -213,12 +223,22 @@
 
             <div class="form-group">
               <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
-              <select v-model="selectedProject" class="form-select">
+              <select v-model="selectedProject" class="form-select" @change="onDocProjectChange">
                 <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
                 <option v-for="project in projects" :key="project.id" :value="project.id">
                   {{ project.name }}
                 </option>
               </select>
+            </div>
+
+            <div class="form-group" v-if="selectedProject">
+              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
+              <select v-model="selectedVersionIds" class="form-select" multiple size="4">
+                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
+                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
+                </option>
+              </select>
+              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
             </div>
 
             <!-- 多模态模式选择 -->
@@ -372,13 +392,16 @@ export default {
       manualInput: {
         title: '',
         description: '',
-        selectedProject: ''
+        selectedProject: '',
+        selectedVersionIds: []
       },
 
       // 文件上传
       selectedFile: null,
       documentTitle: '',
       selectedProject: '',
+      selectedVersionIds: [],
+      projectVersions: [],
       projects: [],
       isDragOver: false,
 
@@ -498,6 +521,30 @@ export default {
       } catch (error) {
         console.error(this.$t('requirementAnalysis.loadProjectsFailed'), error)
       }
+    },
+
+    async loadProjectVersions(projectId) {
+      if (!projectId) {
+        this.projectVersions = []
+        return
+      }
+      try {
+        const response = await api.get(`/versions/projects/${projectId}/versions/`)
+        this.projectVersions = response.data || []
+      } catch (error) {
+        console.error('加载版本列表失败:', error)
+        this.projectVersions = []
+      }
+    },
+
+    onManualProjectChange() {
+      this.manualInput.selectedVersionIds = []
+      this.loadProjectVersions(this.manualInput.selectedProject)
+    },
+
+    onDocProjectChange() {
+      this.selectedVersionIds = []
+      this.loadProjectVersions(this.selectedProject)
     },
 
     async checkConfigStatus() {
@@ -694,7 +741,8 @@ export default {
         this.manualInput.title,
         requirementText,
         this.manualInput.selectedProject,
-        this.globalOutputMode  // 使用全局输出模式
+        this.globalOutputMode,  // 使用全局输出模式
+        this.manualInput.selectedVersionIds
       )
     },
 
@@ -745,7 +793,8 @@ export default {
           this.documentTitle,
           requirementText,
           this.selectedProject,
-          this.globalOutputMode  // 使用全局输出模式
+          this.globalOutputMode,  // 使用全局输出模式
+          this.selectedVersionIds
         )
 
       } catch (error) {
@@ -771,6 +820,9 @@ export default {
         formData.append('output_mode', this.globalOutputMode)
         if (this.selectedProject) {
           formData.append('project', this.selectedProject)
+        }
+        if (this.selectedVersionIds && this.selectedVersionIds.length > 0) {
+          formData.append('version_ids', JSON.stringify(this.selectedVersionIds))
         }
 
         ElMessage.info('正在上传PDF并提取图文...')
@@ -799,7 +851,7 @@ export default {
       }
     },
 
-    async startGeneration(title, requirementText, projectId, outputMode = 'stream') {
+    async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = []) {
       // 在开始生成前，主动刷新token确保生成过程中不会过期
       try {
         const userStore = useUserStore()
@@ -838,6 +890,11 @@ export default {
         // 如果选择了项目，添加到请求中
         if (projectId) {
           requestData.project = projectId
+        }
+
+        // 如果选择了版本，添加到请求中
+        if (versionIds && versionIds.length > 0) {
+          requestData.version_ids = versionIds
         }
 
         const response = await api.post('/requirement-analysis/testcase-generation/generate/', requestData)
@@ -1973,6 +2030,12 @@ export default {
   font-size: 0.85rem;
   color: #666;
   margin-top: 5px;
+}
+
+.select-hint {
+  font-size: 0.8rem;
+  color: #999;
+  margin-top: 4px;
 }
 
 .required {

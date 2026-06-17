@@ -8,6 +8,7 @@ import os
 os.environ['ANONYMIZED_TELEMETRY'] = 'false'
 
 import asyncio
+import httpx
 import functools
 import json
 import re
@@ -645,52 +646,51 @@ try:
 except Exception as e:
     logger.error(f"❌ Failed to patch TokenCost: {e}")
 
-# Patch BrowserSession.connect (Windows CDP fix)
+# Patch BrowserSession.connect — browser-use 0.10.1 在 Windows 上 CDP 端点启动慢
 try:
     from browser_use.browser.session import BrowserSession
-    import httpx
 
     _original_connect = BrowserSession.connect
 
-
     async def _patched_connect(self, cdp_url=None):
-        if cdp_url: return await _original_connect(self, cdp_url=cdp_url)
+        if cdp_url:
+            return await _original_connect(self, cdp_url=cdp_url)
 
         browser_profile = getattr(self, 'browser_profile', None)
+
+        # 优先用 browser-use watchdog 已获得的 CDP URL
         if hasattr(browser_profile, 'cdp_url') and browser_profile.cdp_url:
             return await _original_connect(self, cdp_url=browser_profile.cdp_url)
 
-        port = 9222
+        # 从 profile 获取实际端口
+        port = getattr(browser_profile, 'remote_debugging_port', None) or 9222
         if hasattr(browser_profile, 'extra_chromium_args'):
-            for arg in browser_profile.extra_chromium_args:
+            for arg in browser_profile.extra_chromium_args or []:
                 if '--remote-debugging-port=' in str(arg):
-                    try:
-                        port = int(arg.split('=')[1]); break
-                    except:
-                        pass
-        if hasattr(browser_profile, 'remote_debugging_port'):
-            port = browser_profile.remote_debugging_port
+                    port = int(str(arg).split('=')[1]); break
 
         cdp_endpoint = f"http://localhost:{port}/json/version"
 
-        for attempt in range(10): # 增加重试次数
+        # 最多等 30 秒，Chrome DevTools 服务启动慢
+        for attempt in range(15):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=5.0) as client:
                     response = await client.get(cdp_endpoint)
-                    if response.status_code == 200 and response.text:
+                    if response.status_code == 200 and response.text.strip():
                         version_info = response.json()
-                        browser_profile.cdp_url = version_info['webSocketDebuggerUrl']
-                        return await _original_connect(self, cdp_url=browser_profile.cdp_url)
+                        ws_url = version_info.get('webSocketDebuggerUrl', '')
+                        if ws_url:
+                            return await _original_connect(self, cdp_url=ws_url)
             except Exception:
-                if attempt < 4: await asyncio.sleep(1.0)
+                pass
+            await asyncio.sleep(2.0)
 
         return await _original_connect(self, cdp_url=cdp_url)
 
-
     BrowserSession.connect = _patched_connect
-    logger.info("✅ Successfully patched BrowserSession.connect")
+    logger.info("Patched BrowserSession.connect (CDP retry)")
 except Exception as e:
-    logger.error(f"❌ Failed to patch BrowserSession.connect: {e}")
+    logger.warning(f"BrowserSession.connect patch failed: {e}")
 
 # Patch ClickElementAction parameters
 try:

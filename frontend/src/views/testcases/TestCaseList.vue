@@ -49,7 +49,7 @@
             </el-input>
           </el-col>
           <el-col :span="4">
-            <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleFilter">
+            <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleProjectFilterChange">
               <el-option
                 v-for="project in projects"
                 :key="project.id"
@@ -64,6 +64,16 @@
               <el-option :label="$t('testcase.medium')" value="medium" />
               <el-option :label="$t('testcase.high')" value="high" />
               <el-option :label="$t('testcase.critical')" value="critical" />
+            </el-select>
+          </el-col>
+          <el-col :span="4">
+            <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleFilter">
+              <el-option
+                v-for="version in versions"
+                :key="version.id"
+                :label="version.name + (version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '')"
+                :value="version.id"
+              />
             </el-select>
           </el-col>
         </el-row>
@@ -237,6 +247,8 @@ const total = ref(0)
 const searchText = ref('')
 const projectFilter = ref('')
 const priorityFilter = ref('')
+const versionFilter = ref('')
+const versions = ref([])
 const selectedTestCases = ref([])
 const isDeleting = ref(false)
 const importDialogVisible = ref(false)
@@ -251,11 +263,12 @@ const fetchTestCases = async () => {
   try {
     const params = {
       page: currentPage.value,
-      page_size: pageSize.value,
-      search: searchText.value,
-      project: projectFilter.value,
-      priority: priorityFilter.value
+      page_size: pageSize.value
     }
+    if (searchText.value) params.search = searchText.value
+    if (projectFilter.value) params.project = projectFilter.value
+    if (priorityFilter.value) params.priority = priorityFilter.value
+    if (versionFilter.value) params.versions = versionFilter.value
     const response = await api.get('/testcases/', { params })
     testcases.value = response.data.results || []
     total.value = response.data.count || 0
@@ -274,6 +287,26 @@ const handleSearch = () => {
 const handleFilter = () => {
   currentPage.value = 1
   fetchTestCases()
+}
+
+const fetchVersions = async () => {
+  try {
+    const params = {}
+    if (projectFilter.value) {
+      params.projects = projectFilter.value
+    }
+    const response = await api.get('/versions/', { params })
+    versions.value = response.data.results || response.data || []
+  } catch (error) {
+    console.error('Fetch versions failed:', error)
+    versions.value = []
+  }
+}
+
+const handleProjectFilterChange = () => {
+  versionFilter.value = ''
+  fetchVersions()
+  handleFilter()
 }
 
 const handlePageChange = () => {
@@ -433,15 +466,15 @@ const exportToExcel = async () => {
       let allData = []
 
       while (hasMore) {
-        const response = await api.get('/testcases/', {
-          params: {
-            page: page,
-            page_size: pageSize,
-            search: searchText.value,
-            project: projectFilter.value,
-            priority: priorityFilter.value
-          }
-        })
+        const params = {
+          page: page,
+          page_size: pageSize
+        }
+        if (searchText.value) params.search = searchText.value
+        if (projectFilter.value) params.project = projectFilter.value
+        if (priorityFilter.value) params.priority = priorityFilter.value
+        if (versionFilter.value) params.versions = versionFilter.value
+        const response = await api.get('/testcases/', { params })
 
         const results = response.data.results || []
         allData.push(...results)
@@ -642,6 +675,7 @@ const fetchProjects = async () => {
 
 onMounted(() => {
   fetchProjects()
+  fetchVersions()
   fetchTestCases()
 })
 </script>

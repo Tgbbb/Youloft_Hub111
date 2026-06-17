@@ -1575,6 +1575,18 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 except (ValueError, TypeError):
                     pass
 
+            # 如果请求中包含版本ID列表，添加到任务数据中
+            version_ids = request.data.get('version_ids')
+            if version_ids:
+                if isinstance(version_ids, str):
+                    import json
+                    try:
+                        version_ids = json.loads(version_ids)
+                    except json.JSONDecodeError:
+                        version_ids = None
+                if isinstance(version_ids, list):
+                    task_data['version_ids'] = [int(v) for v in version_ids]
+
             task_serializer = TestCaseGenerationTaskSerializer(
                 data=task_data, context={'request': request}
             )
@@ -1891,6 +1903,18 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             # 如果请求中包含项目ID，添加到任务数据中
             if 'project' in validated_data and validated_data['project']:
                 task_data['project'] = validated_data['project']
+
+            # 如果请求中包含版本ID列表，添加到任务数据中
+            version_ids = request.data.get('version_ids')
+            if version_ids:
+                if isinstance(version_ids, str):
+                    import json
+                    try:
+                        version_ids = json.loads(version_ids)
+                    except json.JSONDecodeError:
+                        version_ids = None
+                if isinstance(version_ids, list):
+                    task_data['version_ids'] = [int(v) for v in version_ids]
 
             # 处理输出模式：优先使用用户指定的，否则使用生成行为配置的默认值
             output_mode = request.data.get('output_mode')
@@ -2780,7 +2804,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
                     adopted_count = 0
                     for test_case in test_cases:
-                        TestCase.objects.create(
+                        tc = TestCase.objects.create(
                             project=project,
                             author=task.created_by,
                             title=test_case.get('scenario', '测试用例'),
@@ -2792,6 +2816,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                             test_type='functional',
                             status='draft'
                         )
+                        if task.version_ids:
+                            tc.versions.set(task.version_ids)
                         adopted_count += 1
 
                     logger.info(f"成功导入 {adopted_count} 条测试用例到项目 {project.name}")
@@ -2917,7 +2943,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
                 adopted_count = 0
                 for test_case in test_cases:
-                    TestCase.objects.create(
+                    tc = TestCase.objects.create(
                         project=project,  # 使用统一的项目选择逻辑
                         author=task.created_by,
                         title=test_case.get('scenario', '测试用例'),
@@ -2929,6 +2955,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         test_type='functional',
                         status='draft'
                     )
+                    if task.version_ids:
+                        tc.versions.set(task.version_ids)
                     adopted_count += 1
 
                 return Response({
@@ -3010,7 +3038,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
                 adopted_count = 0
                 for case_data in test_cases_data:
-                    TestCase.objects.create(
+                    tc = TestCase.objects.create(
                         project=project,  # 使用统一的项目选择逻辑
                         author=task.created_by,
                         title=case_data.get('title', '测试用例'),
@@ -3022,6 +3050,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         test_type=case_data.get('test_type', 'functional'),
                         status=case_data.get('status', 'draft')
                     )
+                    if task.version_ids:
+                        tc.versions.set(task.version_ids)
                     adopted_count += 1
 
                 return Response({

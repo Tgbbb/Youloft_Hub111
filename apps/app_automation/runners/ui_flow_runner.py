@@ -284,40 +284,52 @@ class UiFlowRunner:
             self._execute_custom_component(step)
             return
         
-        # 根据动作类型执行
+        # 根据动作类型执行（兼容组件库基础类型和旧别名）
         action_map = {
             # 基础动作
             'click': self._action_click,
             'touch': self._action_click,
-            'input': self._action_input,
-            'swipe': self._action_swipe,
+            'tap': self._action_click,              # 组件库：点击
             'double_click': self._action_double_click,
-            'long_press': self._action_long_press,
+            'double_tap': self._action_double_click, # 组件库：双击
+            'long_press': self._action_long_press,   # 组件库：长按
+            'swipe': self._action_swipe,             # 组件库：滑动
             'drag': self._action_drag,
             'swipe_to': self._action_swipe_to,
-            
+            'input': self._action_input,
+            'text': self._action_input,              # 组件库：文本输入
+
             # 条件动作
             'image_exists_click': self._action_image_exists_click,
             'image_exists_click_chain': self._action_image_exists_click_chain,
-            
+
             # 工具类
             'set_variable': self._action_set_variable,
             'unset_variable': self._action_unset_variable,
             'extract_output': self._action_extract_output,
             'screenshot': self._action_screenshot,
+            'snapshot': self._action_screenshot,     # 组件库：截图
             'api_request': self._action_api_request,
-            
+
             # 控制流
             'wait': self._action_wait,
-            'sleep': self._action_wait,
+            'sleep': self._action_wait,              # 组件库：等待
             'if': self._action_if,
             'loop': self._action_loop,
             'sequence': self._action_sequence,
             'try': self._action_try,
-            
+
             # 断言
             'assert': self._action_assert,
+            'assert_exists': self._action_assert,    # 组件库：断言存在
+            'assert_not_exists': self._action_assert, # 组件库：断言不存在
+            'assert_text': self._action_assert,      # 组件库：断言文本
             'foreach_assert': self._action_foreach_assert,
+
+            # 系统操作
+            'keyevent_back': self._action_keyevent,
+            'keyevent_home': self._action_keyevent,
+            'clear_text': self._action_clear_input,
         }
         
         handler = action_map.get(action)
@@ -449,13 +461,14 @@ class UiFlowRunner:
         - pos: 坐标点
         - region: 区域
         """
-        # 优先使用 element_id
-        element_id = step.get('element_id')
+        # 优先使用 element_id（兼容 target_ 前缀）
+        element_id = step.get('element_id') or step.get('target_element_id')
         if element_id:
             return self._resolve_element_by_id(element_id)
-        
-        selector_type = step.get('selector_type', 'image')
-        selector = step.get('selector', '')
+
+        selector_type = step.get('selector_type') or step.get('target_selector_type', 'image')
+        selector = step.get('selector') or step.get('target_selector', '')
+        image_scope = step.get('image_scope') or step.get('target_image_scope', 'common')
         
         if selector_type == 'image':
             # 图片选择器
@@ -463,14 +476,13 @@ class UiFlowRunner:
                 logger.warning(f"图片选择器的 selector 为空，请检查步骤配置: {step.get('name', step.get('type', 'unknown'))}")
                 return None
             
-            image_scope = step.get('image_scope', 'common')
             image_path = os.path.join(self.image_base_dir, image_scope, selector)
-            
+
             if not os.path.isfile(image_path):
                 logger.warning(f"图片文件不存在: {image_path}")
                 return None
-            
-            threshold = step.get('image_threshold', 0.7)
+
+            threshold = step.get('image_threshold') or step.get('target_image_threshold', 0.7)
             return Template(image_path, threshold=threshold)
         
         elif selector_type == 'pos':
@@ -601,7 +613,7 @@ class UiFlowRunner:
     def _action_wait(self, step: Dict[str, Any]):
         """等待：有 selector 时等待元素出现，没有时纯等待 timeout 秒"""
         target = self._resolve_selector(step)
-        timeout = step.get('timeout', step.get('duration', 3))
+        timeout = step.get('timeout') or step.get('duration') or step.get('seconds', 3)
         
         if target:
             logger.info(f"等待元素出现: {target}, 超时: {timeout}s")
@@ -614,11 +626,39 @@ class UiFlowRunner:
         """截图"""
         name = step.get('name', f'snapshot_{int(time.time())}')
         filename = f"{name}.png"
-        
+
         filepath = os.path.join(self.screenshots_dir, filename)
-        
+
         logger.info(f"截图保存: {filepath}")
         snapshot(filename=filepath)
+
+    def _action_keyevent(self, step: Dict[str, Any]):
+        """系统按键"""
+        action = step.get('type', '')
+        key_map = {
+            'keyevent_back': 'KEYCODE_BACK',
+            'keyevent_home': 'KEYCODE_HOME',
+        }
+        key = key_map.get(action, 'KEYCODE_BACK')
+        try:
+            from airtest.core.api import keyevent
+            logger.info(f"按键: {key}")
+            keyevent(key)
+        except ImportError:
+            logger.warning("airtest keyevent not available")
+
+    def _action_clear_input(self, step: Dict[str, Any]):
+        """清除输入框"""
+        target = self._resolve_selector(step)
+        if target:
+            touch(target)
+            time.sleep(0.2)
+        try:
+            from airtest.core.api import text as airtest_text
+            airtest_text('')
+            logger.info("清除输入框文本")
+        except ImportError:
+            pass
     
     def _action_text(self, step: Dict[str, Any]):
         """输入文本"""

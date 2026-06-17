@@ -54,8 +54,9 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('project.actions')" width="150" fixed="right">
+        <el-table-column :label="$t('project.actions')" width="240" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="openMemberDialog(row)">成员</el-button>
             <el-button size="small" @click="editProject(row)">{{ $t('common.edit') }}</el-button>
             <el-button size="small" type="danger" @click="deleteProject(row)">{{ $t('common.delete') }}</el-button>
           </template>
@@ -73,6 +74,35 @@
       </div>
     </div>
     
+    <!-- 成员管理弹窗 -->
+    <el-dialog v-model="showMemberDialog" title="管理成员" width="450px" @close="memberProjectId = null">
+      <div v-if="memberProjectId">
+        <div style="margin-bottom: 16px; display: flex; gap: 8px;">
+          <el-input v-model="newMemberName" placeholder="输入用户名" size="small" style="flex: 1" />
+          <el-select v-model="newMemberRole" size="small" style="width: 100px">
+            <el-option label="观察者" value="viewer" />
+            <el-option label="测试者" value="tester" />
+            <el-option label="开发者" value="developer" />
+            <el-option label="管理员" value="admin" />
+          </el-select>
+          <el-button type="primary" size="small" @click="addMember" :loading="addingMember">添加</el-button>
+        </div>
+        <el-table :data="memberList" size="small" max-height="300">
+          <el-table-column prop="username" label="用户名" />
+          <el-table-column prop="role" label="角色" width="100" />
+          <el-table-column label="操作" width="70">
+            <template #default="{ row }">
+              <el-button v-if="row.role !== 'owner'" size="small" type="danger" @click="removeMember(row)">移除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-if="memberList.length === 0" style="text-align: center; color: #999; padding: 20px;">暂无成员</div>
+      </div>
+      <template #footer>
+        <el-button @click="showMemberDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 创建/编辑项目对话框 -->
     <el-dialog
       :title="isEdit ? $t('project.editProject') : $t('project.createProject')"
@@ -219,6 +249,60 @@ const resetForm = () => {
   // 清除表单验证错误
   if (formRef.value) {
     formRef.value.clearValidate()
+  }
+}
+
+// 成员管理
+const showMemberDialog = ref(false)
+const memberProjectId = ref(null)
+const memberList = ref([])
+const newMemberName = ref('')
+const newMemberRole = ref('tester')
+const addingMember = ref(false)
+
+const openMemberDialog = async (project) => {
+  memberProjectId.value = project.id
+  showMemberDialog.value = true
+  await fetchMembers()
+}
+
+const fetchMembers = async () => {
+  try {
+    const response = await api.get(`/projects/${memberProjectId.value}/members/`)
+    memberList.value = response.data
+  } catch (error) {
+    ElMessage.error('获取成员列表失败')
+  }
+}
+
+const addMember = async () => {
+  if (!newMemberName.value.trim()) {
+    ElMessage.warning('请输入用户名')
+    return
+  }
+  addingMember.value = true
+  try {
+    await api.post(`/projects/${memberProjectId.value}/members/add/`, {
+      username: newMemberName.value.trim(),
+      role: newMemberRole.value
+    })
+    ElMessage.success('添加成功')
+    newMemberName.value = ''
+    fetchMembers()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '添加失败')
+  } finally {
+    addingMember.value = false
+  }
+}
+
+const removeMember = async (member) => {
+  try {
+    await api.delete(`/projects/${memberProjectId.value}/members/${member.id}/`)
+    ElMessage.success('已移除')
+    fetchMembers()
+  } catch (error) {
+    ElMessage.error('移除失败')
   }
 }
 

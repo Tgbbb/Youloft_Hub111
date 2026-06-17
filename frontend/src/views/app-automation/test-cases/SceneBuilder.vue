@@ -2639,13 +2639,13 @@ const loadElementsForSelector = async () => {
     try {
         const params = {
             page: elementCurrentPage.value,
-            size: elementPageSize.value,
+            page_size: elementPageSize.value,
             element_type: elementFilterType.value,
             keyword: elementSearchKeyword.value
         }
         
         const response = await getAppElementList(params)
-        const data = response.data?.data || response.data
+        const data = response.data
         selectorElements.value = data?.results || data || []
         elementTotal.value = data?.count || selectorElements.value.length
     } catch (error) {

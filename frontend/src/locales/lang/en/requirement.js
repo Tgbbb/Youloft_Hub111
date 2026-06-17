@@ -18,6 +18,8 @@ export default {
     requirementDescription: 'Requirement Description',
     relatedProject: 'Related Project (Optional)',
     associatedProject: 'Related Project (Optional)',
+    associatedVersions: 'Related Versions (Optional, Multi-select)',
+    multiSelectTip: 'Hold Ctrl/⌘ to multi-select',
     titlePlaceholder: 'Enter requirement title, e.g.: User Login Feature',
     descriptionPlaceholder: 'Describe your requirement in detail, including features, scenarios, business flows, etc.',
     selectProject: 'Select Project',

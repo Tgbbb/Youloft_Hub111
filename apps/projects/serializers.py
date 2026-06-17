@@ -14,11 +14,27 @@ class ProjectEnvironmentSerializer(serializers.ModelSerializer):
 
 class ProjectMemberSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    user_id = serializers.IntegerField(write_only=True)
-    
+    user_id = serializers.IntegerField(write_only=True, required=False)
+    username = serializers.CharField(write_only=True, required=False)
+
     class Meta:
         model = ProjectMember
-        fields = ['id', 'user', 'user_id', 'role', 'joined_at']
+        fields = ['id', 'user', 'user_id', 'username', 'role', 'joined_at']
+
+    def validate(self, attrs):
+        # 支持传 username 自动查找 user_id
+        username = attrs.pop('username', None)
+        if username:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            try:
+                user = User.objects.get(username=username)
+                attrs['user_id'] = user.id
+            except User.DoesNotExist:
+                raise serializers.ValidationError({'username': f'用户 "{username}" 不存在'})
+        if not attrs.get('user_id'):
+            raise serializers.ValidationError({'user_id': '请提供 user_id 或 username'})
+        return attrs
 
 class ProjectSerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)

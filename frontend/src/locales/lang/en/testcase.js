@@ -64,6 +64,7 @@ export default {
     stepsPlaceholder: 'Enter detailed steps, e.g.:\n1. Open login page\n2. Enter username and password\n3. Click login button\n4. Verify login result',
     expectedResultPlaceholder: 'Enter overall expected result',
     priorityFilter: 'Priority Filter',
+    versionFilter: 'Version Filter',
     statusFilter: 'Status Filter',
     importDialogTitle: 'Import Test Cases',
     uploadTip: 'Please download the template first, fill it in, then upload the .xlsx file',

@@ -379,6 +379,11 @@ class TestCaseGenerationTask(models.Model):
         related_name='generation_tasks',
         verbose_name='关联项目'
     )
+    version_ids = models.JSONField(
+        default=list, blank=True,
+        verbose_name='关联版本ID列表',
+        help_text='生成用例时选择的版本ID列表'
+    )
 
     # 配置参数
     writer_model_config = models.ForeignKey(
