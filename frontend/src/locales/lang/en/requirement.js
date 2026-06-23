@@ -52,6 +52,18 @@ export default {
     includeNegativeCases: 'Include Negative Cases',
     submitGeneration: 'Submit Generation Task',
 
+    // Clarification
+    clarifying: '🔍 AI is analyzing requirements, identifying unclear points...',
+    clarificationTitle: '🤔 Requirement Clarification',
+    clarificationSubtitle: 'AI found the following unclear points. Please confirm or supplement before generating test cases (you can skip):',
+    clarificationQuestionLabel: 'Question {id}',
+    clarificationAnswerPlaceholder: 'Please enter your confirmation or supplement...',
+    clarificationSkip: 'Skip, generate directly',
+    clarificationConfirm: 'Confirm and Generate',
+    clarificationNoQuestions: 'AI found no obvious unclear points, you can proceed to generate directly',
+    clarificationFailed: 'Requirement clarification analysis failed',
+    clarificationError: 'Clarification analysis error. Skip and generate directly?',
+
     // Divider
     dividerOr: 'or',
 
@@ -355,6 +367,12 @@ export default {
     selectPromptType: 'Select Prompt Type',
     writerPrompt: 'Test Case Writer Prompt',
     reviewerPrompt: 'Test Case Reviewer Prompt',
+    clarifierPrompt: 'Requirement Clarifier Prompt',
+    clarifierTab: 'Clarification',
+    defaultClarifierName: 'Default Clarifier Prompt',
+    reviserPrompt: 'Case Revision Prompt',
+    reviserTab: 'Revision',
+    defaultReviserName: 'Default Revision Prompt',
     isActive: 'Enable',
     promptContent: 'Prompt Content',
     contentPlaceholder: 'Enter prompt content, supports variables...',

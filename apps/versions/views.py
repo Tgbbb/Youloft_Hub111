@@ -4,8 +4,8 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db import models
-from .models import Version
-from .serializers import VersionSerializer, VersionCreateSerializer
+from .models import Version, FunctionModule
+from .serializers import VersionSerializer, VersionCreateSerializer, FunctionModuleSerializer
 from apps.projects.models import Project
 
 # 版本管理视图
@@ -92,3 +92,28 @@ def get_project_versions(request, project_id):
     versions = Version.objects.filter(projects__id=project_id).order_by('-created_at')
     serializer = VersionSerializer(versions, many=True)
     return Response(serializer.data)
+
+
+# 功能模块管理
+class FunctionModuleListCreateView(generics.ListCreateAPIView):
+    """某版本下的功能模块列表和创建"""
+    serializer_class = FunctionModuleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        version_id = self.kwargs.get('version_id')
+        return FunctionModule.objects.filter(version_id=version_id).order_by('name')
+
+    def perform_create(self, serializer):
+        version_id = self.kwargs.get('version_id')
+        version = Version.objects.get(id=version_id)
+        serializer.save(version=version)
+
+
+class FunctionModuleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """功能模块详情/编辑/删除"""
+    serializer_class = FunctionModuleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return FunctionModule.objects.all()

@@ -21,6 +21,32 @@
               <el-descriptions-item :label="$t('project.createdAt')">{{ formatDate(project.created_at) }}</el-descriptions-item>
               <el-descriptions-item :label="$t('project.projectDescription')" :span="2">{{ project.description || $t('project.noDescription') }}</el-descriptions-item>
             </el-descriptions>
+
+            <!-- 知识背景编辑区 -->
+            <div class="knowledge-base-section" style="margin-top: 20px;">
+              <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h3 style="margin: 0;">📋 {{ $t('project.knowledgeBase') }}</h3>
+                <el-button type="primary" size="small" @click="editingKnowledge = !editingKnowledge">
+                  {{ editingKnowledge ? $t('common.cancel') : $t('common.edit') }}
+                </el-button>
+              </div>
+              <template v-if="editingKnowledge">
+                <el-input
+                  v-model="knowledgeBaseText"
+                  type="textarea"
+                  :rows="10"
+                  :placeholder="$t('project.knowledgeBasePlaceholder')"
+                  style="margin-bottom: 10px;" />
+                <el-button type="success" size="small" @click="saveKnowledgeBase" :loading="savingKnowledge">
+                  {{ $t('common.save') }}
+                </el-button>
+              </template>
+              <template v-else>
+                <div class="knowledge-base-preview" style="background: #f8f9fa; padding: 16px; border-radius: 6px; white-space: pre-wrap; min-height: 60px;">
+                  {{ project.knowledge_base || $t('project.noKnowledgeBase') }}
+                </div>
+              </template>
+            </div>
           </div>
         </el-tab-pane>
 
@@ -104,13 +130,33 @@ const showAddMemberDialog = ref(false)
 const showAddEnvDialog = ref(false)
 const addingMember = ref(false)
 const newMember = reactive({ username: '', role: 'tester' })
+const editingKnowledge = ref(false)
+const knowledgeBaseText = ref('')
+const savingKnowledge = ref(false)
 
 const fetchProject = async () => {
   try {
     const response = await api.get(`/projects/${route.params.id}/`)
     project.value = response.data
+    knowledgeBaseText.value = response.data.knowledge_base || ''
   } catch (error) {
     ElMessage.error(t('project.fetchDetailFailed'))
+  }
+}
+
+const saveKnowledgeBase = async () => {
+  savingKnowledge.value = true
+  try {
+    await api.patch(`/projects/${route.params.id}/`, {
+      knowledge_base: knowledgeBaseText.value
+    })
+    ElMessage.success('知识背景已保存')
+    editingKnowledge.value = false
+    project.value.knowledge_base = knowledgeBaseText.value
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '保存失败')
+  } finally {
+    savingKnowledge.value = false
   }
 }
 

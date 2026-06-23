@@ -67,7 +67,7 @@
             </el-select>
           </el-col>
           <el-col :span="4">
-            <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleFilter">
+            <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleVersionFilterChange" :disabled="!projectFilter">
               <el-option
                 v-for="version in versions"
                 :key="version.id"
@@ -76,13 +76,27 @@
               />
             </el-select>
           </el-col>
+          <el-col :span="4">
+            <el-select v-model="moduleFilter" :placeholder="$t('testcase.moduleFilter')" clearable filterable @change="handleFilter" :disabled="!versionFilter">
+              <el-option
+                v-for="mod in filterModules"
+                :key="mod.id"
+                :label="mod.name"
+                :value="mod.id"
+              />
+            </el-select>
+          </el-col>
         </el-row>
       </div>
       
       <div class="table-container">
-        <el-table 
-          :data="testcases" 
-          v-loading="loading" 
+        <div v-if="!hasAnyFilter() && !loading" class="empty-filter-hint">
+          📋 请选择筛选条件后查看用例
+        </div>
+        <el-table
+          v-else
+          :data="testcases"
+          v-loading="loading"
           style="width: 100%"
           height="100%"
           @selection-change="handleSelectionChange">
@@ -119,6 +133,12 @@
                 </el-tooltip>
               </div>
               <span v-else class="no-version">{{ $t('testcase.noVersion') }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="function_module" :label="$t('testcase.moduleName')" width="140">
+            <template #default="{ row }">
+              <el-tag v-if="row.function_module" type="success" size="small">{{ row.function_module.name }}</el-tag>
+              <span v-else class="no-module">-</span>
             </template>
           </el-table-column>
           <el-table-column prop="priority" :label="$t('testcase.priority')" width="100">
@@ -228,7 +248,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Download, Delete, Upload } from '@element-plus/icons-vue'
@@ -238,6 +258,7 @@ import * as XLSX from 'xlsx'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const testcases = ref([])
 const projects = ref([])
@@ -248,6 +269,8 @@ const searchText = ref('')
 const projectFilter = ref('')
 const priorityFilter = ref('')
 const versionFilter = ref('')
+const moduleFilter = ref('')
+const filterModules = ref([])
 const versions = ref([])
 const selectedTestCases = ref([])
 const isDeleting = ref(false)
@@ -269,6 +292,7 @@ const fetchTestCases = async () => {
     if (projectFilter.value) params.project = projectFilter.value
     if (priorityFilter.value) params.priority = priorityFilter.value
     if (versionFilter.value) params.versions = versionFilter.value
+    if (moduleFilter.value) params.function_module = moduleFilter.value
     const response = await api.get('/testcases/', { params })
     testcases.value = response.data.results || []
     total.value = response.data.count || 0
@@ -305,8 +329,30 @@ const fetchVersions = async () => {
 
 const handleProjectFilterChange = () => {
   versionFilter.value = ''
+  moduleFilter.value = ''
+  filterModules.value = []
   fetchVersions()
   handleFilter()
+}
+
+const handleVersionFilterChange = () => {
+  moduleFilter.value = ''
+  if (versionFilter.value) {
+    fetchModulesForFilter()
+  } else {
+    filterModules.value = []
+  }
+  handleFilter()
+}
+
+const fetchModulesForFilter = async () => {
+  try {
+    const response = await api.get(`/versions/${versionFilter.value}/modules/`)
+    filterModules.value = response.data.results || response.data || []
+  } catch (error) {
+    console.error('Fetch modules failed:', error)
+    filterModules.value = []
+  }
 }
 
 const handlePageChange = () => {
@@ -319,7 +365,13 @@ const handleSizeChange = () => {
 }
 
 const goToTestCase = (id) => {
-  router.push(`/ai-generation/testcases/${id}`)
+  const query = {}
+  if (projectFilter.value) query.project = projectFilter.value
+  if (versionFilter.value) query.versions = versionFilter.value
+  if (moduleFilter.value) query.function_module = moduleFilter.value
+  if (priorityFilter.value) query.priority = priorityFilter.value
+  if (searchText.value) query.search = searchText.value
+  router.push({ path: `/ai-generation/testcases/${id}`, query })
 }
 
 const editTestCase = (testcase) => {
@@ -673,10 +725,23 @@ const fetchProjects = async () => {
   }
 }
 
+const hasAnyFilter = () => {
+  return projectFilter.value || versionFilter.value || moduleFilter.value || priorityFilter.value || searchText.value
+}
+
 onMounted(() => {
   fetchProjects()
   fetchVersions()
-  fetchTestCases()
+  // 从 URL 恢复筛选参数（query 值都是字符串，需转换类型）
+  if (route.query.project) projectFilter.value = Number(route.query.project)
+  if (route.query.versions) { versionFilter.value = Number(route.query.versions); fetchModulesForFilter() }
+  if (route.query.function_module) moduleFilter.value = Number(route.query.function_module)
+  if (route.query.priority) priorityFilter.value = route.query.priority
+  if (route.query.search) searchText.value = route.query.search
+  // 只有带了筛选条件才加载数据
+  if (hasAnyFilter()) {
+    fetchTestCases()
+  }
 })
 </script>
 

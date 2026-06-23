@@ -31,27 +31,34 @@ class TestCaseSerializer(serializers.ModelSerializer):
     assignee = UserSerializer(read_only=True)
     project = ProjectSimpleSerializer(read_only=True)
     versions = VersionSimpleSerializer(many=True, read_only=True)
+    function_module = serializers.SerializerMethodField()
     step_details = TestCaseStepSerializer(many=True, read_only=True)
     attachments = TestCaseAttachmentSerializer(many=True, read_only=True)
     comments = TestCaseCommentSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = TestCase
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_function_module(self, obj):
+        if obj.function_module:
+            return {'id': obj.function_module.id, 'name': obj.function_module.name}
+        return None
 
 class TestCaseListSerializer(serializers.ModelSerializer):
     author = serializers.SerializerMethodField()
     assignee = serializers.SerializerMethodField()
     project = serializers.SerializerMethodField()
     versions = serializers.SerializerMethodField()
+    function_module = serializers.SerializerMethodField()
     
     class Meta:
         model = TestCase
         fields = [
             'id', 'title', 'description', 'preconditions', 'steps', 'expected_result',
             'priority', 'test_type',
-            'author', 'assignee', 'project', 'versions', 'tags', 'created_at', 'updated_at'
+            'author', 'assignee', 'project', 'versions', 'function_module', 'tags', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     
@@ -66,6 +73,11 @@ class TestCaseListSerializer(serializers.ModelSerializer):
     
     def get_versions(self, obj):
         return [{'id': v.id, 'name': v.name, 'is_baseline': v.is_baseline} for v in obj.versions.all()]
+
+    def get_function_module(self, obj):
+        if obj.function_module:
+            return {'id': obj.function_module.id, 'name': obj.function_module.name}
+        return None
 
 class TestCaseCreateSerializer(serializers.ModelSerializer):
     project_id = serializers.IntegerField(required=False, allow_null=True, help_text="项目ID，可选")

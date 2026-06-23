@@ -1317,6 +1317,81 @@ class PromptConfigViewSet(viewsets.ModelViewSet):
 3. **补充建议**：直接给出建议补充的测试场景或用例。
 4. **修正后的用例**（可选）：如果发现严重问题，请直接提供修正后的用例版本。"""
 
+            # 读取需求澄清提示词
+            clarifier_prompt_path = os.path.join(settings.BASE_DIR, 'docs/tester_clarify.md')
+            try:
+                with open(clarifier_prompt_path, 'r', encoding='utf-8') as f:
+                    defaults['clarifier'] = f.read()
+            except FileNotFoundError:
+                defaults['clarifier'] = """你是一位拥有15年经验的资深需求分析师和测试架构师，擅长在需求评审阶段发现文档中的模糊点、逻辑漏洞和缺失的场景描述。
+
+## 核心任务
+仔细分析用户提供的需求文档，识别所有不明确、模糊、矛盾或缺失的关键信息，以结构化的问题列表输出。
+
+## 分析维度
+### 1. 功能细节缺失
+- 核心功能的具体行为描述是否完整？是否有遗漏的功能点或子功能？
+- 功能的触发条件、前置条件是否明确？
+
+### 2. 业务规则模糊
+- 业务约束条件是否清晰？状态流转逻辑是否明确？
+- 各状态下可执行的操作是否定义清楚？
+
+### 3. 异常场景 & 边界条件
+- 输入边界值是否定义？异常情况如何处理（网络超时、服务不可用、数据冲突）？
+- 并发操作、重复提交等场景是否考虑？
+
+### 4. 权限 & 角色
+- 不同角色的权限划分是否明确？未登录、无权限时的行为是否定义？
+
+### 5. 数据约束
+- 必填/选填字段是否明确？字段格式校验规则？数据唯一性约束？
+
+### 6. UI 交互 & 体验
+- 页面元素的状态变化、操作反馈、页面跳转逻辑？
+
+## 输出要求
+1. 只提问题，不生成测试用例
+2. 每个问题必须具体、可回答
+3. 问题按重要性排序，影响核心流程的排最前面
+4. 数量适中（5-15个），需求清晰时可少提
+
+## 输出格式
+严格以JSON数组格式输出，不要包含任何开场白或结束语：
+[{"id": 1, "question": "具体的问题描述？"}, {"id": 2, "question": "另一个具体问题？"}]"""
+
+            # 读取用例改进提示词
+            reviser_prompt_path = os.path.join(settings.BASE_DIR, 'docs/tester_reviser.md')
+            try:
+                with open(reviser_prompt_path, 'r', encoding='utf-8') as f:
+                    defaults['reviser'] = f.read()
+            except FileNotFoundError:
+                defaults['reviser'] = """你是一位资深测试用例编写专家，你的任务是根据评审意见对测试用例进行精准的改进和完善。
+
+## 核心原则
+1. 严格遵循评审意见 — 逐条对照修改，不遗漏任何问题
+2. 最小化改动 — 只改评审指出的部分
+3. 保持原有格式 — 输出格式与原始用例完全一致
+4. 不新增无关用例 — 除非评审明确指出遗漏
+
+## 输出要求
+直接输出改进后的完整用例，按编号顺序，不跳号，完整输出。"""
+
+            # 读取需求文档提取提示词
+            extractor_prompt_path = os.path.join(settings.BASE_DIR, 'docs/tester_extractor.md')
+            try:
+                with open(extractor_prompt_path, 'r', encoding='utf-8') as f:
+                    defaults['extractor'] = f.read()
+            except FileNotFoundError:
+                defaults['extractor'] = """你是一位资深需求分析师和文档整理专家。你的任务是将原始文档提取并重组为结构化的需求文档。
+
+## 核心原则
+1. 提取所有功能点，不遗漏任何功能描述
+2. 按模块/流程分组，层次分明
+3. 保留业务规则、异常处理、约束条件
+4. 去除格式噪音、重复描述、无关内容
+5. 直接输出 Markdown 格式"""
+
             return Response({
                 'message': '默认提示词加载成功',
                 'defaults': defaults
@@ -1464,6 +1539,350 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
         return queryset.order_by('-created_at')
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
+             url_path='extract')
+    def extract(self, request):
+        """AI文档提取：上传文档 → AI整理为结构化Markdown需求"""
+        import tempfile
+
+        try:
+            file = request.FILES.get('file')
+            if not file:
+                return Response({'error': '请上传文档文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+            title = request.data.get('title', file.name.rsplit('.', 1)[0])
+
+            # 加载项目知识背景
+            knowledge_base = ""
+            project_id = request.data.get('project_id') or request.data.get('project')
+            if project_id:
+                try:
+                    from apps.projects.models import Project
+                    project = Project.objects.get(id=int(project_id))
+                    if project.knowledge_base:
+                        knowledge_base = project.knowledge_base
+                        logger.info(f"[extract] 已加载项目知识背景 {len(knowledge_base)} 字符")
+                except (Project.DoesNotExist, ValueError, TypeError):
+                    pass
+
+            # 保存临时文件并提取文本
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file.name.rsplit(".")[-1]}') as tmp:
+                for chunk in file.chunks():
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            try:
+                from .services import DocumentProcessor
+                requirement_text = DocumentProcessor.extract_text_from_path(tmp_path)
+
+                if not requirement_text or len(requirement_text.strip()) < 20:
+                    return Response(
+                        {'error': '无法从文档中提取足够的文本内容'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # 获取 extractor 配置（优先支持多模态的）
+                extractor_config = AIModelConfig.objects.filter(
+                    role='extractor', is_active=True, supports_vision=True
+                ).first()
+                use_multimodal = False
+                if not extractor_config:
+                    # 回退到不支持多模态的
+                    extractor_config = AIModelConfig.objects.filter(
+                        role='extractor', is_active=True
+                    ).first()
+                else:
+                    use_multimodal = True
+
+                if not extractor_config:
+                    return Response(
+                        {'error': '未找到可用的需求文档提取专家配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                extractor_prompt = PromptConfig.get_active_config('extractor')
+                if not extractor_prompt:
+                    return Response(
+                        {'error': '未找到可用的需求文档提取提示词配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # 异步执行提取
+                import threading
+                from concurrent.futures import ThreadPoolExecutor
+
+                if use_multimodal and tmp_path.lower().endswith('.pdf'):
+                    # 多模态提取：PDF → 提取图片 → VL模型分析
+                    page_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
+
+                    def run_extract_multimodal():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(
+                                AIModelService.extract_requirements_multimodal(
+                                    requirement_text=requirement_text,
+                                    page_images=page_images,
+                                    extractor_config=extractor_config,
+                                    extractor_prompt=extractor_prompt,
+                                    knowledge_base=knowledge_base,
+                                )
+                            )
+                        finally:
+                            loop.close()
+
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(run_extract_multimodal)
+                    markdown = future.result(timeout=300)
+                    mode = 'multimodal'
+                else:
+                    # 纯文本提取
+                    def run_extract():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(
+                                AIModelService.extract_requirements(
+                                    requirement_text=requirement_text,
+                                    extractor_config=extractor_config,
+                                    extractor_prompt=extractor_prompt,
+                                    knowledge_base=knowledge_base,
+                                )
+                            )
+                        finally:
+                            loop.close()
+
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(run_extract)
+                    markdown = future.result(timeout=300)
+                    mode = 'text'
+
+                return Response({
+                    'title': title,
+                    'markdown': markdown,
+                    'text_length': len(markdown),
+                    'source_length': len(requirement_text),
+                    'mode': mode,
+                })
+
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"AI文档提取失败: {e}")
+            return Response(
+                {'error': f'文档提取失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], url_path='clarify')
+    def clarify(self, request):
+        """
+        需求澄清：分析需求文档，返回不明确的问题点。
+
+        支持两种模式：
+        1. 纯文本模式：POST { requirement_text: "..." }
+        2. 多模态模式：POST multipart/form-data (file + title)
+        """
+        try:
+            # 加载项目知识背景（如果有 project_id）
+            knowledge_base = ""
+            project_id = request.data.get('project_id') or request.data.get('project')
+            if project_id:
+                try:
+                    from apps.projects.models import Project
+                    project = Project.objects.get(id=int(project_id))
+                    if project.knowledge_base:
+                        knowledge_base = project.knowledge_base
+                        logger.info(f"[clarify] 已加载项目知识背景 {len(knowledge_base)} 字符")
+                except (Project.DoesNotExist, ValueError, TypeError):
+                    pass
+
+            file = request.FILES.get('file')
+
+            if file:
+                # --- 多模态模式：上传文件 → 提取文本和图片 → 视觉模型澄清 ---
+                import tempfile
+
+                if not file.name.lower().endswith('.pdf'):
+                    return Response(
+                        {'error': '需求澄清多模态模式仅支持PDF文件'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                title = request.data.get('title', file.name.rsplit('.', 1)[0])
+
+                # 保存临时文件
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    for chunk in file.chunks():
+                        tmp_file.write(chunk)
+                    tmp_path = tmp_file.name
+
+                try:
+                    # 提取文本
+                    from .services import DocumentProcessor
+                    requirement_text = DocumentProcessor.extract_text_from_pdf(tmp_path)
+
+                    if not requirement_text or len(requirement_text.strip()) < 10:
+                        return Response(
+                            {'error': '无法从PDF中提取文本内容，请确认文档不是纯图片扫描件'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    # 提取页面图片
+                    page_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
+
+                    # 获取澄清模型和提示词配置
+                    clarifier_config = AIModelConfig.objects.filter(
+                        role='clarifier', is_active=True, supports_vision=True
+                    ).first()
+
+                    if not clarifier_config:
+                        return Response(
+                            {'error': '未找到可用的多模态需求澄清模型配置，请先在AI模型配置中添加角色为「需求澄清专家」且支持多模态的配置'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    clarifier_prompt = PromptConfig.get_active_config('clarifier')
+                    if not clarifier_prompt:
+                        return Response(
+                            {'error': '未找到可用的需求澄清提示词配置'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    # 异步执行多模态澄清
+                    import threading
+
+                    def run_clarify_multimodal():
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                            result = loop.run_until_complete(
+                                AIModelService.clarify_requirements_multimodal(
+                                    requirement_text=requirement_text,
+                                    page_images=page_images,
+                                    clarifier_config=clarifier_config,
+                                    clarifier_prompt=clarifier_prompt,
+                                    knowledge_base=knowledge_base,
+                                )
+                            )
+
+                            # 解析AI返回的JSON问题列表
+                            questions = AIModelService._parse_clarification_questions(result)
+
+                            return questions
+                        except Exception as e:
+                            logger.error(f"多模态需求澄清失败: {e}")
+                            raise
+                        finally:
+                            loop.close()
+
+                    # 在线程池中执行
+                    from concurrent.futures import ThreadPoolExecutor
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(run_clarify_multimodal)
+                    questions = future.result(timeout=300)  # 5分钟超时
+
+                    return Response({
+                        'questions': questions,
+                        'mode': 'multimodal',
+                        'text_length': len(requirement_text),
+                        'page_count': len(page_images),
+                    })
+
+                finally:
+                    # 清理临时文件
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+
+            else:
+                # --- 纯文本模式 ---
+                serializer = ClarificationRequestSerializer(data=request.data)
+                if not serializer.is_valid():
+                    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+                requirement_text = serializer.validated_data['requirement_text']
+
+                if len(requirement_text.strip()) < 20:
+                    return Response(
+                        {'error': '需求文本过短，请提供至少20个字符的需求描述'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # 获取澄清模型配置（优先用支持视觉的，文本模式也可以使用普通模型）
+                clarifier_config = AIModelConfig.objects.filter(
+                    role='clarifier', is_active=True
+                ).first()
+
+                if not clarifier_config:
+                    # 如果没有专门的clarifier配置，回退使用writer配置
+                    clarifier_config = AIModelConfig.objects.filter(
+                        role='writer', is_active=True
+                    ).first()
+
+                if not clarifier_config:
+                    return Response(
+                        {'error': '未找到可用的需求澄清模型配置，请先在AI模型配置中添加角色为「需求澄清专家」的配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                clarifier_prompt = PromptConfig.get_active_config('clarifier')
+                if not clarifier_prompt:
+                    return Response(
+                        {'error': '未找到可用的需求澄清提示词配置，请先在提示词配置中添加类型为「需求澄清提示词」的配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # 异步执行澄清
+                import threading
+
+                def run_clarify():
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+
+                        result = loop.run_until_complete(
+                            AIModelService.clarify_requirements(
+                                requirement_text=requirement_text,
+                                clarifier_config=clarifier_config,
+                                clarifier_prompt=clarifier_prompt,
+                                knowledge_base=knowledge_base,
+                            )
+                        )
+
+                        questions = AIModelService._parse_clarification_questions(result)
+
+                        return questions
+                    except Exception as e:
+                        logger.error(f"需求澄清失败: {e}")
+                        raise
+                    finally:
+                        loop.close()
+
+                from concurrent.futures import ThreadPoolExecutor
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(run_clarify)
+                questions = future.result(timeout=120)  # 2分钟超时
+
+                return Response({
+                    'questions': questions,
+                    'mode': 'text',
+                    'text_length': len(requirement_text),
+                })
+
+        except Exception as e:
+            logger.error(f"需求澄清接口错误: {e}")
+            return Response(
+                {'error': f'需求澄清失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
              url_path='generate_multimodal')
     def generate_multimodal(self, request):
         """多模态测试用例生成（文本+图片→视觉模型）"""
@@ -1520,10 +1939,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # 查找支持视觉的writer模型
-            writer_config = AIModelConfig.objects.filter(
-                role='writer', is_active=True, supports_vision=True
-            ).first()
+            # 智能选择：多模态场景必须VL模型
+            writer_config = AIModelService.get_active_writer(needs_vision=True)
 
             if not writer_config:
                 return Response(
@@ -1549,6 +1966,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             ).first()
             reviewer_prompt = PromptConfig.get_active_config('reviewer')
 
+            # 查找改进模型和提示词配置（非必须，未配置时 fallback 到 writer）
+            reviser_config = AIModelConfig.objects.filter(role='reviser', is_active=True).first()
+            reviser_prompt = PromptConfig.get_active_config('reviser')
+
             # 输出模式
             output_mode = request.data.get('output_mode', 'stream')
             if output_mode not in ['stream', 'complete']:
@@ -1564,6 +1985,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 'reviewer_model_config': reviewer_config.id if reviewer_config else None,
                 'writer_prompt_config': writer_prompt.id,
                 'reviewer_prompt_config': reviewer_prompt.id if reviewer_prompt else None,
+                'reviser_model_config': reviser_config.id if reviser_config else None,
+                'reviser_prompt_config': reviser_prompt.id if reviser_prompt else None,
                 'multimodal_mode': True,
                 'page_images_base64': page_images,
                 'output_mode': output_mode,
@@ -1573,6 +1996,15 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 try:
                     task_data['project'] = int(request.data['project'])
                 except (ValueError, TypeError):
+                    pass
+                # 抓取知识背景快照
+                try:
+                    from apps.projects.models import Project
+                    project = Project.objects.get(id=task_data['project'])
+                    if project.knowledge_base:
+                        task_data['knowledge_base'] = project.knowledge_base
+                        logger.info(f"[generate_multimodal] 已获取项目「{project.name}」知识背景 {len(project.knowledge_base)} 字符")
+                except Project.DoesNotExist:
                     pass
 
             # 如果请求中包含版本ID列表，添加到任务数据中
@@ -1586,6 +2018,29 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         version_ids = None
                 if isinstance(version_ids, list):
                     task_data['version_ids'] = [int(v) for v in version_ids]
+
+            # 如果请求中包含功能模块ID，添加到任务数据中
+            function_module_id = request.data.get('function_module_id')
+            if function_module_id:
+                try:
+                    task_data['function_module'] = int(function_module_id)
+                except (ValueError, TypeError):
+                    pass
+
+            # 如果请求中包含需求澄清回答，添加到任务数据中
+            clarification_answers = request.data.get('clarification_answers')
+            if clarification_answers:
+                if isinstance(clarification_answers, str):
+                    import json as _json
+                    try:
+                        clarification_answers = _json.loads(clarification_answers)
+                    except _json.JSONDecodeError:
+                        clarification_answers = None
+                if isinstance(clarification_answers, list):
+                    task_data['clarification_answers'] = clarification_answers
+                    logger.info(f"[generate_multimodal] 收到澄清回答 {len(clarification_answers)} 条: {[a.get('question','')[:50] for a in clarification_answers]}")
+            else:
+                logger.info(f"[generate_multimodal] 未收到澄清回答，直接生成")
 
             task_serializer = TestCaseGenerationTaskSerializer(
                 data=task_data, context={'request': request}
@@ -1857,8 +2312,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             reviewer_prompt = None
 
             if validated_data.get('use_writer_model', True):
-                # 优先查找任意启用的编写模型配置
-                writer_config = AIModelConfig.objects.filter(role='writer', is_active=True).first()
+                # 智能选择：纯文本场景优先非VL模型
+                writer_config = AIModelService.get_active_writer(needs_vision=False)
 
                 if not writer_config:
                     return Response(
@@ -1890,6 +2345,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
+            # 查找改进模型和提示词配置（非必须，未配置时 fallback 到 writer）
+            reviser_config = AIModelConfig.objects.filter(role='reviser', is_active=True).first()
+            reviser_prompt = PromptConfig.get_active_config('reviser')
+
             # 创建任务
             task_data = {
                 'title': validated_data['title'],
@@ -1898,11 +2357,21 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 'reviewer_model_config': reviewer_config.id if reviewer_config else None,
                 'writer_prompt_config': writer_prompt.id if writer_prompt else None,
                 'reviewer_prompt_config': reviewer_prompt.id if reviewer_prompt else None,
+                'reviser_model_config': reviser_config.id if reviser_config else None,
+                'reviser_prompt_config': reviser_prompt.id if reviser_prompt else None,
             }
 
-            # 如果请求中包含项目ID，添加到任务数据中
+            # 如果请求中包含项目ID，添加到任务数据中，并抓取知识背景快照
             if 'project' in validated_data and validated_data['project']:
                 task_data['project'] = validated_data['project']
+                try:
+                    from apps.projects.models import Project
+                    project = Project.objects.get(id=validated_data['project'])
+                    if project.knowledge_base:
+                        task_data['knowledge_base'] = project.knowledge_base
+                        logger.info(f"[generate] 已获取项目「{project.name}」知识背景 {len(project.knowledge_base)} 字符")
+                except Project.DoesNotExist:
+                    pass
 
             # 如果请求中包含版本ID列表，添加到任务数据中
             version_ids = request.data.get('version_ids')
@@ -1915,6 +2384,29 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         version_ids = None
                 if isinstance(version_ids, list):
                     task_data['version_ids'] = [int(v) for v in version_ids]
+
+            # 如果请求中包含功能模块ID，添加到任务数据中
+            function_module_id = request.data.get('function_module_id')
+            if function_module_id:
+                try:
+                    task_data['function_module'] = int(function_module_id)
+                except (ValueError, TypeError):
+                    pass
+
+            # 如果请求中包含需求澄清回答，添加到任务数据中
+            clarification_answers = request.data.get('clarification_answers')
+            if clarification_answers:
+                if isinstance(clarification_answers, str):
+                    import json
+                    try:
+                        clarification_answers = json.loads(clarification_answers)
+                    except json.JSONDecodeError:
+                        clarification_answers = None
+                if isinstance(clarification_answers, list):
+                    task_data['clarification_answers'] = clarification_answers
+                    logger.info(f"[generate] 收到澄清回答 {len(clarification_answers)} 条: {[a.get('question','')[:50] for a in clarification_answers]}")
+            else:
+                logger.info(f"[generate] 未收到澄清回答，直接生成")
 
             # 处理输出模式：优先使用用户指定的，否则使用生成行为配置的默认值
             output_mode = request.data.get('output_mode')
@@ -2818,6 +3310,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         )
                         if task.version_ids:
                             tc.versions.set(task.version_ids)
+                            if task.function_module:
+                                tc.function_module = task.function_module
+                                tc.save(update_fields=['function_module'])
                         adopted_count += 1
 
                     logger.info(f"成功导入 {adopted_count} 条测试用例到项目 {project.name}")
@@ -2957,6 +3452,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     )
                     if task.version_ids:
                         tc.versions.set(task.version_ids)
+                    if task.function_module:
+                        tc.function_module = task.function_module
+                        tc.save(update_fields=['function_module'])
                     adopted_count += 1
 
                 return Response({
@@ -3052,6 +3550,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     )
                     if task.version_ids:
                         tc.versions.set(task.version_ids)
+                    if task.function_module:
+                        tc.function_module = task.function_module
+                        tc.save(update_fields=['function_module'])
                     adopted_count += 1
 
                 return Response({

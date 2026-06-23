@@ -2,7 +2,7 @@ from django.db import models
 from django.utils import timezone
 from apps.users.models import User
 from apps.projects.models import Project
-from apps.versions.models import Version
+from apps.versions.models import Version, FunctionModule
 
 class TestCase(models.Model):
     """测试用例模型"""
@@ -30,6 +30,10 @@ class TestCase(models.Model):
     
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='testcases')
     versions = models.ManyToManyField(Version, blank=True, related_name='testcases', verbose_name='关联版本')
+    function_module = models.ForeignKey(
+        FunctionModule, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='testcases', verbose_name='功能模块'
+    )
     title = models.CharField(max_length=500, verbose_name='用例标题')
     description = models.TextField(blank=True, verbose_name='用例描述')
     preconditions = models.TextField(blank=True, verbose_name='前置条件')

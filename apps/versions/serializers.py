@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Version
+from .models import Version, FunctionModule
 from apps.users.serializers import UserSerializer
 from apps.projects.serializers import ProjectSimpleSerializer
 
@@ -55,3 +55,18 @@ class VersionSimpleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Version
         fields = ['id', 'name', 'is_baseline']
+
+
+class FunctionModuleSerializer(serializers.ModelSerializer):
+    """功能模块序列化器"""
+    version_name = serializers.CharField(source='version.name', read_only=True)
+
+    class Meta:
+        model = FunctionModule
+        fields = ['id', 'name', 'version', 'version_name', 'project', 'description', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'project', 'version']
+
+    def create(self, validated_data):
+        # 自动从 version 获取 project
+        validated_data['project'] = validated_data['version'].projects.first()
+        return super().create(validated_data)

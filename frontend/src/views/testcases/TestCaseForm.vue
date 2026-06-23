@@ -81,6 +81,22 @@
                 />
               </el-select>
             </el-form-item>
+            <el-form-item :label="$t('testcase.moduleName')" v-if="form.version_ids && form.version_ids.length > 0">
+              <el-select
+                v-model="form.function_module_id"
+                :placeholder="$t('testcase.selectModule')"
+                clearable
+                filterable
+              >
+                <el-option value="" :label="$t('testcase.noModule')" />
+                <el-option
+                  v-for="mod in formModules"
+                  :key="mod.id"
+                  :label="mod.name"
+                  :value="mod.id"
+                />
+              </el-select>
+            </el-form-item>
           </el-col>
         </el-row>
 
@@ -147,8 +163,10 @@ const form = reactive({
   preconditions: '',
   steps: '',
   expected_result: '',
-  version_ids: []
+  version_ids: [],
+  function_module_id: null
 })
+const formModules = ref([])
 
 const rules = {
   title: [
@@ -193,8 +211,19 @@ const onProjectChange = (projectId) => {
   fetchProjectVersions(projectId)
 }
 
-const onVersionChange = () => {
-  // Version change handling logic if needed
+const onVersionChange = async () => {
+  if (form.version_ids && form.version_ids.length > 0) {
+    try {
+      const vid = form.version_ids[0]
+      const response = await api.get(`/versions/${vid}/modules/`)
+      formModules.value = response.data.results || response.data || []
+    } catch (error) {
+      formModules.value = []
+    }
+  } else {
+    formModules.value = []
+    form.function_module_id = null
+  }
 }
 
 const handleSubmit = async () => {

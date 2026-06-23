@@ -149,6 +149,9 @@
                 <option value="">{{ $t('configuration.aiModel.selectRole') }}</option>
                 <option value="writer">{{ $t('configuration.aiModel.roles.writer') }}</option>
                 <option value="reviewer">{{ $t('configuration.aiModel.roles.reviewer') }}</option>
+                <option value="clarifier">{{ $t('configuration.aiModel.roles.clarifier') }}</option>
+                <option value="reviser">{{ $t('configuration.aiModel.roles.reviser') }}</option>
+                <option value="extractor">{{ $t('configuration.aiModel.roles.extractor') }}</option>
               </select>
             </div>
 

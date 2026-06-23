@@ -13,6 +13,10 @@ class Project(models.Model):
     
     name = models.CharField(max_length=200, verbose_name='项目名称')
     description = models.TextField(blank=True, verbose_name='项目描述')
+    knowledge_base = models.TextField(
+        blank=True, verbose_name='知识背景',
+        help_text='项目的背景知识，用于 AI 生成测试用例时理解业务上下文。支持长文本。'
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active', verbose_name='状态')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, through='ProjectMember', related_name='joined_projects', verbose_name='成员')

@@ -222,7 +222,7 @@ class DocumentProcessor:
     def extract_text(cls, document: RequirementDocument) -> str:
         """根据文档类型提取文本"""
         file_path = document.file.path
-        
+
         if document.document_type == 'pdf':
             return cls.extract_text_from_pdf(file_path)
         elif document.document_type == 'docx':
@@ -230,6 +230,19 @@ class DocumentProcessor:
         elif document.document_type == 'txt':
             return cls.extract_text_from_txt(file_path)
         elif document.document_type == 'md':
+            return cls.extract_text_from_txt(file_path)
+        else:
+            return "不支持的文档类型"
+
+    @classmethod
+    def extract_text_from_path(cls, file_path: str) -> str:
+        """从文件路径提取文本（无需 RequirementDocument 对象）"""
+        ext = file_path.rsplit('.', 1)[-1].lower() if '.' in file_path else ''
+        if ext == 'pdf':
+            return cls.extract_text_from_pdf(file_path)
+        elif ext in ('docx', 'doc'):
+            return cls.extract_text_from_docx(file_path)
+        elif ext in ('txt', 'md'):
             return cls.extract_text_from_txt(file_path)
         else:
             return "不支持的文档类型"

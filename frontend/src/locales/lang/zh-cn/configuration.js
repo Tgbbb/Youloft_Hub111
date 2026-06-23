@@ -195,7 +195,10 @@ export default {
     },
     roles: {
       writer: '测试用例编写专家',
-      reviewer: '测试评审专家'
+      reviewer: '测试评审专家',
+      clarifier: '需求澄清专家',
+      reviser: '用例改进专家',
+      extractor: '需求文档提取专家'
     },
     messages: {
       loadFailed: '加载配置失败',

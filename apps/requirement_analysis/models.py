@@ -211,6 +211,9 @@ class AIModelConfig(models.Model):
     ROLE_CHOICES = [
         ('writer', '测试用例编写专家'),
         ('reviewer', '测试评审专家'),
+        ('clarifier', '需求澄清专家'),
+        ('reviser', '用例改进专家'),
+        ('extractor', '需求文档提取专家'),
         ('browser_use_text', 'Browser Use - 文本模式'),
     ]
 
@@ -258,6 +261,9 @@ class PromptConfig(models.Model):
     PROMPT_CHOICES = [
         ('writer', '用例编写提示词'),
         ('reviewer', '用例评审提示词'),
+        ('clarifier', '需求澄清提示词'),
+        ('reviser', '用例改进提示词'),
+        ('extractor', '需求文档提取提示词'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='配置名称')
@@ -384,6 +390,14 @@ class TestCaseGenerationTask(models.Model):
         verbose_name='关联版本ID列表',
         help_text='生成用例时选择的版本ID列表'
     )
+    knowledge_base = models.TextField(
+        blank=True, verbose_name='项目知识背景快照',
+        help_text='生成用例时从项目知识背景复制的快照，用于 AI 生成时理解业务上下文'
+    )
+    function_module = models.ForeignKey(
+        'versions.FunctionModule', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='generation_tasks', verbose_name='关联功能模块'
+    )
 
     # 配置参数
     writer_model_config = models.ForeignKey(
@@ -417,6 +431,36 @@ class TestCaseGenerationTask(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name='完成时间')
     is_saved_to_records = models.BooleanField(default=False, verbose_name='是否已保存到记录')
 
+    # 需求澄清
+    clarification_questions = models.JSONField(
+        default=list, blank=True,
+        verbose_name='AI澄清问题列表',
+        help_text='AI分析需求后提出的澄清问题 [{"id": 1, "question": "..."}]'
+    )
+    clarification_answers = models.JSONField(
+        default=list, blank=True,
+        verbose_name='用户澄清回答',
+        help_text='用户对澄清问题的回答 [{"question_id": 1, "question": "...", "answer": "..."}]'
+    )
+    clarifier_model_config = models.ForeignKey(
+        AIModelConfig, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='clarifier_tasks', verbose_name='澄清模型配置'
+    )
+    clarifier_prompt_config = models.ForeignKey(
+        PromptConfig, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='clarifier_tasks', verbose_name='澄清提示词配置'
+    )
+
+    # 用例改进配置（revise 阶段专用，未配置时 fallback 到 writer）
+    reviser_model_config = models.ForeignKey(
+        AIModelConfig, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviser_tasks', verbose_name='改进模型配置'
+    )
+    reviser_prompt_config = models.ForeignKey(
+        PromptConfig, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviser_tasks', verbose_name='改进提示词配置'
+    )
+
     # 多模态生成
     multimodal_mode = models.BooleanField(
         default=False,
@@ -442,6 +486,149 @@ class TestCaseGenerationTask(models.Model):
 
 class AIModelService:
     """AI模型服务类"""
+
+    @staticmethod
+    def get_active_writer(needs_vision: bool = False):
+        """
+        智能获取 writer 模型配置。
+
+        Args:
+            needs_vision: True=多模态场景需VL模型, False=纯文本场景优先文本模型
+
+        Returns:
+            AIModelConfig | None
+        """
+        writers = AIModelConfig.objects.filter(role='writer', is_active=True)
+        if needs_vision:
+            # 多模态：必须 supports_vision=True
+            return writers.filter(supports_vision=True).first()
+        else:
+            # 纯文本：优先 supports_vision=False，没有则 fallback 任意
+            txt = writers.filter(supports_vision=False).first()
+            return txt or writers.first()
+
+    @staticmethod
+    async def extract_requirements(
+        requirement_text: str,
+        extractor_config: AIModelConfig,
+        extractor_prompt: PromptConfig,
+        knowledge_base: str = "",
+    ) -> str:
+        """
+        文档提取：将原始文档内容整理为结构化 Markdown 需求文档。
+        """
+        system_prompt = extractor_prompt.content
+
+        kb_section = ""
+        if knowledge_base:
+            kb_section = (
+                f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+                f"⚠️ 重要：以上背景知识仅供你理解业务术语和隐含约束。请严格以原始文档内容为准。\n\n"
+            )
+
+        user_message = (
+            f"请将以下原始文档内容整理为结构化的需求文档（Markdown格式）。\n\n"
+            f"【整理要求】\n"
+            f"1. 提取所有功能点，按模块或流程分组\n"
+            f"2. 保留关键的业务规则、约束条件、异常处理说明\n"
+            f"3. 补充从文档中能推断出的隐含需求\n"
+            f"4. 使用 Markdown 标题层级（## 模块名 / ### 功能点）\n"
+            f"5. 去除文档中的冗余描述、格式噪音\n\n"
+            f"【输出格式】\n"
+            f"直接输出 Markdown 格式的需求文档，结构如下：\n"
+            f"## 功能概述\n...\n"
+            f"## 核心业务流程\n...\n"
+            f"## 功能点详情\n### 功能点1：xxx\n...\n"
+            f"## 业务规则与约束\n...\n"
+            f"## 异常场景说明\n...\n\n"
+            f"{kb_section}"
+            f"【原始文档内容】\n{requirement_text}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        response = await AIModelService.call_openai_compatible_api(
+            extractor_config, messages
+        )
+        return response['choices'][0]['message']['content']
+
+    @staticmethod
+    async def extract_requirements_multimodal(
+        requirement_text: str,
+        page_images: list,
+        extractor_config: AIModelConfig,
+        extractor_prompt: PromptConfig,
+        knowledge_base: str = "",
+    ) -> str:
+        """
+        多模态文档提取：文本+PDF截图 → VL模型分析 → 结构化Markdown需求文档。
+        """
+        if not extractor_config.supports_vision:
+            raise ValueError("extractor 模型不支持多模态，请勾选「支持多模态」")
+
+        system_prompt = extractor_prompt.content
+
+        content_blocks = []
+
+        # 知识背景
+        if knowledge_base:
+            content_blocks.append({
+                "type": "text",
+                "text": (
+                    f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+                    f"⚠️ 重要：以上背景知识仅供你理解业务术语和隐含约束。请严格以原始文档内容为准。"
+                )
+            })
+
+        content_blocks.append({
+            "type": "text",
+            "text": (
+                f"请将以下文档内容和各页面的截图（包含流程图、原型图、UI设计稿等视觉信息）"
+                f"整理为结构化的需求文档（Markdown格式）。\n\n"
+                f"【整理要求】\n"
+                f"1. 结合文档文本和截图中的视觉信息，提取所有功能点，按模块或流程分组\n"
+                f"2. 特别关注截图中的UI布局、交互流程、数据展示等视觉内容\n"
+                f"3. 保留关键的业务规则、约束条件、异常处理说明\n"
+                f"4. 使用 Markdown 标题层级（## 模块名 / ### 功能点）\n"
+                f"5. 去除冗余描述和格式噪音\n\n"
+                f"【输出格式】\n"
+                f"直接输出 Markdown 格式的需求文档：\n"
+                f"## 功能概述\n...\n## 核心业务流程\n...\n"
+                f"## 功能点详情\n### 功能点1\n...\n"
+                f"## 业务规则与约束\n...\n## 异常场景说明\n...\n\n"
+                f"【文档文本内容】\n{requirement_text}"
+            )
+        })
+
+        # 图片部分
+        for img in page_images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['media_type']};base64,{img['data']}"
+                }
+            })
+
+        content_blocks.append({
+            "type": "text",
+            "text": "\n\n请结合上述文档文本和各页面的截图，输出结构化的需求文档。"
+        })
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_blocks}
+        ]
+
+        total_kb = sum(len(img['data']) * 3 / 4 / 1024 for img in page_images)
+        logger.info(f"多模态提取开始: model={extractor_config.model_name}, pages={len(page_images)}, size={total_kb:.0f}KB")
+
+        response = await AIModelService.call_openai_compatible_api(
+            extractor_config, messages
+        )
+        return response['choices'][0]['message']['content']
 
     @staticmethod
     def get_openai_compatible_headers(api_key: str) -> Dict[str, str]:
@@ -676,14 +863,18 @@ class AIModelService:
                     write=60.0,  # 写入超时：60秒
                     pool=60.0  # 连接池超时：60秒
                 )
+                logger.info(f"[stream] 开始连接API: {url}, model={config.model_name}")
                 async with httpx.AsyncClient(timeout=timeout_config, http2=False) as client:
+                    logger.info(f"[stream] AsyncClient已创建，发起stream请求...")
                     async with client.stream('POST', url, headers=headers, json=data) as response:
+                        logger.info(f"[stream] 收到HTTP响应: status={response.status_code}")
                         if response.status_code != 200:
                             error_detail = await response.aread()
                             error_msg = error_detail.decode('utf-8')
                             logger.error(f"流式API调用返回错误: Status={response.status_code}, Body={error_msg}")
                             response.raise_for_status()
 
+                        logger.info(f"[stream] 开始迭代aiter_lines...")
                         async for line in response.aiter_lines():
                             if not line.strip():
                                 continue
@@ -691,6 +882,7 @@ class AIModelService:
                             if line.startswith('data: '):
                                 data_str = line[6:]
                                 if data_str.strip() == '[DONE]':
+                                    logger.info(f"[stream] 收到[DONE]信号，流式结束")
                                     break
 
                                 try:
@@ -714,6 +906,7 @@ class AIModelService:
                                 except json.JSONDecodeError:
                                     continue
 
+                logger.info(f"[stream] aiter_lines迭代结束，共收到 {len(chunk_content_buffer)} chars, finish_reason={finish_reason}")
                 # 本次请求结束
                 # 检查 finish_reason
                 if finish_reason == 'length':
@@ -747,6 +940,299 @@ class AIModelService:
                 raise e
 
     @staticmethod
+    def _parse_clarification_questions(raw_text: str) -> list:
+        """
+        解析AI返回的澄清问题文本，提取JSON格式的问题列表。
+
+        Args:
+            raw_text: AI返回的原始文本
+
+        Returns:
+            [{"id": 1, "question": "..."}, ...]
+        """
+        import re
+
+        # 尝试直接解析JSON
+        try:
+            questions = json.loads(raw_text.strip())
+            if isinstance(questions, list):
+                return questions
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 尝试从文本中提取JSON数组
+        json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        if json_match:
+            try:
+                questions = json.loads(json_match.group(0))
+                if isinstance(questions, list):
+                    return questions
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # 如果无法解析JSON，尝试按行解析（Markdown格式的回退）
+        lines = raw_text.strip().split('\n')
+        questions = []
+        qid = 1
+        for line in lines:
+            line = line.strip()
+            # 匹配 "1. xxx" 或 "Q1: xxx" 或 "- xxx" 格式
+            if line and (re.match(r'^\d+[\.\)、]\s*', line) or
+                        re.match(r'^Q\d+[:：]\s*', line, re.IGNORECASE) or
+                        line.startswith('- ')):
+                # 移除前缀
+                cleaned = re.sub(r'^(\d+[\.\)、]\s*|Q\d+[:：]\s*|-\s*)', '', line).strip()
+                if cleaned and len(cleaned) > 5:
+                    questions.append({'id': qid, 'question': cleaned})
+                    qid += 1
+
+        return questions if questions else [{'id': 1, 'question': 'AI未能解析出结构化问题，请查看原始输出', 'raw': raw_text[:500]}]
+
+    @staticmethod
+    async def clarify_requirements(
+        requirement_text: str,
+        clarifier_config: AIModelConfig,
+        clarifier_prompt: PromptConfig,
+        knowledge_base: str = "",
+    ) -> str:
+        """
+        需求澄清：分析需求文档，返回不明确的问题点。
+
+        Args:
+            requirement_text: 需求文档文本
+            clarifier_config: 澄清模型配置
+            clarifier_prompt: 澄清提示词配置
+            knowledge_base: 项目知识背景（可选）
+
+        Returns:
+            str: AI提出的澄清问题（结构化文本）
+        """
+        system_prompt = clarifier_prompt.content
+
+        kb_block = ""
+        if knowledge_base:
+            kb_block = (
+                f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+                f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
+                f"请严格以「需求文档内容」为主要分析对象：\n"
+                f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
+                f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
+                f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
+            )
+
+        user_message = (
+            f"请仔细分析以下需求文档，找出其中不明确、模糊、矛盾或缺失的信息点，"
+            f"并以结构化的问题列表形式输出，帮助需求方补充完善需求。\n\n"
+            f"【分析要求】\n"
+            f"1. 逐段分析需求内容，识别所有歧义、缺失、矛盾之处\n"
+            f"2. 针对每个不明确点，提出一个具体、可回答的问题\n"
+            f"3. 问题应覆盖：功能细节、业务规则、异常处理、边界条件、权限控制、数据约束、UI交互等\n"
+            f"4. 按重要性排序，最关键的问题排在最前面\n"
+            f"5. 不要生成测试用例，只提问题\n\n"
+            f"【输出格式】\n"
+            f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
+            f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
+            f"{kb_block}"
+            f"【需求文档内容】\n{requirement_text}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        response = await AIModelService.call_openai_compatible_api(
+            clarifier_config,
+            messages
+        )
+
+        return response['choices'][0]['message']['content']
+
+    @staticmethod
+    async def clarify_requirements_stream(
+        requirement_text: str,
+        clarifier_config: AIModelConfig,
+        clarifier_prompt: PromptConfig,
+        callback=None,
+        knowledge_base: str = "",
+    ) -> str:
+        """
+        流式需求澄清。
+
+        Args:
+            requirement_text: 需求文档文本
+            clarifier_config: 澄清模型配置
+            clarifier_prompt: 澄清提示词配置
+            callback: 可选回调函数
+            knowledge_base: 项目知识背景（可选）
+
+        Returns:
+            str: AI提出的澄清问题
+        """
+        system_prompt = clarifier_prompt.content
+
+        kb_block = ""
+        if knowledge_base:
+            kb_block = (
+                f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+                f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
+                f"请严格以「需求文档内容」为主要分析对象：\n"
+                f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
+                f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
+                f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
+            )
+
+        user_message = (
+            f"请仔细分析以下需求文档，找出其中不明确、模糊、矛盾或缺失的信息点，"
+            f"并以结构化的问题列表形式输出，帮助需求方补充完善需求。\n\n"
+            f"【分析要求】\n"
+            f"1. 逐段分析需求内容，识别所有歧义、缺失、矛盾之处\n"
+            f"2. 针对每个不明确点，提出一个具体、可回答的问题\n"
+            f"3. 问题应覆盖：功能细节、业务规则、异常处理、边界条件、权限控制、数据约束、UI交互等\n"
+            f"4. 按重要性排序，最关键的问题排在最前面\n"
+            f"5. 不要生成测试用例，只提问题\n\n"
+            f"【输出格式】\n"
+            f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
+            f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
+            f"{kb_block}"
+            f"【需求文档内容】\n{requirement_text}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        generator = AIModelService.call_openai_compatible_api_stream(
+            clarifier_config,
+            messages,
+            callback=callback
+        )
+
+        full_content = ""
+        try:
+            async for chunk in generator:
+                full_content += chunk
+        except Exception as e:
+            logger.error(f"流式需求澄清时出错: {e}")
+            raise
+        finally:
+            try:
+                await generator.aclose()
+            except Exception as close_error:
+                logger.warning(f"关闭generator时出错: {close_error}")
+
+        return full_content
+
+    @staticmethod
+    async def clarify_requirements_multimodal(
+        requirement_text: str,
+        page_images: list,
+        clarifier_config: AIModelConfig,
+        clarifier_prompt: PromptConfig,
+        callback=None,
+        knowledge_base: str = "",
+    ) -> str:
+        """
+        多模态需求澄清（文本+图片→视觉模型分析后提问）。
+
+        Args:
+            requirement_text: 需求文档文本
+            page_images: PDF页面图片列表 [{"page": 1, "data": "base64...", "media_type": "image/jpeg"}]
+            clarifier_config: 澄清模型配置（需 supports_vision=True）
+            clarifier_prompt: 澄清提示词配置
+            callback: 可选回调函数
+            knowledge_base: 项目知识背景（可选）
+
+        Returns:
+            str: AI提出的澄清问题
+        """
+        if not clarifier_config.supports_vision:
+            raise ValueError(
+                f"模型 {clarifier_config.get_model_type_display()} ({clarifier_config.model_name}) "
+                f"不支持多模态视觉识别，请使用支持视觉的模型进行需求澄清"
+            )
+
+        system_prompt = clarifier_prompt.content
+
+        # 构建多模态消息
+        content_blocks = []
+
+        # 文本部分
+        text_content = (
+            f"请仔细分析以下需求文档的内容和各页面的截图（包含流程图、原型图、UI设计稿等视觉信息），"
+            f"找出其中不明确、模糊、矛盾或缺失的信息点，并以结构化的问题列表形式输出。\n\n"
+            f"【分析要求】\n"
+            f"1. 结合文档文本和截图，逐页分析需求内容，识别所有歧义、缺失、矛盾之处\n"
+            f"2. 特别关注截图中的UI元素、交互流程、数据展示等视觉细节\n"
+            f"3. 针对每个不明确点，提出一个具体、可回答的问题\n"
+            f"4. 问题应覆盖：功能细节、业务规则、异常处理、边界条件、权限控制、数据约束、UI交互等\n"
+            f"5. 按重要性排序，最关键的问题排在最前面\n"
+            f"6. 不要生成测试用例，只提问题\n\n"
+            f"【输出格式】\n"
+            f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
+            f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
+            + (f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
+               f"请严格以「需求文档内容」为主要分析对象：\n"
+               f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
+               f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
+               f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
+               if knowledge_base else "") +
+            f"【文档文本内容】\n{requirement_text}"
+        )
+        content_blocks.append({"type": "text", "text": text_content})
+
+        # 图片部分
+        for img in page_images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['media_type']};base64,{img['data']}"
+                }
+            })
+
+        # 末尾指导
+        content_blocks.append({
+            "type": "text",
+            "text": "\n\n请结合上述文档文本和各页面的截图，找出需求中不明确的地方并输出问题列表。"
+        })
+
+        openai_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_blocks}
+        ]
+
+        total_kb = sum(len(img['data']) * 3 / 4 / 1024 for img in page_images)
+        logger.info(
+            f"多模态澄清开始: model={clarifier_config.model_name}, "
+            f"pages={len(page_images)}, images_size={total_kb:.0f}KB, "
+            f"text_length={len(requirement_text)}, "
+            f"knowledge_base={len(knowledge_base)} chars"
+        )
+
+        generator = AIModelService.call_openai_compatible_api_stream(
+            clarifier_config,
+            openai_messages,
+            callback=callback
+        )
+
+        full_content = ""
+        try:
+            async for chunk in generator:
+                full_content += chunk
+        except Exception as e:
+            logger.error(f"多模态需求澄清时出错: {e}")
+            raise
+        finally:
+            try:
+                await generator.aclose()
+            except Exception as close_error:
+                logger.warning(f"关闭generator时出错: {close_error}")
+
+        return full_content
+
+    @staticmethod
     async def generate_test_cases(task: TestCaseGenerationTask) -> str:
         """生成测试用例"""
         writer_prompt = task.writer_prompt_config.content
@@ -774,8 +1260,28 @@ class AIModelService:
             rf"   - **如果在表格内容（如操作步骤、预期结果）中出现管道符 '|'，请使用HTML实体 '&#124;' 代替**。\n"
             rf"   - **绝对不要使用反斜杠转义（如 '\|'），这会导致输出混乱**。\n"
             rf"   - 示例：应输入 'a&#124;b' 而不是 'a|b' 或 'a\|b'。\n\n"
+            + (f"【项目知识背景 — 仅供参考】\n{task.knowledge_base}\n\n"
+               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「需求文档内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n\n"
+               if task.knowledge_base else "") +
             f"【需求文档内容】\n{task.requirement_text}"
         )
+
+        # 如果有需求澄清回答，追加到提示中
+        if task.clarification_answers:
+            answers_text = "\n".join([
+                f"Q{a.get('question_id', i+1)}: {a.get('question', '')}\nA: {a.get('answer', '')}"
+                for i, a in enumerate(task.clarification_answers)
+                if a.get('answer', '').strip()
+            ])
+            if answers_text:
+                user_message += (
+                    f"\n\n【需求澄清确认信息】\n"
+                    f"以下是对需求中不明确点的确认回复，请基于这些确认信息来设计更精准的测试用例：\n\n"
+                    f"{answers_text}"
+                )
+                logger.info(f"[generate_test_cases] 已将 {len([a for a in task.clarification_answers if a.get('answer','').strip()])} 条澄清回答拼入生成 prompt")
+        else:
+            logger.info(f"[generate_test_cases] 无澄清回答，直接生成")
 
         messages = [
             {"role": "system", "content": writer_prompt},
@@ -865,8 +1371,28 @@ class AIModelService:
             rf"   - **如果在表格内容（如操作步骤、预期结果）中出现管道符 '|'，请使用HTML实体 '&#124;' 代替**。\n"
             rf"   - **绝对不要使用反斜杠转义（如 '\|'），这会导致输出混乱**。\n"
             rf"   - 示例：应输入 'a&#124;b' 而不是 'a|b' 或 'a\|b'。\n\n"
+            + (f"【项目知识背景 — 仅供参考】\n{task.knowledge_base}\n\n"
+               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「需求文档内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n\n"
+               if task.knowledge_base else "") +
             f"【需求文档内容】\n{task.requirement_text}"
         )
+
+        # 如果有需求澄清回答，追加到提示中
+        if task.clarification_answers:
+            answers_text = "\n".join([
+                f"Q{a.get('question_id', i+1)}: {a.get('question', '')}\nA: {a.get('answer', '')}"
+                for i, a in enumerate(task.clarification_answers)
+                if a.get('answer', '').strip()
+            ])
+            if answers_text:
+                user_message += (
+                    f"\n\n【需求澄清确认信息】\n"
+                    f"以下是对需求中不明确点的确认回复，请基于这些确认信息来设计更精准的测试用例：\n\n"
+                    f"{answers_text}"
+                )
+                logger.info(f"[generate_test_cases_stream] 已将 {len([a for a in task.clarification_answers if a.get('answer','').strip()])} 条澄清回答拼入生成 prompt")
+        else:
+            logger.info(f"[generate_test_cases_stream] 无澄清回答，直接生成")
 
         messages = [
             {"role": "system", "content": writer_prompt},
@@ -988,7 +1514,16 @@ class AIModelService:
         Returns:
             str: 改进后的测试用例
         """
-        writer_prompt = task.writer_prompt_config.content
+        # 优先使用 reviser 配置，未配置时 fallback 到 writer
+        revision_config = task.reviser_model_config or task.writer_model_config
+        revision_prompt = task.reviser_prompt_config or task.writer_prompt_config
+        writer_prompt = revision_prompt.content if revision_prompt else task.writer_prompt_config.content
+
+        logger.info(
+            f"[revise] 使用模型: {revision_config.model_name} "
+            f"(来源={'reviser' if task.reviser_model_config else 'writer'}), "
+            f"提示词来源={'reviser' if task.reviser_prompt_config else 'writer'}"
+        )
 
         # 构建改进指令
         user_message = (
@@ -1035,13 +1570,11 @@ class AIModelService:
             {"role": "user", "content": user_message}
         ]
 
-        # 流式调用API，确保正确关闭生成器
-        # 使用配置的max_tokens，不硬编码限制
+        # 流式调用API — 使用 reviser 配置（未配时 fallback 到 writer）
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.writer_model_config,
+            revision_config,
             messages,
             callback=callback
-            # 不再硬编码max_tokens，使用配置文件中的值（如32000）
         )
 
         full_content = ""
@@ -1073,6 +1606,7 @@ class AIModelService:
     def build_multimodal_messages(
         requirement_text: str,
         page_images: list,
+        knowledge_base: str = "",
     ) -> list:
         """
         构建带图片的多模态消息（OpenAI vision格式，硅基流动兼容）。
@@ -1080,11 +1614,22 @@ class AIModelService:
         Args:
             requirement_text: 提炼出来的需求文档文本
             page_images: extract_page_images_as_base64()的输出
+            knowledge_base: 项目知识背景（可选）
 
         Returns:
             OpenAI格式的messages列表
         """
         content_blocks = []
+
+        # 知识背景（如果有，放在最前面）
+        if knowledge_base:
+            content_blocks.append({
+                "type": "text",
+                "text": (
+                    f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
+                    f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「文档文本内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n"
+                )
+            })
 
         # 文本部分
         text_content = (
@@ -1145,13 +1690,38 @@ class AIModelService:
         messages = AIModelService.build_multimodal_messages(
             task.requirement_text,
             page_images,
+            knowledge_base=task.knowledge_base or "",
         )
+
+        # 如果有需求澄清回答，追加到user消息中
+        if task.clarification_answers:
+            answers_text = "\n".join([
+                f"Q{a.get('question_id', i+1)}: {a.get('question', '')}\nA: {a.get('answer', '')}"
+                for i, a in enumerate(task.clarification_answers)
+                if a.get('answer', '').strip()
+            ])
+            if answers_text:
+                clarification_block = {
+                    "type": "text",
+                    "text": (
+                        f"\n\n【需求澄清确认信息】\n"
+                        f"以下是对需求中不明确点的确认回复，请基于这些确认信息来设计更精准的测试用例：\n\n"
+                        f"{answers_text}"
+                    )
+                }
+                # 将澄清信息追加到user消息的content blocks中
+                messages[0]['content'].append(clarification_block)
+                logger.info(f"[generate_test_cases_multimodal] 已将 {len([a for a in task.clarification_answers if a.get('answer','').strip()])} 条澄清回答拼入多模态生成 prompt")
+        else:
+            logger.info(f"[generate_test_cases_multimodal] 无澄清回答，直接生成")
 
         total_kb = sum(len(img['data']) * 3 / 4 / 1024 for img in page_images)
         logger.info(
-            f"多模态生成开始: model={config.model_name}, "
+            f"[multi] 多模态生成开始: model={config.model_name}, "
             f"pages={len(page_images)}, images_size={total_kb:.0f}KB, "
-            f"text_length={len(task.requirement_text)}"
+            f"text_length={len(task.requirement_text)}, "
+            f"knowledge_base={len(task.knowledge_base or '')} chars, "
+            f"clarification_answers={len(task.clarification_answers)}"
         )
 
         # 构建完整消息列表（system + user）
@@ -1160,12 +1730,15 @@ class AIModelService:
             messages[0]  # 已构建好的user消息（含text+image blocks）
         ]
 
+        logger.info(f"[multi] 准备发起流式API调用: url={config.base_url}, model={config.model_name}, max_tokens={config.max_tokens}")
+
         # 使用现有流式调用
         generator = AIModelService.call_openai_compatible_api_stream(
             config,
             openai_messages,
             callback=callback
         )
+        logger.info(f"[multi] 流式generator已创建，开始迭代chunk...")
 
         full_content = ""
         chunk_count = 0
@@ -1173,17 +1746,23 @@ class AIModelService:
             async for chunk in generator:
                 full_content += chunk
                 chunk_count += 1
+                if chunk_count == 1:
+                    logger.info(f"[multi] 收到第1个chunk! (len={len(chunk)})")
+                if chunk_count % 50 == 0:
+                    logger.info(f"[multi] 已收到 {chunk_count} chunks, {len(full_content)} chars")
         except Exception as e:
-            logger.error(f"多模态流式生成失败: {e}")
+            logger.error(f"[multi] 流式迭代中出错(chunk={chunk_count}): {type(e).__name__}: {e}")
             raise
         finally:
+            logger.info(f"[multi] 进入finally块，准备关闭generator...")
             try:
                 await generator.aclose()
+                logger.info(f"[multi] generator已正常关闭")
             except Exception as e:
-                logger.warning(f"关闭generator时出错: {e}")
+                logger.warning(f"[multi] 关闭generator时出错: {type(e).__name__}: {e}")
 
         logger.info(
-            f"多模态生成完成: chunks={chunk_count}, chars={len(full_content)}"
+            f"[multi] 多模态生成完成: chunks={chunk_count}, chars={len(full_content)}"
         )
         return full_content
 

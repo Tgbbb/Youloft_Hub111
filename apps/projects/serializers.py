@@ -43,14 +43,14 @@ class ProjectSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Project
-        fields = ['id', 'name', 'description', 'status', 'owner', 'members', 
+        fields = ['id', 'name', 'description', 'knowledge_base', 'status', 'owner', 'members',
                  'environments', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 class ProjectCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
-        fields = ['name', 'description', 'status']
+        fields = ['name', 'description', 'knowledge_base', 'status']
     
     def create(self, validated_data):
         validated_data['owner'] = self.context['request'].user

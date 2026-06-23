@@ -1,8 +1,10 @@
 from django.http import FileResponse
 from rest_framework import generics, permissions, status, pagination
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
+from django.db.models import Q
 from django.db import models
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.views import APIView
@@ -38,10 +40,10 @@ class TestCaseListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = TestCasePagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['priority', 'test_type', 'project', 'versions']
+    filterset_fields = ['priority', 'test_type', 'project', 'versions', 'function_module']
     search_fields = ['title', 'description']
-    ordering_fields = ['created_at', 'updated_at', 'priority']
-    ordering = ['-created_at']
+    ordering_fields = ['id', 'created_at', 'updated_at', 'priority']
+    ordering = ['id']
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -100,12 +102,12 @@ class TestCaseListCreateView(generics.ListCreateAPIView):
 class TestCaseDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = TestCase.objects.all()
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_serializer_class(self):
         if self.request.method in ['PUT', 'PATCH']:
             return TestCaseUpdateSerializer
         return TestCaseSerializer
-    
+
     def get_queryset(self):
         user = self.request.user
         accessible_projects = get_user_accessible_projects(user)
@@ -229,3 +231,53 @@ class TestCaseImportFailureReportDownloadView(APIView):
             filename=record.failure_report_file.name.split('/')[-1],
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def testcase_neighbors(request, pk):
+    """返回当前用例的前一条和后一条（基于相同筛选条件）"""
+    try:
+        current = TestCase.objects.get(id=pk)
+    except TestCase.DoesNotExist:
+        return Response({'error': '用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    # 权限过滤
+    user = request.user
+    accessible_projects = get_user_accessible_projects(user)
+    if current.project_id not in accessible_projects.values_list('id', flat=True):
+        return Response({'error': '没有权限'}, status=status.HTTP_403_FORBIDDEN)
+
+    qs = TestCase.objects.filter(project__in=accessible_projects)
+
+    # 应用与列表页相同的筛选
+    for field in ['project', 'priority', 'test_type', 'function_module']:
+        val = request.query_params.get(field)
+        if val:
+            qs = qs.filter(**{field: val})
+
+    version_id = request.query_params.get('versions')
+    if version_id:
+        try:
+            qs = qs.filter(versions__id=int(version_id))
+        except (ValueError, TypeError):
+            pass
+
+    search = request.query_params.get('search', '').strip()
+    if search:
+        qs = qs.filter(Q(title__icontains=search) | Q(description__icontains=search))
+
+    # 同一排序（按 ID 正序）
+    qs = qs.order_by('id')
+
+    # 前一条：ID 小于当前的最大 ID
+    prev = qs.filter(id__lt=current.id).order_by('-id').values('id', 'title').first()
+
+    # 后一条：ID 大于当前的最小 ID
+    next_item = qs.filter(id__gt=current.id).order_by('id').values('id', 'title').first()
+
+    return Response({
+        'current': {'id': current.id, 'title': current.title},
+        'previous': prev,
+        'next': next_item,
+    })

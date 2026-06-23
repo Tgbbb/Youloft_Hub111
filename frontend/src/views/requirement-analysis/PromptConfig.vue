@@ -27,7 +27,7 @@
                 <h3>{{ config.name }}</h3>
                 <div class="config-badges">
                   <span class="type-badge" :class="config.prompt_type">
-                    {{ config.prompt_type === 'writer' ? $t('promptConfig.writerPrompt') : $t('promptConfig.reviewerPrompt') }}
+                    {{ getPromptTypeLabel(config.prompt_type) }}
                   </span>
                   <span class="status-badge" :class="{ active: config.is_active }">
                     {{ config.is_active ? $t('promptConfig.enabled') : $t('promptConfig.disabled') }}
@@ -107,6 +107,9 @@
                 <option value="">{{ $t('promptConfig.selectPromptType') }}</option>
                 <option value="writer">{{ $t('promptConfig.writerPrompt') }}</option>
                 <option value="reviewer">{{ $t('promptConfig.reviewerPrompt') }}</option>
+                <option value="clarifier">{{ $t('promptConfig.clarifierPrompt') }}</option>
+                <option value="reviser">{{ $t('promptConfig.reviserPrompt') }}</option>
+                <option value="extractor">{{ $t('promptConfig.extractorPrompt') }}</option>
               </select>
             </div>
 
@@ -214,6 +217,24 @@
                 @click="activeTab = 'reviewer'">
                 {{ $t('promptConfig.reviewerTab') }}
               </button>
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'clarifier' }"
+                @click="activeTab = 'clarifier'">
+                {{ $t('promptConfig.clarifierTab') }}
+              </button>
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'reviser' }"
+                @click="activeTab = 'reviser'">
+                {{ $t('promptConfig.reviserTab') }}
+              </button>
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'extractor' }"
+                @click="activeTab = 'extractor'">
+                {{ $t('promptConfig.extractorTab') }}
+              </button>
             </div>
 
             <div class="tab-content">
@@ -259,7 +280,10 @@ export default {
       previewConfig: {},
       defaultPrompts: {
         writer: '',
-        reviewer: ''
+        reviewer: '',
+        clarifier: '',
+        reviser: '',
+        extractor: ''
       },
       activeTab: 'writer',
       configForm: {
@@ -277,7 +301,14 @@ export default {
 
   methods: {
     getPromptTypeLabel(promptType) {
-      return promptType === 'writer' ? this.$t('promptConfig.writerPrompt') : this.$t('promptConfig.reviewerPrompt')
+      const labelMap = {
+        writer: 'promptConfig.writerPrompt',
+        reviewer: 'promptConfig.reviewerPrompt',
+        clarifier: 'promptConfig.clarifierPrompt',
+        reviser: 'promptConfig.reviserPrompt',
+        extractor: 'promptConfig.extractorPrompt'
+      }
+      return this.$t(labelMap[promptType] || 'promptConfig.reviewerPrompt')
     },
 
     getExistingPromptConfig(promptType, excludeId = null) {
@@ -285,7 +316,7 @@ export default {
     },
 
     getMissingPromptTypes() {
-      return ['writer', 'reviewer'].filter(type => !this.getExistingPromptConfig(type))
+      return ['writer', 'reviewer', 'clarifier', 'reviser', 'extractor'].filter(type => !this.getExistingPromptConfig(type))
     },
 
     formatApiError(error, fallbackText) {
@@ -360,7 +391,7 @@ export default {
       const missingTypes = this.getMissingPromptTypes()
 
       if (missingTypes.length === 0) {
-        const existingTypes = ['writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
+        const existingTypes = ['writer', 'reviewer', 'clarifier'].map(type => this.getPromptTypeLabel(type))
         ElMessage.warning(this.$t('promptConfig.promptExists', { types: existingTypes.join('、') }))
         return
       }
@@ -384,7 +415,7 @@ export default {
         const missingTypes = this.getMissingPromptTypes()
 
         if (missingTypes.length === 0) {
-          const existingTypes = ['writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
+          const existingTypes = ['writer', 'reviewer', 'clarifier'].map(type => this.getPromptTypeLabel(type))
           ElMessage.warning(this.$t('promptConfig.promptExists', { types: existingTypes.join('、') }))
           return
         }
@@ -405,6 +436,36 @@ export default {
             name: this.$t('promptConfig.defaultReviewerName'),
             prompt_type: 'reviewer',
             content: this.defaultPrompts.reviewer,
+            is_active: true
+          })
+        }
+
+        // 创建澄清提示词配置
+        if (missingTypes.includes('clarifier') && this.defaultPrompts.clarifier) {
+          await api.post('/requirement-analysis/prompts/', {
+            name: this.$t('promptConfig.defaultClarifierName'),
+            prompt_type: 'clarifier',
+            content: this.defaultPrompts.clarifier,
+            is_active: true
+          })
+        }
+
+        // 创建改进提示词配置
+        if (missingTypes.includes('reviser') && this.defaultPrompts.reviser) {
+          await api.post('/requirement-analysis/prompts/', {
+            name: this.$t('promptConfig.defaultReviserName'),
+            prompt_type: 'reviser',
+            content: this.defaultPrompts.reviser,
+            is_active: true
+          })
+        }
+
+        // 创建提取提示词配置
+        if (missingTypes.includes('extractor') && this.defaultPrompts.extractor) {
+          await api.post('/requirement-analysis/prompts/', {
+            name: this.$t('promptConfig.defaultExtractorName'),
+            prompt_type: 'extractor',
+            content: this.defaultPrompts.extractor,
             is_active: true
           })
         }
@@ -512,7 +573,7 @@ export default {
 
     closeDefaultsModal() {
       this.showDefaultsModal = false
-      this.defaultPrompts = { writer: '', reviewer: '' }
+      this.defaultPrompts = { writer: '', reviewer: '', clarifier: '', reviser: '', extractor: '' }
       this.activeTab = 'writer'
     },
 

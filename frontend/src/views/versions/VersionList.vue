@@ -100,8 +100,9 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('project.actions')" width="150" fixed="right">
+        <el-table-column :label="$t('project.actions')" width="230" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="openModuleDialog(row)">📦 {{ $t('version.modules') }}</el-button>
             <el-button size="small" @click="editVersion(row)">{{ $t('common.edit') }}</el-button>
             <el-button size="small" type="danger" @click="deleteVersion(row)">{{ $t('common.delete') }}</el-button>
           </template>
@@ -119,6 +120,28 @@
       </div>
     </div>
     
+    <!-- 模块管理对话框 -->
+    <el-dialog
+      v-model="moduleDialogVisible"
+      :title="$t('version.moduleManagement') + ' - ' + currentVersion?.name"
+      width="550px"
+      :close-on-click-modal="false">
+      <div class="module-list">
+        <div v-if="modules.length === 0" class="empty-hint">{{ $t('version.noModules') }}</div>
+        <div v-for="mod in modules" :key="mod.id" class="module-item">
+          <span class="module-name">{{ mod.name }}</span>
+          <el-button size="small" type="danger" @click="deleteModule(mod)" :loading="mod._deleting">{{ $t('common.delete') }}</el-button>
+        </div>
+      </div>
+      <div class="add-module-form" style="margin-top: 16px; display: flex; gap: 8px;">
+        <el-input v-model="newModuleName" :placeholder="$t('version.moduleNamePlaceholder')" style="flex: 1;" @keyup.enter="addModule" />
+        <el-button type="primary" @click="addModule" :loading="addingModule">{{ $t('version.addModule') }}</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="moduleDialogVisible = false">{{ $t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 版本表单对话框 -->
     <el-dialog
       v-model="versionDialogVisible"
@@ -396,6 +419,56 @@ const getProjectsTooltip = (projects) => {
   return projects.map(p => p.name).join('、')
 }
 
+// 模块管理
+const moduleDialogVisible = ref(false)
+const currentVersion = ref(null)
+const modules = ref([])
+const newModuleName = ref('')
+const addingModule = ref(false)
+
+const openModuleDialog = async (version) => {
+  currentVersion.value = version
+  moduleDialogVisible.value = true
+  await fetchModules()
+}
+
+const fetchModules = async () => {
+  try {
+    const response = await api.get(`/versions/${currentVersion.value.id}/modules/`)
+    modules.value = (response.data.results || response.data || []).map(m => ({ ...m, _deleting: false }))
+  } catch (error) {
+    ElMessage.error(t('version.fetchModulesFailed'))
+  }
+}
+
+const addModule = async () => {
+  const name = newModuleName.value.trim()
+  if (!name) { ElMessage.warning(t('version.moduleNameRequired')); return }
+  addingModule.value = true
+  try {
+    await api.post(`/versions/${currentVersion.value.id}/modules/`, { name })
+    ElMessage.success(t('version.addModuleSuccess'))
+    newModuleName.value = ''
+    await fetchModules()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || t('version.addModuleFailed'))
+  } finally {
+    addingModule.value = false
+  }
+}
+
+const deleteModule = async (mod) => {
+  try {
+    mod._deleting = true
+    await api.delete(`/versions/modules/${mod.id}/`)
+    ElMessage.success(t('version.deleteModuleSuccess'))
+    await fetchModules()
+  } catch (error) {
+    ElMessage.error(t('version.deleteModuleFailed'))
+    mod._deleting = false
+  }
+}
+
 onMounted(() => {
   fetchProjects()
   fetchVersions()
@@ -442,5 +515,25 @@ onMounted(() => {
   color: #909399;
   font-size: 12px;
   font-style: italic;
+}
+
+.module-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.empty-hint {
+  text-align: center;
+  color: #909399;
+  padding: 20px;
+}
+.module-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+}
+.module-name {
+  font-size: 14px;
 }
 </style>

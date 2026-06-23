@@ -44,5 +44,16 @@ export default {
   selectVersionsFirst: '请先选择要删除的版本',
   batchDeleteConfirm: '确定要删除选中的 {count} 个版本吗？此操作不可恢复。',
   batchDeleteSuccess: '成功删除 {successCount} 个版本',
-  batchDeleteFailed: '批量删除失败'
+  batchDeleteFailed: '批量删除失败',
+  modules: '模块',
+  moduleManagement: '功能模块管理',
+  noModules: '暂无功能模块',
+  addModule: '新增',
+  addModuleSuccess: '模块添加成功',
+  addModuleFailed: '模块添加失败',
+  moduleNamePlaceholder: '输入模块名称，如：登录模块',
+  moduleNameRequired: '请输入模块名称',
+  deleteModuleSuccess: '模块删除成功',
+  deleteModuleFailed: '模块删除失败',
+  fetchModulesFailed: '加载模块列表失败'
 }

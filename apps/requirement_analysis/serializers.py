@@ -257,12 +257,15 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestCaseGenerationTask
         fields = ['id', 'task_id', 'title', 'requirement_text', 'status', 'status_display',
-                 'progress', 'project', 'project_name', 'version_ids',
+                 'progress', 'project', 'project_name', 'version_ids', 'knowledge_base', 'function_module',
                  'writer_model_config', 'writer_model_name',
                  'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
-                 'reviewer_prompt_config', 'reviewer_prompt_name', 'generated_test_cases',
+                 'reviewer_prompt_config', 'reviewer_prompt_name',
+                 'reviser_model_config', 'reviser_prompt_config',
+                 'generated_test_cases',
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
                  'output_mode', 'multimodal_mode', 'page_images_base64',
+                 'clarification_questions', 'clarification_answers',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
         read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases',
                           'review_feedback', 'final_test_cases', 'generation_log',
@@ -292,6 +295,16 @@ class TestCaseGenerationRequestSerializer(serializers.Serializer):
     requirement_text = serializers.CharField(help_text="需求描述")
     use_writer_model = serializers.BooleanField(default=True, help_text="是否使用编写模型")
     use_reviewer_model = serializers.BooleanField(default=True, help_text="是否使用评审模型")
+    clarification_answers = serializers.ListField(
+        required=False, default=list,
+        help_text="需求澄清确认回答列表"
+    )
+
+
+class ClarificationRequestSerializer(serializers.Serializer):
+    """需求澄清请求序列化器"""
+    requirement_text = serializers.CharField(help_text="需求描述")
+    multimodal_mode = serializers.BooleanField(default=False, help_text="是否使用多模态模式")
 
 
 class GenerationConfigSerializer(serializers.ModelSerializer):

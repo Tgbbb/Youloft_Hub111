@@ -195,7 +195,9 @@ export default {
     },
     roles: {
       writer: 'Test Case Writer',
-      reviewer: 'Test Reviewer'
+      reviewer: 'Test Reviewer',
+      clarifier: 'Requirement Clarifier',
+      reviser: 'Case Reviser'
     },
     messages: {
       loadFailed: 'Failed to load configurations',

@@ -115,9 +115,20 @@
 
     <div class="main-content">
       <!-- 手动输入需求描述区域 -->
-      <div class="manual-input-section" v-if="!isGenerating && !showResults">
+      <div class="manual-input-section" v-if="!isGenerating && !showResults && !showClarificationPanel">
         <div class="manual-input-card">
-          <h2>{{ $t('requirementAnalysis.manualInputTitle') }}</h2>
+          <div class="tab-bar">
+            <button class="tab-btn" :class="{ active: manualTab === 'input' }" @click="manualTab = 'input'">
+              ✍️ {{ $t('requirementAnalysis.manualInputTitle') }}
+            </button>
+            <button class="tab-btn" :class="{ active: manualTab === 'extract' }" @click="manualTab = 'extract'">
+              🤖 {{ $t('requirementAnalysis.aiExtractTitle') }}
+            </button>
+          </div>
+
+          <!-- Tab: 手动输入 -->
+          <div v-if="manualTab === 'input'">
+            <h2>{{ $t('requirementAnalysis.manualInputTitle') }}</h2>
           <div class="input-form">
             <div class="form-group">
               <label>{{ $t('requirementAnalysis.requirementTitle') }} <span class="required">*</span></label>
@@ -150,12 +161,23 @@
 
             <div class="form-group" v-if="manualInput.selectedProject">
               <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4">
+              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
                 <option v-for="version in projectVersions" :key="version.id" :value="version.id">
                   {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
                 </option>
               </select>
               <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
+            </div>
+
+            <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
+              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
+              <div style="display: flex; gap: 6px;">
+                <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
+                  <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
+                  <option v-for="mod in manualModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
+                </select>
+                <button class="quick-add-btn" @click="quickAddModule('manual')" :disabled="!manualInput.selectedVersionIds || manualInput.selectedVersionIds.length === 0" type="button">+</button>
+              </div>
             </div>
 
             <button
@@ -166,16 +188,106 @@
               <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
             </button>
           </div>
+          </div>
+          <!-- /Tab: 手动输入 -->
+
+          <!-- Tab: AI文档提取 -->
+          <div v-if="manualTab === 'extract'" class="extract-tab">
+            <!-- 第一步：选项目（用于带知识背景） -->
+            <div class="form-group">
+              <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
+              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
+                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
+                <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+              </select>
+            </div>
+
+            <div class="upload-area"
+                 @dragover.prevent
+                 @drop="handleExtractDrop"
+                 :class="{ 'drag-over': isExtractDragOver }"
+                 @dragenter="isExtractDragOver = true"
+                 @dragleave="isExtractDragOver = false">
+              <div v-if="!extractFile" class="upload-placeholder">
+                <i class="upload-icon">📁</i>
+                <p>{{ $t('requirementAnalysis.dragDropText') }}</p>
+                <p class="upload-hint">{{ $t('requirementAnalysis.supportedFormats') }}</p>
+                <input type="file" ref="extractFileInput" @change="handleExtractFileSelect" accept=".pdf,.doc,.docx,.txt,.md" style="display: none;">
+                <button class="select-file-btn" @click="$refs.extractFileInput.click()">{{ $t('requirementAnalysis.selectFile') }}</button>
+              </div>
+              <div v-else class="file-selected">
+                <div class="file-info">
+                  <i class="file-icon">📄</i>
+                  <div class="file-details">
+                    <p class="file-name">{{ extractFile.name }}</p>
+                    <p class="file-size">{{ formatFileSize(extractFile.size) }}</p>
+                  </div>
+                  <button class="remove-file" @click="removeExtractFile">❌</button>
+                </div>
+              </div>
+            </div>
+
+            <button class="generate-btn" @click="extractDocument" :disabled="!extractFile || isExtracting" style="margin-top: 12px;">
+              <span v-if="isExtracting">🤖 {{ $t('requirementAnalysis.extracting') }}</span>
+              <span v-else>🤖 {{ $t('requirementAnalysis.extractDocument') }}</span>
+            </button>
+
+            <div v-if="extractedMarkdown" class="extracted-content" style="margin-top: 16px;">
+              <label>{{ $t('requirementAnalysis.extractedContent') }}</label>
+              <textarea
+                v-model="extractedMarkdown"
+                class="form-textarea"
+                rows="15"
+                :placeholder="$t('requirementAnalysis.extractedContentPlaceholder')"></textarea>
+            </div>
+
+            <!-- 生成前关联设置 -->
+            <div v-if="extractedMarkdown" style="margin-top: 12px;">
+              <div class="form-group">
+                <label>{{ $t('requirementAnalysis.associatedProject') }}（{{ $t('requirementAnalysis.forGeneration') }}）</label>
+                <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
+                  <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
+                  <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+                </select>
+              </div>
+              <div class="form-group" v-if="manualInput.selectedProject">
+                <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
+                <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
+                  <option v-for="version in projectVersions" :key="version.id" :value="version.id">{{ version.name }}</option>
+                </select>
+              </div>
+              <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
+                <label>{{ $t('requirementAnalysis.functionModule') }}</label>
+                <div style="display: flex; gap: 6px;">
+                  <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
+                    <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
+                    <option v-for="mod in manualModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
+                  </select>
+                  <button class="quick-add-btn" @click="quickAddModule('manual')" :disabled="!manualInput.selectedVersionIds || manualInput.selectedVersionIds.length === 0" type="button">+</button>
+                </div>
+              </div>
+            </div>
+
+            <button
+              class="generate-manual-btn"
+              @click="generateFromExtracted"
+              :disabled="!extractedMarkdown || isGenerating"
+              style="margin-top: 12px;">
+              <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
+              <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
+            </button>
+          </div>
+          <!-- /Tab: AI文档提取 -->
         </div>
       </div>
 
       <!-- 分隔线 -->
-      <div class="divider" v-if="!isGenerating && !showResults">
+      <div class="divider" v-if="!isGenerating && !showResults && !showClarificationPanel">
         <span>{{ $t('requirementAnalysis.dividerOr') }}</span>
       </div>
 
       <!-- 文档上传区域 -->
-      <div class="upload-section" v-if="!isGenerating && !showResults">
+      <div class="upload-section" v-if="!isGenerating && !showResults && !showClarificationPanel">
         <div class="upload-card">
           <h2>{{ $t('requirementAnalysis.uploadTitle') }}</h2>
           <div class="upload-area"
@@ -233,12 +345,23 @@
 
             <div class="form-group" v-if="selectedProject">
               <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-              <select v-model="selectedVersionIds" class="form-select" multiple size="4">
+              <select v-model="selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(selectedVersionIds, 'doc')">
                 <option v-for="version in projectVersions" :key="version.id" :value="version.id">
                   {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
                 </option>
               </select>
               <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
+            </div>
+
+            <div class="form-group" v-if="selectedVersionIds && selectedVersionIds.length > 0">
+              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
+              <div style="display: flex; gap: 6px;">
+                <select v-model="docSelectedModuleId" class="form-select" style="flex: 1;">
+                  <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
+                  <option v-for="mod in docModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
+                </select>
+                <button class="quick-add-btn" @click="quickAddModule('doc')" :disabled="!selectedVersionIds || selectedVersionIds.length === 0" type="button">+</button>
+              </div>
             </div>
 
             <!-- 多模态模式选择 -->
@@ -264,6 +387,49 @@
               :disabled="!documentTitle || isGenerating">
               <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
               <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 需求澄清面板 -->
+      <div v-if="showClarificationPanel" class="clarification-section">
+        <div class="clarification-card">
+          <h2>{{ $t('requirementAnalysis.clarificationTitle') }}</h2>
+          <p class="clarification-subtitle">{{ $t('requirementAnalysis.clarificationSubtitle') }}</p>
+
+          <div v-if="isClarifying" class="clarifying-loading">
+            <span class="loading-spinner">⏳</span>
+            <span>{{ $t('requirementAnalysis.clarifying') }}</span>
+          </div>
+
+          <div v-else-if="clarificationQuestions.length === 0" class="clarification-empty">
+            <p>✅ {{ $t('requirementAnalysis.clarificationNoQuestions') }}</p>
+          </div>
+
+          <div v-else class="clarification-questions">
+            <div
+              v-for="q in clarificationQuestions"
+              :key="q.id"
+              class="clarification-question-item">
+              <div class="question-text">
+                <span class="question-number">{{ $t('requirementAnalysis.clarificationQuestionLabel', { id: q.id }) }}</span>
+                {{ q.question }}
+              </div>
+              <textarea
+                v-model="clarificationAnswers[q.id]"
+                class="question-answer-input"
+                :placeholder="$t('requirementAnalysis.clarificationAnswerPlaceholder')"
+                rows="2"></textarea>
+            </div>
+          </div>
+
+          <div class="clarification-actions" v-if="!isClarifying">
+            <button class="skip-clarify-btn" @click="skipClarification">
+              {{ $t('requirementAnalysis.clarificationSkip') }}
+            </button>
+            <button class="confirm-clarify-btn" @click="confirmWithClarification">
+              {{ $t('requirementAnalysis.clarificationConfirm') }}
             </button>
           </div>
         </div>
@@ -377,7 +543,7 @@
 
 <script>
 import api from '@/utils/api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import { useUserStore } from '@/stores/user'
 
@@ -393,7 +559,8 @@ export default {
         title: '',
         description: '',
         selectedProject: '',
-        selectedVersionIds: []
+        selectedVersionIds: [],
+        selectedModuleId: ''
       },
 
       // 文件上传
@@ -401,6 +568,9 @@ export default {
       documentTitle: '',
       selectedProject: '',
       selectedVersionIds: [],
+      docSelectedModuleId: '',
+      manualModules: [],
+      docModules: [],
       projectVersions: [],
       projects: [],
       isDragOver: false,
@@ -469,7 +639,24 @@ export default {
       modalKey: 0,  // 用于强制重新渲染弹窗
 
       // 多模态模式
-      enableMultimodal: false
+      enableMultimodal: false,
+
+      // 手动输入区 Tab
+      manualTab: 'input',
+
+      // AI文档提取
+      extractFile: null,
+      isExtractDragOver: false,
+      isExtracting: false,
+      extractedMarkdown: '',
+
+      // 需求澄清
+      showClarificationPanel: false,  // 是否显示澄清面板
+      isClarifying: false,  // 是否正在执行澄清分析
+      clarificationQuestions: [],  // AI返回的澄清问题 [{id, question}]
+      clarificationAnswers: {},  // 用户对每个问题的回答 {questionId: answerText}
+      clarificationRaw: '',  // AI原始返回文本（用于调试）
+      pendingGeneration: null  // 待执行的生成上下文
     }
   },
 
@@ -537,13 +724,69 @@ export default {
       }
     },
 
+    async loadVersionModules(versionIds, target) {
+      if (!versionIds || versionIds.length === 0) {
+        if (target === 'manual') this.manualModules = []
+        else this.docModules = []
+        return
+      }
+      try {
+        const vid = Array.isArray(versionIds) ? versionIds[0] : versionIds
+        const response = await api.get(`/versions/${vid}/modules/`)
+        const modules = response.data.results || response.data || []
+        if (target === 'manual') this.manualModules = modules
+        else this.docModules = modules
+      } catch (error) {
+        console.error('加载功能模块失败:', error)
+        if (target === 'manual') this.manualModules = []
+        else this.docModules = []
+      }
+    },
+
+    async quickAddModule(target) {
+      // target: 'manual' | 'doc'
+      const versionIds = target === 'manual' ? this.manualInput.selectedVersionIds : this.selectedVersionIds
+      if (!versionIds || versionIds.length === 0) return
+      const vid = Array.isArray(versionIds) ? versionIds[0] : versionIds
+      try {
+        const { value } = await ElMessageBox.prompt(
+          target === 'manual' ? '请输入新功能模块名称' : '请输入新功能模块名称',
+          '新增功能模块',
+          { confirmButtonText: '创建', cancelButtonText: '取消' }
+        )
+        if (value && value.trim()) {
+          await api.post(`/versions/${vid}/modules/`, { name: value.trim() })
+          ElMessage.success('模块创建成功')
+          // 重新加载模块列表
+          await this.loadVersionModules(versionIds, target)
+          // 自动选中新创建的模块（最后一个）
+          this.$nextTick(() => {
+            const modules = target === 'manual' ? this.manualModules : this.docModules
+            if (modules.length > 0) {
+              const newMod = modules[modules.length - 1]
+              if (target === 'manual') this.manualInput.selectedModuleId = newMod.id
+              else this.docSelectedModuleId = newMod.id
+            }
+          })
+        }
+      } catch (error) {
+        if (error !== 'cancel') {
+          ElMessage.error(error.response?.data?.error || '创建失败')
+        }
+      }
+    },
+
     onManualProjectChange() {
       this.manualInput.selectedVersionIds = []
+      this.manualInput.selectedModuleId = ''
+      this.manualModules = []
       this.loadProjectVersions(this.manualInput.selectedProject)
     },
 
     onDocProjectChange() {
       this.selectedVersionIds = []
+      this.docSelectedModuleId = ''
+      this.docModules = []
       this.loadProjectVersions(this.selectedProject)
     },
 
@@ -729,6 +972,233 @@ export default {
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
     },
 
+    // ========== AI文档提取相关方法 ==========
+
+    handleExtractDrop(e) {
+      this.isExtractDragOver = false
+      const file = e.dataTransfer.files[0]
+      if (file) {
+        this.handleExtractFile(file)
+      }
+    },
+
+    handleExtractFileSelect(e) {
+      const file = e.target.files[0]
+      if (file) {
+        this.handleExtractFile(file)
+      }
+    },
+
+    handleExtractFile(file) {
+      const allowedTypes = ['.pdf', '.doc', '.docx', '.txt', '.md']
+      const ext = '.' + file.name.split('.').pop().toLowerCase()
+      if (!allowedTypes.includes(ext)) {
+        ElMessage.error(this.$t('requirementAnalysis.invalidFileFormat'))
+        return
+      }
+      this.extractFile = file
+    },
+
+    removeExtractFile() {
+      this.extractFile = null
+      this.extractedMarkdown = ''
+    },
+
+    async extractDocument() {
+      if (!this.extractFile) return
+      this.isExtracting = true
+      this.extractedMarkdown = ''
+      try {
+        const formData = new FormData()
+        formData.append('title', this.extractFile.name)
+        formData.append('file', this.extractFile)
+        if (this.manualInput.selectedProject) {
+          formData.append('project', this.manualInput.selectedProject)
+        }
+        const response = await api.post('/requirement-analysis/testcase-generation/extract/', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 300000
+        })
+        this.extractedMarkdown = response.data.markdown || ''
+        ElMessage.success(this.$t('requirementAnalysis.extractSuccess'))
+      } catch (error) {
+        ElMessage.error(this.$t('requirementAnalysis.extractFailed') + ': ' + (error.response?.data?.error || error.message))
+      } finally {
+        this.isExtracting = false
+      }
+    },
+
+    async generateFromExtracted() {
+      if (!this.extractedMarkdown) return
+      const title = (this.extractFile?.name || '文档提取').replace(/\.[^.]+$/, '')
+      const requirementText = `${this.$t('requirementAnalysis.requirementTitle')}: ${title}\n\n${this.$t('requirementAnalysis.extractedContent')}:\n${this.extractedMarkdown}`
+      // AI文档提取跳过澄清，直接生成
+      await this.startGeneration(
+        title,
+        requirementText,
+        this.manualInput.selectedProject,
+        this.globalOutputMode,
+        this.manualInput.selectedVersionIds,
+        [],
+        this.manualInput.selectedModuleId || ''
+      )
+    },
+
+    // ========================================
+
+    // ========== 需求澄清相关方法 ==========
+
+    async requestClarification(requirementText) {
+      this.showClarificationPanel = true
+      this.isClarifying = true
+      this.clarificationQuestions = []
+      this.clarificationAnswers = {}
+      this.clarificationRaw = ''
+
+      try {
+        const requestBody = { requirement_text: requirementText }
+        // 传递项目ID以加载知识背景
+        const projectId = this.pendingGeneration?.projectId
+        if (projectId) {
+          requestBody.project_id = projectId
+        }
+        const response = await api.post('/requirement-analysis/testcase-generation/clarify/', requestBody, { timeout: 120000 })
+
+        const questions = response.data.questions || []
+        this.clarificationQuestions = questions
+        this.clarificationRaw = response.data.raw || ''
+
+        if (questions.length === 0) {
+          // 没有不明确点，提示用户可以跳过
+          ElMessage.info(this.$t('requirementAnalysis.clarificationNoQuestions'))
+        } else {
+          ElMessage.success(`AI发现 ${questions.length} 个需要确认的问题`)
+        }
+      } catch (error) {
+        console.error('需求澄清失败:', error)
+        const errorMsg = error.response?.data?.error || error.message
+        ElMessage.error(this.$t('requirementAnalysis.clarificationFailed') + ': ' + errorMsg)
+
+        // 出错时让用户选择是否跳过
+        this.clarificationQuestions = [{
+          id: 1,
+          question: this.$t('requirementAnalysis.clarificationError')
+        }]
+      } finally {
+        this.isClarifying = false
+      }
+    },
+
+    async requestMultimodalClarification() {
+      this.showClarificationPanel = true
+      this.isClarifying = true
+      this.clarificationQuestions = []
+      this.clarificationAnswers = {}
+      this.clarificationRaw = ''
+
+      try {
+        const formData = new FormData()
+        formData.append('title', this.documentTitle)
+        formData.append('file', this.selectedFile)
+        if (this.selectedProject) {
+          formData.append('project', this.selectedProject)
+        }
+
+        ElMessage.info(this.$t('requirementAnalysis.clarifying'))
+        const response = await api.post('/requirement-analysis/testcase-generation/clarify/', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 300000  // 5分钟超时（包含文件上传+图片提取+AI分析）
+        })
+
+        const questions = response.data.questions || []
+        this.clarificationQuestions = questions
+        this.clarificationRaw = response.data.raw || ''
+
+        if (questions.length === 0) {
+          ElMessage.info(this.$t('requirementAnalysis.clarificationNoQuestions'))
+        } else {
+          ElMessage.success(`AI发现 ${questions.length} 个需要确认的问题`)
+        }
+      } catch (error) {
+        console.error('多模态需求澄清失败:', error)
+        const errorMsg = error.response?.data?.error || error.message
+        ElMessage.error(this.$t('requirementAnalysis.clarificationFailed') + ': ' + errorMsg)
+
+        this.clarificationQuestions = [{
+          id: 1,
+          question: this.$t('requirementAnalysis.clarificationError')
+        }]
+      } finally {
+        this.isClarifying = false
+      }
+    },
+
+    async confirmWithClarification() {
+      // 构建澄清回答列表
+      const answers = this.clarificationQuestions
+        .map(q => ({
+          question_id: q.id,
+          question: q.question,
+          answer: this.clarificationAnswers[q.id] || ''
+        }))
+        .filter(a => a.answer.trim())  // 只发送有回答的问题
+
+      // 隐藏澄清面板
+      this.showClarificationPanel = false
+
+      // 根据pendingGeneration类型执行对应的生成
+      const ctx = this.pendingGeneration
+      if (!ctx) {
+        ElMessage.error('生成上下文丢失，请重新填写需求')
+        return
+      }
+
+      if (ctx.type === 'multimodal') {
+        await this.startMultimodalGenerationWithAnswers(answers)
+      } else {
+        await this.startGeneration(
+          ctx.title,
+          ctx.requirementText,
+          ctx.projectId,
+          ctx.outputMode,
+          ctx.versionIds,
+          answers,
+          ctx.functionModuleId || ''
+        )
+      }
+
+      this.pendingGeneration = null
+    },
+
+    async skipClarification() {
+      // 跳过澄清，直接生成
+      this.showClarificationPanel = false
+
+      const ctx = this.pendingGeneration
+      if (!ctx) {
+        ElMessage.error('生成上下文丢失，请重新填写需求')
+        return
+      }
+
+      if (ctx.type === 'multimodal') {
+        await this.startMultimodalGeneration()
+      } else {
+        await this.startGeneration(
+          ctx.title,
+          ctx.requirementText,
+          ctx.projectId,
+          ctx.outputMode,
+          ctx.versionIds,
+          [],
+          ctx.functionModuleId || ''
+        )
+      }
+
+      this.pendingGeneration = null
+    },
+
+    // ========================================
+
     async generateFromManualInput() {
       if (!this.canGenerateManual) {
         ElMessage.error(this.$t('requirementAnalysis.fillRequiredInfo'))
@@ -737,12 +1207,15 @@ export default {
 
       const requirementText = `${this.$t('requirementAnalysis.requirementTitle')}: ${this.manualInput.title}\n\n${this.$t('requirementAnalysis.requirementDescription')}:\n${this.manualInput.description}`
 
+      // 手动输入跳过澄清，直接生成
       await this.startGeneration(
         this.manualInput.title,
         requirementText,
         this.manualInput.selectedProject,
-        this.globalOutputMode,  // 使用全局输出模式
-        this.manualInput.selectedVersionIds
+        this.globalOutputMode,
+        this.manualInput.selectedVersionIds,
+        [],
+        this.manualInput.selectedModuleId || ''
       )
     },
 
@@ -752,9 +1225,17 @@ export default {
         return
       }
 
-      // 多模态模式：直接上传PDF到多模态端点
+      // 多模态模式：先做多模态澄清，再生成
       if (this.enableMultimodal && this.isPdfFile) {
-        await this.startMultimodalGeneration()
+        this.pendingGeneration = {
+          type: 'multimodal',
+          title: this.documentTitle,
+          projectId: this.selectedProject,
+          versionIds: this.selectedVersionIds,
+          outputMode: this.globalOutputMode,
+          functionModuleId: this.docSelectedModuleId || ''
+        }
+        await this.requestMultimodalClarification()
         return
       }
 
@@ -789,13 +1270,18 @@ export default {
 
         const requirementText = `${this.$t('requirementAnalysis.documentTitle')}: ${this.documentTitle}\n\n${this.$t('requirementAnalysis.documentContent')}:\n${extractedText}`
 
-        await this.startGeneration(
-          this.documentTitle,
-          requirementText,
-          this.selectedProject,
-          this.globalOutputMode,  // 使用全局输出模式
-          this.selectedVersionIds
-        )
+        // 保存上下文，先执行需求澄清
+        this.pendingGeneration = {
+          type: 'document',
+          title: this.documentTitle,
+          requirementText: requirementText,
+          projectId: this.selectedProject,
+          versionIds: this.selectedVersionIds,
+          outputMode: this.globalOutputMode,
+          functionModuleId: this.docSelectedModuleId || ''
+        }
+
+        await this.requestClarification(requirementText)
 
       } catch (error) {
         console.error(this.$t('requirementAnalysis.documentProcessingFailed'), error)
@@ -803,7 +1289,7 @@ export default {
       }
     },
 
-    async startMultimodalGeneration() {
+    async startMultimodalGeneration(clarificationAnswers = []) {
       this.isGenerating = true
       this.currentStep = 1
       this.progressText = '准备多模态生成...'
@@ -823,6 +1309,14 @@ export default {
         }
         if (this.selectedVersionIds && this.selectedVersionIds.length > 0) {
           formData.append('version_ids', JSON.stringify(this.selectedVersionIds))
+        }
+        if (clarificationAnswers && clarificationAnswers.length > 0) {
+          formData.append('clarification_answers', JSON.stringify(clarificationAnswers))
+        }
+        // 传递功能模块ID
+        const moduleId = this.pendingGeneration?.functionModuleId || this.docSelectedModuleId
+        if (moduleId) {
+          formData.append('function_module_id', moduleId)
         }
 
         ElMessage.info('正在上传PDF并提取图文...')
@@ -851,7 +1345,11 @@ export default {
       }
     },
 
-    async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = []) {
+    async startMultimodalGenerationWithAnswers(answers) {
+      await this.startMultimodalGeneration(answers)
+    },
+
+    async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = [], clarificationAnswers = [], functionModuleId = '') {
       // 在开始生成前，主动刷新token确保生成过程中不会过期
       try {
         const userStore = useUserStore()
@@ -895,6 +1393,16 @@ export default {
         // 如果选择了版本，添加到请求中
         if (versionIds && versionIds.length > 0) {
           requestData.version_ids = versionIds
+        }
+
+        // 如果提供了澄清回答，添加到请求中
+        if (clarificationAnswers && clarificationAnswers.length > 0) {
+          requestData.clarification_answers = clarificationAnswers
+        }
+
+        // 如果选择了功能模块，添加到请求中
+        if (functionModuleId) {
+          requestData.function_module_id = functionModuleId
         }
 
         const response = await api.post('/requirement-analysis/testcase-generation/generate/', requestData)
@@ -1913,6 +2421,33 @@ export default {
 }
 
 
+/* Tab 栏 */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 2px solid #e8e8e8;
+}
+.tab-bar .tab-btn {
+  padding: 10px 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.95rem;
+  color: #666;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.2s;
+}
+.tab-bar .tab-btn.active {
+  color: #3498db;
+  border-bottom-color: #3498db;
+  font-weight: 500;
+}
+.tab-bar .tab-btn:hover {
+  color: #3498db;
+}
+
 .manual-input-card, .upload-card {
   background: white;
   border-radius: 12px;
@@ -2036,6 +2571,30 @@ export default {
   font-size: 0.8rem;
   color: #999;
   margin-top: 4px;
+}
+
+.quick-add-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #3498db;
+  background: #fff;
+  color: #3498db;
+  border-radius: 6px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.quick-add-btn:hover {
+  background: #3498db;
+  color: #fff;
+}
+.quick-add-btn:disabled {
+  border-color: #ddd;
+  color: #ccc;
+  cursor: not-allowed;
 }
 
 .required {
@@ -2404,6 +2963,148 @@ export default {
   border-radius: 6px;
   cursor: pointer;
 }
+
+/* ========== 需求澄清面板 ========== */
+.clarification-section {
+  margin: 20px 0;
+}
+
+.clarification-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 30px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  border: 1px solid #e8e8e8;
+}
+
+.clarification-card h2 {
+  font-size: 1.3rem;
+  color: #2c3e50;
+  margin: 0 0 10px 0;
+}
+
+.clarification-subtitle {
+  color: #666;
+  font-size: 0.95rem;
+  margin: 0 0 24px 0;
+  line-height: 1.6;
+}
+
+.clarifying-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 40px;
+  justify-content: center;
+  font-size: 1.1rem;
+  color: #666;
+}
+
+.loading-spinner {
+  font-size: 1.5rem;
+  animation: spin 2s linear infinite;
+}
+
+.clarification-empty {
+  padding: 30px;
+  text-align: center;
+  font-size: 1.05rem;
+  color: #27ae60;
+}
+
+.clarification-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.clarification-question-item {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px 20px;
+  border-left: 4px solid #3498db;
+}
+
+.question-text {
+  font-size: 0.95rem;
+  color: #2c3e50;
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+
+.question-number {
+  display: inline-block;
+  background: #3498db;
+  color: #fff;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: bold;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.question-answer-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  resize: vertical;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.question-answer-input:focus {
+  outline: none;
+  border-color: #3498db;
+  box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+}
+
+.clarification-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.skip-clarify-btn {
+  padding: 10px 20px;
+  background: #fff;
+  color: #666;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.skip-clarify-btn:hover {
+  background: #f5f5f5;
+  border-color: #ccc;
+}
+
+.confirm-clarify-btn {
+  padding: 10px 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.confirm-clarify-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+/* ========== 需求澄清面板结束 ========== */
 
 .completion-actions {
   display: flex;
