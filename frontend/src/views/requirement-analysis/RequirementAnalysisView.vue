@@ -119,7 +119,7 @@
         <div class="manual-input-card">
           <div class="tab-bar">
             <button class="tab-btn" :class="{ active: manualTab === 'input' }" @click="manualTab = 'input'">
-              ✍️ {{ $t('requirementAnalysis.manualInputTitle') }}
+              {{ $t('requirementAnalysis.manualInputTitle') }}
             </button>
             <button class="tab-btn" :class="{ active: manualTab === 'extract' }" @click="manualTab = 'extract'">
               🤖 {{ $t('requirementAnalysis.aiExtractTitle') }}
@@ -128,7 +128,6 @@
 
           <!-- Tab: 手动输入 -->
           <div v-if="manualTab === 'input'">
-            <h2>{{ $t('requirementAnalysis.manualInputTitle') }}</h2>
           <div class="input-form">
             <div class="form-group">
               <label>{{ $t('requirementAnalysis.requirementTitle') }} <span class="required">*</span></label>
@@ -304,7 +303,8 @@
                 type="file"
                 ref="fileInput"
                 @change="handleFileSelect"
-                accept=".pdf,.doc,.docx,.txt,.md"
+                accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
+                multiple
                 style="display: none;">
               <button class="select-file-btn" @click="$refs.fileInput.click()">
                 {{ $t('requirementAnalysis.selectFile') }}
@@ -316,7 +316,7 @@
                 <i class="file-icon">📄</i>
                 <div class="file-details">
                   <p class="file-name">{{ selectedFile.name }}</p>
-                  <p class="file-size">{{ formatFileSize(selectedFile.size) }}</p>
+                  <p class="file-size">{{ formatFileSize(selectedFile.size) }}<span v-if="selectedFiles.length > 1" class="multi-hint"> · 共 {{ selectedFiles.length }} 个文件</span></p>
                 </div>
                 <button class="remove-file" @click="removeFile">❌</button>
               </div>
@@ -365,7 +365,7 @@
             </div>
 
             <!-- 多模态模式选择 -->
-            <div v-if="isPdfFile" class="multimodal-toggle">
+            <div v-if="isMultimodalFile" class="multimodal-toggle">
               <label class="multimodal-checkbox">
                 <input
                   type="checkbox"
@@ -373,7 +373,7 @@
                   :disabled="isGenerating">
                 <span class="multimodal-label">
                   <strong>多模态生成模式</strong>
-                  <span class="multimodal-hint">将PDF中的图片（流程图、原型图）发送给视觉模型分析，生成更精准的测试用例</span>
+                  <span class="multimodal-hint">将文档截图或直接上传的图片（流程图、原型图、UI设计稿）发送给视觉模型分析，生成更精准的测试用例</span>
                 </span>
               </label>
               <div v-if="enableMultimodal" class="multimodal-info">
@@ -565,6 +565,7 @@ export default {
 
       // 文件上传
       selectedFile: null,
+      selectedFiles: [],  // 多文件列表
       documentTitle: '',
       selectedProject: '',
       selectedVersionIds: [],
@@ -667,8 +668,9 @@ export default {
              this.manualInput.description.length <= 2000
     },
 
-    isPdfFile() {
-      return this.selectedFile && this.selectedFile.name.toLowerCase().endsWith('.pdf')
+    isMultimodalFile() {
+      if (this.selectedFiles.length === 0) return false
+      return this.selectedFiles.some(f => /\.(pdf|png|jpg|jpeg|webp)$/i.test(f.name))
     }
   },
 
@@ -936,29 +938,26 @@ export default {
     },
 
     handleFileSelect(event) {
-      const file = event.target.files[0]
-      if (file) {
-        const allowedTypes = [
-          'application/pdf',
-          'application/msword',
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'text/plain',
-          'text/markdown',
-          'text/x-markdown'
-        ]
-
-        if (allowedTypes.includes(file.type) ||
-            file.name.match(/\.(pdf|doc|docx|txt|md)$/i)) {
-          this.selectedFile = file
-          this.documentTitle = file.name.replace(/\.[^/.]+$/, "")
-        } else {
-          ElMessage.error(this.$t('requirementAnalysis.invalidFileFormatDetail'))
+      const fileList = event.target.files
+      if (!fileList || fileList.length === 0) return
+      const allowedExt = /\.(pdf|doc|docx|txt|md|png|jpg|jpeg|webp)$/i
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i]
+        if (allowedExt.test(f.name)) {
+          this.selectedFiles.push(f)
         }
+      }
+      if (this.selectedFiles.length > 0) {
+        this.selectedFile = this.selectedFiles[0]
+        if (!this.documentTitle) this.documentTitle = this.selectedFile.name.replace(/\.[^/.]+$/, '')
+      } else {
+        ElMessage.error(this.$t('requirementAnalysis.invalidFileFormatDetail'))
       }
     },
 
     removeFile() {
       this.selectedFile = null
+      this.selectedFiles = []
       this.documentTitle = ''
       this.enableMultimodal = false
       this.$refs.fileInput.value = ''
@@ -1099,7 +1098,9 @@ export default {
       try {
         const formData = new FormData()
         formData.append('title', this.documentTitle)
-        formData.append('file', this.selectedFile)
+        for (const f of this.selectedFiles) {
+          formData.append('files', f)
+        }
         if (this.selectedProject) {
           formData.append('project', this.selectedProject)
         }
@@ -1225,8 +1226,13 @@ export default {
         return
       }
 
-      // 多模态模式：先做多模态澄清，再生成
-      if (this.enableMultimodal && this.isPdfFile) {
+      // 图片文件自动开启多模态
+      if (this.isMultimodalFile && !this.enableMultimodal) {
+        this.enableMultimodal = true
+      }
+
+      // 多模态模式：直接上传到多模态端点
+      if (this.enableMultimodal && this.isMultimodalFile) {
         this.pendingGeneration = {
           type: 'multimodal',
           title: this.documentTitle,
@@ -1302,7 +1308,9 @@ export default {
       try {
         const formData = new FormData()
         formData.append('title', this.documentTitle)
-        formData.append('file', this.selectedFile)
+        for (const f of this.selectedFiles) {
+          formData.append('files', f)
+        }
         formData.append('output_mode', this.globalOutputMode)
         if (this.selectedProject) {
           formData.append('project', this.selectedProject)
@@ -2120,61 +2128,53 @@ export default {
 
 <style scoped>
 .requirement-analysis {
-  padding: 20px;
+  padding: 24px;
   max-width: 1200px;
   margin: 0 auto;
-  position: relative;
+  background: #f5f7fa;
+  min-height: 100vh;
 }
 
 .page-header {
   text-align: center;
-  margin-bottom: 40px;
+  margin-bottom: 28px;
 }
 
 .page-header h1 {
-  font-size: 2.5rem;
-  color: #2c3e50;
-  margin-bottom: 10px;
+  font-size: 1.5rem;
+  color: #1a1a2e;
+  margin-bottom: 6px;
+  font-weight: 600;
 }
 
 .page-header p {
-  color: #666;
-  font-size: 1.1rem;
+  color: #a0aec0;
+  font-size: .92rem;
 }
 
-/* 输出模式设置区域 - 全局 */
+/* 输出模式设置区域 */
 .output-mode-section {
-  margin-bottom: 30px;
+  margin-bottom: 24px;
 }
 
 .output-mode-card {
-  background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-  border-radius: 16px;
-  padding: 24px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  transition: all 0.3s ease;
-}
-
-.output-mode-card:hover {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.04);
 }
 
 .output-mode-card h3 {
-  font-size: 1.3rem;
-  color: #1a202c;
-  margin: 0 0 8px 0;
+  font-size: 1rem;
+  color: #1a1a2e;
+  margin: 0 0 4px 0;
   font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .mode-section-desc {
-  color: #64748b;
-  font-size: 0.9rem;
-  margin: 0 0 16px 0;
-  line-height: 1.5;
+  color: #a0aec0;
+  font-size: .84rem;
+  margin: 0 0 14px 0;
 }
 
 /* 配置引导弹出窗口 */
@@ -2449,29 +2449,30 @@ export default {
 }
 
 .manual-input-card, .upload-card {
-  background: white;
+  background: #fff;
   border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e1e8ed;
-  margin-bottom: 30px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.04);
+  margin-bottom: 24px;
 }
 
 .manual-input-card h2, .upload-card h2 {
-  color: #2c3e50;
-  margin-bottom: 20px;
-  font-size: 1.5rem;
+  color: #1a1a2e;
+  margin: 0 0 16px 0;
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .form-group {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .form-group label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  font-size: .82rem;
   font-weight: 600;
-  color: #2c3e50;
+  color: #4a5568;
 }
 
 /* 输出模式选择器 */
@@ -2542,22 +2543,25 @@ export default {
 
 .form-input, .form-select, .form-textarea {
   width: 100%;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 1rem;
-  transition: border-color 0.3s ease;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: .9rem;
+  transition: border-color .15s, box-shadow .15s;
+  color: #1a1a2e;
+  background: #fff;
 }
 
 .form-input:focus, .form-select:focus, .form-textarea:focus {
   outline: none;
-  border-color: #3498db;
-  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102,126,234,.12);
 }
 
 .form-textarea {
   resize: vertical;
   font-family: inherit;
+  line-height: 1.7;
 }
 
 .char-count {
@@ -2602,24 +2606,26 @@ export default {
 }
 
 .generate-manual-btn, .generate-btn {
-  background: #27ae60;
-  color: white;
+  background: #667eea;
+  color: #fff;
   border: none;
-  padding: 15px 30px;
+  padding: 12px 24px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 1.1rem;
-  transition: background 0.3s ease;
+  font-size: .95rem;
+  font-weight: 500;
+  transition: all .15s;
   width: 100%;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .generate-manual-btn:hover:not(:disabled), .generate-btn:hover:not(:disabled) {
-  background: #219a52;
+  background: #5a6fd6;
 }
 
 .generate-manual-btn:disabled, .generate-btn:disabled {
-  background: #bdc3c7;
+  background: #e2e8f0;
+  color: #a0aec0;
   cursor: not-allowed;
 }
 

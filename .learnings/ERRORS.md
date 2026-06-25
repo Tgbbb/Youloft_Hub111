@@ -65,3 +65,59 @@ stream_buffer 有 1518 chars 但 generated_test_cases 为空。AI API 流式响�
 
 ---
 
+
+---
+
+## [ERR-20260624-003] html_entity_pipe_breaks_table_parsing
+
+**Logged**: 2026-06-24T14:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+AI 生成的测试用例表格中模型将 | 全部替换为 &#124;，解析器无法识别表格格式。
+
+### Error
+生成 prompt 指令 `使用HTML实体 '&#124;' 代替管道符`，VL 模型替换了所有管道符包括表格结构分隔符。
+
+### Suggested Fix
+1. 指令改为 `表格分隔符 | 必须保留，单元格内容中的管道符用 \| 转义`
+2. 解析器加 `&#124;` → `|` 兜底转换
+
+### Resolution
+- **Resolved**: 2026-06-24
+- **Notes**: 已移除 &#124; 指令改为 \|；解析器加了兜底转换
+
+---
+
+## [ERR-20260624-004] multi_file_upload_div_balance
+
+**Logged**: 2026-06-24T12:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+多文件上传改造回滚后 upload-area 闭合 div 丢失，模板编译报错 Element is missing end tag
+
+### Resolution
+- **Resolved**: 2026-06-24
+- **Notes**: 回滚后补回缺失的 </div>
+
+---
+
+## [ERR-20260624-005] pdf_code_indent_causes_temp_path_error
+
+**Logged**: 2026-06-24T12:19:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+多文件改造后 PDF 处理代码缩进错误，图片文件报 cannot access local variable 'temp_path'
+
+### Resolution
+- **Resolved**: 2026-06-24
+- **Notes**: 将 PDF try/finally 移入 else 块内
+

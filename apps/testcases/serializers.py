@@ -58,7 +58,7 @@ class TestCaseListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'preconditions', 'steps', 'expected_result',
             'priority', 'test_type',
-            'author', 'assignee', 'project', 'versions', 'function_module', 'tags', 'created_at', 'updated_at'
+            'author', 'assignee', 'project', 'versions', 'function_module', 'execution_status', 'tags', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     

@@ -281,3 +281,21 @@ def testcase_neighbors(request, pk):
         'previous': prev,
         'next': next_item,
     })
+
+
+@api_view(['PATCH'])
+@permission_classes([permissions.IsAuthenticated])
+def testcase_execute(request, pk):
+    """快速设置用例执行状态"""
+    try:
+        tc = TestCase.objects.get(id=pk)
+    except TestCase.DoesNotExist:
+        return Response({'error': '用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_status = request.data.get('execution_status')
+    if new_status not in ('passed', 'failed', None):
+        return Response({'error': '无效的执行状态'}, status=status.HTTP_400_BAD_REQUEST)
+
+    tc.execution_status = new_status
+    tc.save(update_fields=['execution_status'])
+    return Response({'id': tc.id, 'execution_status': tc.execution_status})

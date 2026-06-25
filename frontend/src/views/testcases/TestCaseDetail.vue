@@ -25,6 +25,10 @@
         <div class="title-block">
           <span class="priority-dot" :class="testcase.priority"></span>
           <h1 class="case-title">{{ testcase.title }}</h1>
+          <div class="exec-actions">
+            <button class="exec-btn pass" :class="{ active: testcase.execution_status === 'passed' }" @click="executeCase('passed')" :disabled="executing">✓ 通过</button>
+            <button class="exec-btn fail" :class="{ active: testcase.execution_status === 'failed' }" @click="executeCase('failed')" :disabled="executing">✕ 不通过</button>
+          </div>
         </div>
 
         <!-- 描述 -->
@@ -126,6 +130,21 @@ const route = useRoute()
 const router = useRouter()
 const testcase = ref(null)
 const neighbors = ref({ previous: null, next: null, current: null })
+const executing = ref(false)
+
+const executeCase = async (status) => {
+  if (!testcase.value) return
+  executing.value = true
+  try {
+    await api.patch(`/testcases/${testcase.value.id}/execute/`, { execution_status: status })
+    testcase.value.execution_status = status
+    ElMessage.success(status === 'passed' ? '已标记通过' : '已标记不通过')
+  } catch (error) {
+    ElMessage.error('操作失败')
+  } finally {
+    executing.value = false
+  }
+}
 
 const fetchTestCase = async () => {
   try {
@@ -251,6 +270,24 @@ watch(() => route.params.id, () => { fetchTestCase() })
   color: #1a1a2e;
   line-height: 1.5;
   word-break: break-word;
+  flex: 1;
+}
+.exec-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.exec-btn {
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: .82rem;
+  cursor: pointer;
+  transition: all .15s;
+  &.pass:hover, &.pass.active { background: #f0fff4; border-color: #48bb78; color: #22543d; }
+  &.fail:hover, &.fail.active { background: #fff5f5; border-color: #fc8181; color: #742a2a; }
+  &:disabled { opacity: .5; cursor: not-allowed; }
 }
 
 .content-block {

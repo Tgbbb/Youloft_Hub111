@@ -1700,105 +1700,108 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 except (Project.DoesNotExist, ValueError, TypeError):
                     pass
 
-            file = request.FILES.get('file')
+            files = request.FILES.getlist('files') or ([request.FILES.get('file')] if request.FILES.get('file') else [])
 
-            if file:
+            if files:
                 # --- 多模态模式：上传文件 → 提取文本和图片 → 视觉模型澄清 ---
                 import tempfile
+                import base64 as b64
 
-                if not file.name.lower().endswith('.pdf'):
+                title = request.data.get('title', files[0].name.rsplit('.', 1)[0])
+                page_images = []
+                text_parts = []
+
+                for file in files:
+                    fname = file.name.lower()
+                    is_pdf = fname.endswith('.pdf')
+                    is_image = fname.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))
+
+                    if not is_pdf and not is_image:
+                        continue
+
+                    if is_image:
+                        image_data = b64.b64encode(file.read()).decode('utf-8')
+                        ext = fname.rsplit('.', 1)[-1]
+                        media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
+                        page_images.append({'page': len(page_images)+1, 'data': image_data, 'media_type': media_type})
+                        text_parts.append(f'图片{len(page_images)}: {file.name}')
+                    else:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                            for chunk in file.chunks():
+                                tmp_file.write(chunk)
+                            tmp_path = tmp_file.name
+                        try:
+                            from .services import DocumentProcessor
+                            pdf_text = DocumentProcessor.extract_text_from_pdf(tmp_path)
+                            pdf_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
+                            offset = len(page_images)
+                            for img in pdf_images:
+                                img['page'] = offset + img['page']
+                            page_images.extend(pdf_images)
+                            text_parts.append(pdf_text)
+                        finally:
+                            try: os.unlink(tmp_path)
+                            except Exception: pass
+
+                if not page_images:
                     return Response(
-                        {'error': '需求澄清多模态模式仅支持PDF文件'},
+                        {'error': '未能提取图片内容'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                title = request.data.get('title', file.name.rsplit('.', 1)[0])
+                requirement_text = request.data.get('description', '').strip() or '\n'.join(text_parts)
 
-                # 保存临时文件
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                    for chunk in file.chunks():
-                        tmp_file.write(chunk)
-                    tmp_path = tmp_file.name
+                # --- 共享：获取配置、调用AI ---
+                clarifier_config = AIModelConfig.objects.filter(
+                    role='clarifier', is_active=True, supports_vision=True
+                ).first()
 
-                try:
-                    # 提取文本
-                    from .services import DocumentProcessor
-                    requirement_text = DocumentProcessor.extract_text_from_pdf(tmp_path)
+                if not clarifier_config:
+                    return Response(
+                        {'error': '未找到可用的多模态需求澄清模型配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
-                    if not requirement_text or len(requirement_text.strip()) < 10:
-                        return Response(
-                            {'error': '无法从PDF中提取文本内容，请确认文档不是纯图片扫描件'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
+                clarifier_prompt = PromptConfig.get_active_config('clarifier')
+                if not clarifier_prompt:
+                    return Response(
+                        {'error': '未找到可用的需求澄清提示词配置'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
-                    # 提取页面图片
-                    page_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
+                import threading
+                from concurrent.futures import ThreadPoolExecutor
 
-                    # 获取澄清模型和提示词配置
-                    clarifier_config = AIModelConfig.objects.filter(
-                        role='clarifier', is_active=True, supports_vision=True
-                    ).first()
-
-                    if not clarifier_config:
-                        return Response(
-                            {'error': '未找到可用的多模态需求澄清模型配置，请先在AI模型配置中添加角色为「需求澄清专家」且支持多模态的配置'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-
-                    clarifier_prompt = PromptConfig.get_active_config('clarifier')
-                    if not clarifier_prompt:
-                        return Response(
-                            {'error': '未找到可用的需求澄清提示词配置'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-
-                    # 异步执行多模态澄清
-                    import threading
-
-                    def run_clarify_multimodal():
-                        try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-
-                            result = loop.run_until_complete(
-                                AIModelService.clarify_requirements_multimodal(
-                                    requirement_text=requirement_text,
-                                    page_images=page_images,
-                                    clarifier_config=clarifier_config,
-                                    clarifier_prompt=clarifier_prompt,
-                                    knowledge_base=knowledge_base,
-                                )
-                            )
-
-                            # 解析AI返回的JSON问题列表
-                            questions = AIModelService._parse_clarification_questions(result)
-
-                            return questions
-                        except Exception as e:
-                            logger.error(f"多模态需求澄清失败: {e}")
-                            raise
-                        finally:
-                            loop.close()
-
-                    # 在线程池中执行
-                    from concurrent.futures import ThreadPoolExecutor
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(run_clarify_multimodal)
-                    questions = future.result(timeout=300)  # 5分钟超时
-
-                    return Response({
-                        'questions': questions,
-                        'mode': 'multimodal',
-                        'text_length': len(requirement_text),
-                        'page_count': len(page_images),
-                    })
-
-                finally:
-                    # 清理临时文件
+                def run_clarify_multimodal():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
                     try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
+                        result = loop.run_until_complete(
+                            AIModelService.clarify_requirements_multimodal(
+                                requirement_text=requirement_text,
+                                page_images=page_images,
+                                clarifier_config=clarifier_config,
+                                clarifier_prompt=clarifier_prompt,
+                                knowledge_base=knowledge_base,
+                            )
+                        )
+                        return AIModelService._parse_clarification_questions(result)
+                    except Exception as e:
+                        logger.error(f"多模态需求澄清失败: {e}")
+                        raise
+                    finally:
+                        loop.close()
+
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(run_clarify_multimodal)
+                questions = future.result(timeout=300)
+
+                return Response({
+                    'questions': questions,
+                    'mode': 'multimodal',
+                    'text_length': len(requirement_text),
+                    'page_count': len(page_images),
+                })
 
             else:
                 # --- 纯文本模式 ---
@@ -1885,59 +1888,76 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
              url_path='generate_multimodal')
     def generate_multimodal(self, request):
-        """多模态测试用例生成（文本+图片→视觉模型）"""
+        """多模态测试用例生成（文本+图片→视觉模型）。支持PDF文件和直接上传图片。"""
         import tempfile
+        import base64 as b64
 
         try:
-            file = request.FILES.get('file')
-            if not file:
+            files = request.FILES.getlist('files') or ([request.FILES.get('file')] if request.FILES.get('file') else [])
+            if not files:
                 return Response(
-                    {'error': '请上传PDF文件'},
+                    {'error': '请上传PDF文件或图片'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            if not file.name.lower().endswith('.pdf'):
+            title = request.data.get('title', files[0].name.rsplit('.', 1)[0])
+            user_desc = request.data.get('description', '').strip()
+            page_images = []
+            text_parts = []
+
+            for file in files:
+                fname = file.name.lower()
+                is_pdf = fname.endswith('.pdf')
+                is_image = fname.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))
+
+                if not is_pdf and not is_image:
+                    continue
+
+                if is_image:
+                    image_data = b64.b64encode(file.read()).decode('utf-8')
+                    ext = fname.rsplit('.', 1)[-1]
+                    media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
+                    if ext == 'webp': media_type = 'image/webp'
+                    if ext == 'bmp': media_type = 'image/bmp'
+                    if ext == 'gif': media_type = 'image/gif'
+                    page_images.append({'page': len(page_images)+1, 'data': image_data, 'media_type': media_type})
+                    text_parts.append(f'图片{len(page_images)}: {file.name}')
+                else:
+                    # PDF
+                    temp_dir = tempfile.mkdtemp()
+                    temp_path = os.path.join(temp_dir, file.name)
+                    try:
+                        with open(temp_path, 'wb+') as dest:
+                            for chunk in file.chunks():
+                                dest.write(chunk)
+
+                        from .services import DocumentProcessor
+                        pdf_text = DocumentProcessor.extract_text_from_pdf(temp_path)
+                        pdf_images = DocumentProcessor.extract_page_images_as_base64(
+                            temp_path, dpi=150, output_format='JPEG'
+                        )
+                        offset = len(page_images)
+                        for img in pdf_images:
+                            img['page'] = offset + img['page']
+                        page_images.extend(pdf_images)
+                        text_parts.append(pdf_text)
+                        logger.info(
+                            f"多模态PDF处理: file={file.name}, text={len(pdf_text)}, pages={len(pdf_images)}"
+                        )
+                    finally:
+                        try:
+                            os.remove(temp_path)
+                            os.rmdir(temp_dir)
+                        except Exception:
+                            pass
+
+            if not page_images:
                 return Response(
-                    {'error': '多模态模式仅支持PDF文件'},
+                    {'error': '未能提取图片内容'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            title = request.data.get('title', file.name.rsplit('.', 1)[0])
-
-            # 保存文件到临时目录
-            temp_dir = tempfile.mkdtemp()
-            temp_path = os.path.join(temp_dir, file.name)
-
-            try:
-                with open(temp_path, 'wb+') as dest:
-                    for chunk in file.chunks():
-                        dest.write(chunk)
-
-                # 提取文本
-                from .services import DocumentProcessor
-                text = DocumentProcessor.extract_text_from_pdf(temp_path)
-
-                # 渲染页面图片
-                page_images = DocumentProcessor.extract_page_images_as_base64(
-                    temp_path, dpi=150, output_format='JPEG'
-                )
-
-                logger.info(
-                    f"多模态PDF处理: file={file.name}, text={len(text)}, pages={len(page_images)}"
-                )
-
-            finally:
-                try:
-                    os.remove(temp_path)
-                    os.rmdir(temp_dir)
-                except Exception:
-                    pass
-
-            if not text or len(text.strip()) < 10:
-                return Response(
-                    {'error': 'PDF文本提取失败，请检查文件内容'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            text = user_desc or '\n'.join(text_parts) if text_parts else user_desc or '多模态生成'
 
             # 智能选择：多模态场景必须VL模型
             writer_config = AIModelService.get_active_writer(needs_vision=True)
@@ -3769,6 +3789,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
         # 去除markdown加粗标记，保留纯净文本
         import re
         clean_content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)
+        # 将 HTML 实体管道符还原，否则表格格式检测会失败
+        clean_content = clean_content.replace('&#124;', '|')
 
         logger.info(f"开始解析测试用例内容，内容长度: {len(clean_content)}")
         logger.info(f"内容前200字符: {clean_content[:200]}")

@@ -9,5 +9,6 @@ urlpatterns = [
     path('import-records/<int:pk>/', views.TestCaseImportRecordDetailView.as_view(), name='testcase-import-record-detail'),
     path('import-records/<int:pk>/failure-report/', views.TestCaseImportFailureReportDownloadView.as_view(), name='testcase-import-record-failure-report'),
     path('<int:pk>/neighbors/', views.testcase_neighbors, name='testcase-neighbors'),
+    path('<int:pk>/execute/', views.testcase_execute, name='testcase-execute'),
     path('<int:pk>/', views.TestCaseDetailView.as_view(), name='testcase-detail'),
 ]
