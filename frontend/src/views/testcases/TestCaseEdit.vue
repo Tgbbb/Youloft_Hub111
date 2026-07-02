@@ -264,7 +264,7 @@ const handleSubmit = async () => {
 
         await api.put(`/testcases/${route.params.id}/`, submitData)
         ElMessage.success(t('testcase.updateSuccess'))
-        router.push(`/ai-generation/testcases/${route.params.id}`)
+        router.push({ path: `/ai-generation/testcases/${route.params.id}`, query: route.query })
       } catch (error) {
         ElMessage.error(t('testcase.updateFailed'))
         console.error('Submit error:', error)

@@ -47,9 +47,41 @@ export default {
     projectDetail: '项目详情',
     projectInfo: '项目信息',
     noDescription: '暂无描述',
+    // Knowledge base
     knowledgeBase: '项目知识背景',
-    knowledgeBasePlaceholder: '请输入项目背景知识，帮助 AI 理解业务上下文。\n例如：业务术语解释、核心流程说明、系统架构、业务规则等。\n生成测试用例时会自动带入。',
-    noKnowledgeBase: '暂无知识背景，点击编辑按钮添加',
+    knowledgeBaseTab: '📋 知识背景',
+    knowledgeBasePlaceholder: '请输入项目背景知识，帮助 AI 理解业务上下文...',
+    noKnowledgeBase: '暂无知识背景',
+    uploadMd: '导入MD',
+    useTemplate: '使用模板',
+    templateApplied: '模板已填入，请根据项目实际情况修改',
+    knowledgeBaseSaved: '知识背景已保存',
+    knowledgeBaseSaveFailed: '保存知识背景失败',
+    aiOptimize: 'AI 优化',
+    edit: '编辑',
+    preview: '预览',
+    characters: '字',
+    lastUpdated: '最后更新',
+    unknownUser: '未知用户',
+    neverUpdated: '尚未更新',
+    tableOfContents: '目录',
+    allSections: '全部',
+    sectionEditingHint: '当前编辑该章节，点击标签返回全部视图',
+    templateContent: `## 业务背景
+<!-- 描述项目的业务领域和核心价值 -->
+
+## 系统架构
+<!-- 描述系统的技术架构和主要组件 -->
+
+## 核心业务流程
+<!-- 描述关键的业务流程，可包含流程图 -->
+
+## 关键业务规则
+<!-- 列出重要的业务规则和约束条件 -->
+
+## 术语表
+<!-- 定义项目中使用的专业术语和缩写 -->
+`,
     projectMembers: '项目成员',
     addMember: '添加成员',
     username: '用户名',

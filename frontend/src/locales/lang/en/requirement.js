@@ -34,6 +34,7 @@ export default {
     supportedFormats: 'Supports PDF, Word, TXT, Markdown formats',
     selectFileBtn: 'Select File',
     selectFile: 'Select File',
+    selectFolder: 'Select Folder',
     removeFile: '❌',
     documentTitle: 'Document Title',
     documentTitlePlaceholder: 'Enter document title',

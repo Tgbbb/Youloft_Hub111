@@ -38,14 +38,24 @@ class ProjectMemberSerializer(serializers.ModelSerializer):
 
 class ProjectSerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
+    knowledge_base_updated_by = serializers.SerializerMethodField()
     members = ProjectMemberSerializer(source='projectmember_set', many=True, read_only=True)
     environments = ProjectEnvironmentSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = Project
-        fields = ['id', 'name', 'description', 'knowledge_base', 'status', 'owner', 'members',
+        fields = ['id', 'name', 'description', 'knowledge_base', 'knowledge_base_updated_at',
+                 'knowledge_base_updated_by', 'status', 'owner', 'members',
                  'environments', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'knowledge_base_updated_at']
+
+    def get_knowledge_base_updated_by(self, obj):
+        if obj.knowledge_base_updated_by:
+            return {
+                'id': obj.knowledge_base_updated_by.id,
+                'username': obj.knowledge_base_updated_by.username
+            }
+        return None
 
 class ProjectCreateSerializer(serializers.ModelSerializer):
     class Meta:

@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db import models
+from django.utils import timezone
 from .models import Project, ProjectMember, ProjectEnvironment
 from .serializers import ProjectSerializer, ProjectCreateSerializer, ProjectMemberSerializer, ProjectEnvironmentSerializer
 
@@ -44,6 +45,16 @@ class ProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Project.objects.filter(
             models.Q(owner=user) | models.Q(members=user)
         ).distinct()
+
+    def perform_update(self, serializer):
+        # 如果 knowledge_base 有变化，记录更新时间和更新人
+        if 'knowledge_base' in serializer.validated_data:
+            serializer.save(
+                knowledge_base_updated_at=timezone.now(),
+                knowledge_base_updated_by=self.request.user
+            )
+        else:
+            serializer.save()
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])

@@ -177,7 +177,7 @@ const goToNeighbor = (id) => {
 }
 
 const editTestCase = () => {
-  router.push(`/ai-generation/testcases/${route.params.id}/edit`)
+  router.push({ path: `/ai-generation/testcases/${route.params.id}/edit`, query: route.query })
 }
 
 const getPriorityText = (priority) => {

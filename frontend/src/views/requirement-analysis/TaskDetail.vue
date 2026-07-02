@@ -826,8 +826,9 @@ export default {
         // 计算全局索引（当前页面起始位置 + 当前索引）
         const globalIndex = (this.currentPage - 1) * this.pageSize + index
 
-        // 调用后端API弃用单个测试用例
+        // 调用后端API弃用单个测试用例（优先 scenario 匹配，索引备选）
         const response = await api.post(`/requirement-analysis/testcase-generation/${this.taskId}/discard-single-case/`, {
+          case_scenario: testCase.scenario || '',
           case_index: globalIndex
         })
 

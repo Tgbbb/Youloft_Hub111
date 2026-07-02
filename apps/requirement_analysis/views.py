@@ -3684,16 +3684,11 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='discard-single-case')
     def discard_single_case(self, request, task_id=None):
-        """弃用单个测试用例"""
+        """弃用单个测试用例 - 优先通过 scenario 内容匹配，索引作为备选"""
         try:
             task = self.get_object()
+            case_scenario = request.data.get('case_scenario', '')
             case_index = request.data.get('case_index')
-
-            if case_index is None:
-                return Response(
-                    {'error': '没有提供测试用例索引'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
 
             if not task.final_test_cases:
                 return Response(
@@ -3701,20 +3696,45 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            logger.info(f"开始弃用任务 {task.task_id} 的单个测试用例，索引: {case_index}")
+            if not case_scenario and case_index is None:
+                return Response(
+                    {'error': '没有提供测试用例标识'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             # 解析现有的测试用例
             test_cases = self._parse_test_cases_content(task.final_test_cases)
 
-            if case_index < 0 or case_index >= len(test_cases):
+            # 优先通过 scenario 内容匹配
+            matched_index = None
+            if case_scenario:
+                for i, case in enumerate(test_cases):
+                    if case.get('scenario', '').strip() == case_scenario.strip():
+                        matched_index = i
+                        break
+                # 宽松匹配：去除多余空格和换行
+                if matched_index is None:
+                    normalized_scenario = ' '.join(case_scenario.split())
+                    for i, case in enumerate(test_cases):
+                        if ' '.join(case.get('scenario', '').split()) == normalized_scenario:
+                            matched_index = i
+                            break
+
+            # 备选：按索引（仅当索引在范围内）
+            if matched_index is None and case_index is not None:
+                if 0 <= case_index < len(test_cases):
+                    matched_index = case_index
+
+            if matched_index is None:
                 return Response(
-                    {'error': f'测试用例索引 {case_index} 超出范围，总共有 {len(test_cases)} 个测试用例'},
+                    {'error': f'未找到匹配的测试用例（scenario="{case_scenario[:50]}", index={case_index}，总用例数={len(test_cases)}）'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # 删除指定索引的测试用例
-            removed_case = test_cases.pop(case_index)
-            logger.debug(f"弃用测试用例 {case_index}: {removed_case.get('scenario', 'unknown')}")
+            logger.info(f"弃用任务 {task.task_id} 的用例，匹配方式={matched_index}，scenario={test_cases[matched_index].get('scenario', 'unknown')[:50]}")
+
+            # 删除匹配的测试用例
+            removed_case = test_cases.pop(matched_index)
 
             # 如果所有用例都被弃用了，删除整个任务
             if not test_cases:
@@ -3729,8 +3749,6 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             # 重新生成final_test_cases内容
             task.final_test_cases = self._reconstruct_test_cases_content(test_cases)
             task.save()
-
-            logger.debug(f"单个弃用 - 重构后的测试用例内容: {task.final_test_cases[:200]}...")
 
             return Response({
                 'message': '已弃用测试用例',

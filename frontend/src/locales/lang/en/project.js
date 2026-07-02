@@ -47,9 +47,41 @@ export default {
     projectDetail: 'Project Details',
     projectInfo: 'Project Info',
     noDescription: 'No description',
+    // Knowledge base
     knowledgeBase: 'Project Knowledge Base',
-    knowledgeBasePlaceholder: 'Enter project background knowledge to help AI understand business context.\nE.g.: business terminology, core process flows, system architecture, business rules, etc.\nWill be automatically included when generating test cases.',
-    noKnowledgeBase: 'No knowledge base yet, click Edit to add',
+    knowledgeBaseTab: '📋 Knowledge Base',
+    knowledgeBasePlaceholder: 'Enter project background knowledge to help AI understand business context...',
+    noKnowledgeBase: 'No knowledge base yet',
+    uploadMd: 'Import MD',
+    useTemplate: 'Use Template',
+    templateApplied: 'Template applied, please edit according to your project',
+    knowledgeBaseSaved: 'Knowledge base saved',
+    knowledgeBaseSaveFailed: 'Failed to save knowledge base',
+    aiOptimize: 'AI Optimize',
+    edit: 'Edit',
+    preview: 'Preview',
+    characters: 'chars',
+    lastUpdated: 'Last updated',
+    unknownUser: 'Unknown',
+    neverUpdated: 'Never updated',
+    tableOfContents: 'Contents',
+    allSections: 'All',
+    sectionEditingHint: 'Editing this section, click the tag to return to full view',
+    templateContent: `## Business Background
+<!-- Describe the business domain and core value -->
+
+## System Architecture
+<!-- Describe the technical architecture and main components -->
+
+## Core Business Processes
+<!-- Describe the key business flows, can include diagrams -->
+
+## Key Business Rules
+<!-- List important business rules and constraints -->
+
+## Glossary
+<!-- Define specialized terms and abbreviations used in the project -->
+`,
     projectMembers: 'Project Members',
     addMember: 'Add Member',
     username: 'Username',

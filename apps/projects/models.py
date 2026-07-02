@@ -15,7 +15,12 @@ class Project(models.Model):
     description = models.TextField(blank=True, verbose_name='项目描述')
     knowledge_base = models.TextField(
         blank=True, verbose_name='知识背景',
-        help_text='项目的背景知识，用于 AI 生成测试用例时理解业务上下文。支持长文本。'
+        help_text='项目的背景知识，用于 AI 生成测试用例时理解业务上下文。支持 Markdown 格式。'
+    )
+    knowledge_base_updated_at = models.DateTimeField(null=True, blank=True, verbose_name='知识背景更新时间')
+    knowledge_base_updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='updated_knowledge_bases', verbose_name='知识背景更新人'
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active', verbose_name='状态')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_projects', verbose_name='负责人')

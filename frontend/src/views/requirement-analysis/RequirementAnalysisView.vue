@@ -306,19 +306,43 @@
                 accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
                 multiple
                 style="display: none;">
-              <button class="select-file-btn" @click="$refs.fileInput.click()">
-                {{ $t('requirementAnalysis.selectFile') }}
-              </button>
+              <input
+                type="file"
+                ref="folderInput"
+                @change="handleFolderSelect"
+                webkitdirectory
+                style="display: none;">
+              <div class="upload-btns">
+                <button class="select-file-btn" @click="$refs.fileInput.click()">
+                  {{ $t('requirementAnalysis.selectFile') }}
+                </button>
+                <button class="select-file-btn" @click="$refs.folderInput.click()">
+                  📂 {{ $t('requirementAnalysis.selectFolder') }}
+                </button>
+              </div>
             </div>
 
             <div v-else class="file-selected">
-              <div class="file-info">
+              <div class="file-info" @click="selectedFiles.length > 1 && (showFileList = !showFileList)" :class="{ 'clickable': selectedFiles.length > 1 }">
                 <i class="file-icon">📄</i>
                 <div class="file-details">
                   <p class="file-name">{{ selectedFile.name }}</p>
-                  <p class="file-size">{{ formatFileSize(selectedFile.size) }}<span v-if="selectedFiles.length > 1" class="multi-hint"> · 共 {{ selectedFiles.length }} 个文件</span></p>
+                  <p class="file-size">
+                    {{ formatFileSize(selectedFile.size) }}
+                    <span v-if="selectedFiles.length > 1" class="multi-hint">
+                      · 共 {{ selectedFiles.length }} 个文件
+                      <span class="expand-arrow">{{ showFileList ? '▾' : '▸' }}</span>
+                    </span>
+                  </p>
                 </div>
-                <button class="remove-file" @click="removeFile">❌</button>
+                <button class="remove-file" @click.stop="removeFile">❌</button>
+              </div>
+              <!-- 展开的文件列表 -->
+              <div v-if="showFileList && selectedFiles.length > 1" class="file-list-expanded">
+                <div v-for="(f, i) in selectedFiles" :key="i" class="file-list-item" :class="{ 'file-list-item-active': f === selectedFile }" @click="selectedFile = f">
+                  <span class="fli-name">{{ f.webkitRelativePath || f.name }}</span>
+                  <span class="fli-size">{{ formatFileSize(f.size) }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -566,6 +590,7 @@ export default {
       // 文件上传
       selectedFile: null,
       selectedFiles: [],  // 多文件列表
+      showFileList: false,
       documentTitle: '',
       selectedProject: '',
       selectedVersionIds: [],
@@ -950,9 +975,38 @@ export default {
       if (this.selectedFiles.length > 0) {
         this.selectedFile = this.selectedFiles[0]
         if (!this.documentTitle) this.documentTitle = this.selectedFile.name.replace(/\.[^/.]+$/, '')
+        this.showFileList = this.selectedFiles.length > 3
       } else {
         ElMessage.error(this.$t('requirementAnalysis.invalidFileFormatDetail'))
       }
+    },
+
+    handleFolderSelect(event) {
+      const fileList = event.target.files
+      if (!fileList || fileList.length === 0) return
+      const allowedExt = /\.(pdf|doc|docx|txt|md|png|jpg|jpeg|webp)$/i
+      const added = []
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i]
+        if (allowedExt.test(f.name)) {
+          this.selectedFiles.push(f)
+          added.push(f)
+        }
+      }
+      if (added.length > 0) {
+        this.selectedFile = this.selectedFiles[0]
+        // 用文件夹名作为默认标题
+        if (!this.documentTitle) {
+          const relativePath = fileList[0].webkitRelativePath || ''
+          const folderName = relativePath.split('/')[0] || ''
+          this.documentTitle = folderName || this.selectedFile.name.replace(/\.[^/.]+$/, '')
+        }
+        this.showFileList = true
+        ElMessage.success(`已导入 ${added.length} 个文件`)
+      } else {
+        ElMessage.error('文件夹中未找到支持的文档格式')
+      }
+      event.target.value = ''
     },
 
     removeFile() {
@@ -960,7 +1014,9 @@ export default {
       this.selectedFiles = []
       this.documentTitle = ''
       this.enableMultimodal = false
-      this.$refs.fileInput.value = ''
+      this.showFileList = false
+      if (this.$refs.fileInput) this.$refs.fileInput.value = ''
+      if (this.$refs.folderInput) this.$refs.folderInput.value = ''
     },
 
     formatFileSize(bytes) {
@@ -1296,6 +1352,19 @@ export default {
     },
 
     async startMultimodalGeneration(clarificationAnswers = []) {
+      // 生成前强制刷新token，避免停留过久导致401
+      try {
+        const userStore = useUserStore()
+        if (userStore.refreshToken) {
+          console.log('Refreshing token before multimodal generation...')
+          await userStore.refreshAccessToken()
+        }
+      } catch (e) {
+        console.error('Token refresh failed:', e)
+        ElMessage.error('登录已过期，请刷新页面重新登录')
+        return
+      }
+
       this.isGenerating = true
       this.currentStep = 1
       this.progressText = '准备多模态生成...'
@@ -1350,6 +1419,9 @@ export default {
         console.error('多模态生成任务创建失败:', error)
         ElMessage.error('多模态生成失败: ' + (error.response?.data?.error || error.message))
         this.isGenerating = false
+        if (this.clarificationQuestions.length > 0) {
+          this.showClarificationPanel = true
+        }
       }
     },
 
@@ -1358,19 +1430,17 @@ export default {
     },
 
     async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = [], clarificationAnswers = [], functionModuleId = '') {
-      // 在开始生成前，主动刷新token确保生成过程中不会过期
+      // 在开始生成前，强制刷新token确保生成过程中不会过期
       try {
         const userStore = useUserStore()
-        if (userStore.isTokenExpiringSoon && userStore.refreshToken) {
+        if (userStore.refreshToken) {
           console.log('Refreshing token before generation...')
           await userStore.refreshAccessToken()
           console.log('Token refreshed successfully, safe to start generation')
-        } else if (userStore.accessToken) {
-          console.log('Token status is good, no refresh needed')
         }
       } catch (error) {
         console.error('Token refresh failed:', error)
-        ElMessage.error(this.$t('requirementAnalysis.tokenRefreshFailed'))
+        ElMessage.error('登录已过期，请刷新页面重新登录')
         return
       }
 
@@ -1431,6 +1501,9 @@ export default {
         console.error(this.$t('requirementAnalysis.createTaskFailed'), error)
         ElMessage.error(this.$t('requirementAnalysis.createTaskFailed') + ': ' + (error.response?.data?.error || error.message))
         this.isGenerating = false
+        if (this.clarificationQuestions.length > 0) {
+          this.showClarificationPanel = true
+        }
       }
     },
 
@@ -2682,6 +2755,12 @@ export default {
   margin-top: 5px;
 }
 
+.upload-btns {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
 .select-file-btn {
   background: #3498db;
   color: white;
@@ -2689,7 +2768,11 @@ export default {
   padding: 10px 20px;
   border-radius: 6px;
   cursor: pointer;
-  margin-top: 15px;
+  white-space: nowrap;
+}
+
+.select-file-btn:hover {
+  background: #2980b9;
 }
 
 .file-selected {
@@ -2702,6 +2785,60 @@ export default {
   display: flex;
   align-items: center;
   gap: 15px;
+}
+
+.file-info.clickable {
+  cursor: pointer;
+}
+
+.expand-arrow {
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* 展开的文件列表 */
+
+.file-list-expanded {
+  margin-top: 12px;
+  border-top: 1px solid #e0e0e0;
+  padding-top: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.file-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.file-list-item:hover {
+  background: #eef2ff;
+}
+
+.file-list-item-active {
+  background: #e0e7ff;
+  font-weight: 500;
+}
+
+.fli-name {
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  margin-right: 12px;
+}
+
+.fli-size {
+  color: #999;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .file-icon {

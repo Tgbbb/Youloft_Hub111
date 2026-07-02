@@ -44,6 +44,7 @@ export default {
     supportedFormats: '支持 PDF、Word、TXT、Markdown 格式',
     selectFileBtn: '选择文件',
     selectFile: '选择文件',
+    selectFolder: '选择文件夹',
     removeFile: '❌',
     documentTitle: '文档标题',
     documentTitlePlaceholder: '请输入文档标题',
