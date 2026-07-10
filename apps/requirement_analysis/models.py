@@ -215,11 +215,12 @@ class AIModelConfig(models.Model):
         ('reviser', '用例改进专家'),
         ('extractor', '需求文档提取专家'),
         ('browser_use_text', 'Browser Use - 文本模式'),
+        ('app_automation_vision', 'APP自动化-VLM视觉模型'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='配置名称')
     model_type = models.CharField(max_length=20, choices=MODEL_CHOICES, verbose_name='模型类型')
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name='角色')
+    role = models.CharField(max_length=30, choices=ROLE_CHOICES, verbose_name='角色')
     api_key = models.CharField(max_length=200, verbose_name='API Key', blank=True, null=True)
     base_url = models.URLField(verbose_name='API Base URL')
     model_name = models.CharField(max_length=100, verbose_name='模型名称')
@@ -349,6 +350,20 @@ class TestCaseGenerationTask(models.Model):
         ('cancelled', '已取消'),
     ]
 
+    PIPELINE_STAGE_CHOICES = [
+        ('initiated', '已创建'),
+        ('clarifying', '澄清中'),
+        ('awaiting_answers', '待回答'),
+        ('answers_ready', '答案已就绪'),
+        ('generating', '生成中'),
+        ('generated', '已生成'),
+        ('reviewing', '评审中'),
+        ('reviewed', '已评审'),
+        ('revising', '改进中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+    ]
+
     OUTPUT_MODE_CHOICES = [
         ('stream', '实时流式输出'),
         ('complete', '完整输出'),
@@ -358,6 +373,11 @@ class TestCaseGenerationTask(models.Model):
     title = models.CharField(max_length=200, verbose_name='任务标题')
     requirement_text = models.TextField(verbose_name='需求描述')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    pipeline_stage = models.CharField(
+        max_length=20, choices=PIPELINE_STAGE_CHOICES, default='initiated',
+        verbose_name='流水线阶段',
+        help_text='追踪生成流程的细粒度阶段，用于断点续传'
+    )
     progress = models.IntegerField(default=0, verbose_name='进度百分比')
 
     # 流式输出配置

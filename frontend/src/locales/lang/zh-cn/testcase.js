@@ -30,6 +30,8 @@ export default {
     expectedResult: '预期结果',
     author: '作者',
     createdAt: '创建时间',
+    executionHistory: '执行记录',
+    copyCase: '复制用例',
     serialNumber: '序号',
 
     // Priority
@@ -67,6 +69,8 @@ export default {
     versionFilter: '版本筛选',
     moduleFilter: '功能模块筛选',
     moduleName: '功能模块',
+    selectModule: '选择功能模块',
+    noModule: '不关联模块',
     previousCase: '上一条',
     nextCase: '下一条',
     statusFilter: '状态筛选',

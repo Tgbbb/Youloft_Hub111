@@ -133,6 +133,12 @@
                   @click="batchDiscardTask(task)">
                   {{ $t('generatedTestCases.batchDiscard') }}
                 </button>
+                <button
+                  v-if="task.status === 'failed'"
+                  class="retry-btn"
+                  @click="retryTask(task)">
+                  🔄 {{ $t('generatedTestCases.retry') }}
+                </button>
               </div>
             </div>
           </div>
@@ -730,6 +736,20 @@ export default {
       } catch (error) {
         console.error(this.$t('generatedTestCases.discardFailed'), error)
         ElMessage.error(this.$t('generatedTestCases.discardFailed') + ': ' + (error.response?.data?.message || error.message))
+      }
+    },
+
+    async retryTask(task) {
+      if (!confirm(`确认重试任务「${task.title}」？将从断点继续执行。`)) {
+        return
+      }
+      try {
+        const response = await api.post(`/requirement-analysis/testcase-generation/${task.task_id}/retry/`)
+        ElMessage.success(response.data.message || '重试已启动')
+        this.loadTasks()
+      } catch (error) {
+        console.error('重试失败:', error)
+        ElMessage.error('重试失败: ' + (error.response?.data?.error || error.message))
       }
     },
 
@@ -1455,6 +1475,22 @@ export default {
 
 .discard-btn:hover {
   background: #c0392b;
+}
+
+.retry-btn {
+  background: #f39c12;
+  color: white;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.3s ease;
+  white-space: nowrap;
+}
+
+.retry-btn:hover {
+  background: #e67e22;
 }
 
 .action-buttons {

@@ -257,7 +257,7 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestCaseGenerationTask
         fields = ['id', 'task_id', 'title', 'requirement_text', 'status', 'status_display',
-                 'progress', 'project', 'project_name', 'version_ids', 'knowledge_base', 'function_module',
+                 'pipeline_stage', 'progress', 'project', 'project_name', 'version_ids', 'knowledge_base', 'function_module',
                  'writer_model_config', 'writer_model_name',
                  'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
                  'reviewer_prompt_config', 'reviewer_prompt_name',

@@ -62,6 +62,23 @@ class TestCase(models.Model):
         verbose_name_plural = '测试用例'
         ordering = ['-created_at']
 
+class TestCaseExecution(models.Model):
+    """测试用例执行记录"""
+    STATUS_CHOICES = [
+        ('passed', '通过'),
+        ('failed', '不通过'),
+    ]
+    testcase = models.ForeignKey(TestCase, on_delete=models.CASCADE, related_name='executions', verbose_name='测试用例')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='执行人')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, verbose_name='执行结果')
+    executed_at = models.DateTimeField(default=timezone.now, verbose_name='执行时间')
+
+    class Meta:
+        db_table = 'testcase_executions'
+        verbose_name = '测试用例执行记录'
+        verbose_name_plural = '测试用例执行记录'
+        ordering = ['-executed_at']
+
 class TestCaseStep(models.Model):
     """测试用例步骤"""
     testcase = models.ForeignKey(TestCase, on_delete=models.CASCADE, related_name='step_details')

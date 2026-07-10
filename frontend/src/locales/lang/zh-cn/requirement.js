@@ -229,6 +229,7 @@ export default {
     delete: '删除',
     batchAdopt: '批量采纳',
     batchDiscard: '批量弃用',
+    retry: '重试',
 
     // Empty State
     noTasks: '暂无生成任务',

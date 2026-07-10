@@ -6,8 +6,11 @@
         <span class="nav-arrow">←</span>
         <span class="nav-label">{{ $t('testcase.previousCase') }}</span>
       </button>
-      <button class="nav-btn back" @click="router.push({ path: '/ai-generation/testcases', query: route.query })">
+      <button class="nav-btn back" @click="goBackToList">
         <span class="nav-label">{{ $t('common.back') }}</span>
+      </button>
+      <button class="nav-btn copy" @click="copyTestCase">
+        <span class="nav-label">{{ $t('testcase.copyCase') }}</span>
       </button>
       <button class="nav-btn edit" @click="editTestCase">
         <span class="nav-label">{{ $t('common.edit') }}</span>
@@ -24,6 +27,7 @@
         <!-- 标题 -->
         <div class="title-block">
           <span class="priority-dot" :class="testcase.priority"></span>
+          <span v-if="neighbors.current?.position" class="case-seq">#{{ neighbors.current.position }}</span>
           <h1 class="case-title">{{ testcase.title }}</h1>
           <div class="exec-actions">
             <button class="exec-btn pass" :class="{ active: testcase.execution_status === 'passed' }" @click="executeCase('passed')" :disabled="executing">✓ 通过</button>
@@ -98,6 +102,19 @@
             <span class="meta-key">{{ $t('testcase.createdAt') }}</span>
             <span class="meta-value meta-date">{{ formatDate(testcase.created_at) }}</span>
           </div>
+          <div class="meta-divider"></div>
+          <!-- 执行历史 -->
+          <div class="meta-row" style="flex-direction: column; align-items: flex-start;">
+            <span class="meta-key" style="margin-bottom: 6px;">📋 {{ $t('testcase.executionHistory') }}</span>
+            <div v-if="testcase.executions && testcase.executions.length > 0" class="exec-history">
+              <div v-for="exec in testcase.executions.slice(0, 10)" :key="exec.id" class="exec-item">
+                <span class="exec-status" :class="exec.status">{{ exec.status === 'passed' ? '✓' : '✕' }}</span>
+                <span class="exec-user">{{ exec.user?.username }}</span>
+                <span class="exec-time">{{ formatDate(exec.executed_at) }}</span>
+              </div>
+            </div>
+            <span v-else class="meta-muted">暂无执行记录</span>
+          </div>
         </div>
       </div>
     </div>
@@ -107,8 +124,8 @@
       <button class="bn-btn" :disabled="!neighbors.previous" @click="goToNeighbor(neighbors.previous?.id)">
         ← {{ $t('testcase.previousCase') }}
       </button>
-      <span class="bn-pos" v-if="neighbors.current">
-        {{ neighbors.current.id }}
+      <span class="bn-pos" v-if="neighbors.current?.position">
+        #{{ neighbors.current.position }} / {{ neighbors.current.total }}
       </span>
       <button class="bn-btn" :disabled="!neighbors.next" @click="goToNeighbor(neighbors.next?.id)">
         {{ $t('testcase.nextCase') }} →
@@ -137,7 +154,9 @@ const executeCase = async (status) => {
   executing.value = true
   try {
     await api.patch(`/testcases/${testcase.value.id}/execute/`, { execution_status: status })
-    testcase.value.execution_status = status
+    // 重新获取用例数据以刷新执行历史
+    const { data } = await api.get(`/testcases/${testcase.value.id}/`)
+    testcase.value = data
     ElMessage.success(status === 'passed' ? '已标记通过' : '已标记不通过')
   } catch (error) {
     ElMessage.error('操作失败')
@@ -174,6 +193,21 @@ const goToNeighbor = (id) => {
   if (!id) return
   router.push({ path: `/ai-generation/testcases/${id}`, query: route.query })
   window.scrollTo(0, 0)
+}
+
+const goBackToList = () => {
+  const query = { ...route.query }
+  // 根据序号计算所在页码
+  const pos = neighbors.value.current?.position
+  if (pos) {
+    const pageSize = 15
+    query.page = Math.ceil(pos / pageSize)
+  }
+  router.push({ path: '/ai-generation/testcases', query })
+}
+
+const copyTestCase = () => {
+  router.push({ path: '/ai-generation/testcases/create', query: { copy_from: route.params.id, ...route.query } })
 }
 
 const editTestCase = () => {
@@ -223,7 +257,9 @@ watch(() => route.params.id, () => { fetchTestCase() })
   transition: all .15s;
   &:hover:not(:disabled) { border-color: #667eea; color: #667eea; }
   &:disabled { opacity: .35; cursor: not-allowed; }
-  &.edit { margin-left: auto; background: #667eea; color: #fff; border-color: #667eea; font-weight: 500; }
+  &.copy { margin-left: auto; background: #e8f4fd; color: #2196f3; border-color: #90caf9; font-weight: 500; }
+  &.copy:hover { background: #bbdefb; }
+  &.edit { background: #667eea; color: #fff; border-color: #667eea; font-weight: 500; }
   &.edit:hover { background: #5a6fd6; }
 }
 .nav-arrow { font-size: 1.1rem; }
@@ -377,6 +413,31 @@ watch(() => route.params.id, () => { fetchTestCase() })
   background: #e2e8f0;
   margin: 8px 0;
 }
+
+/* 执行历史 */
+.exec-history {
+  width: 100%;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.exec-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px solid #f5f5f5;
+}
+.exec-status {
+  font-weight: 700;
+  font-size: 11px;
+  width: 16px;
+  text-align: center;
+  &.passed { color: #48bb78; }
+  &.failed { color: #f56565; }
+}
+.exec-user { color: #4a5568; min-width: 50px; }
+.exec-time { color: #999; font-size: 11px; margin-left: auto; }
 
 .pri-badge {
   display: inline-block;

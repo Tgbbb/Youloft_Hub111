@@ -24,6 +24,10 @@ from .views import (
     UiDashboardViewSet
 )
 from .views_config import EnvironmentConfigViewSet, AIIntelligentModeConfigViewSet
+from .views_midscene import (
+    MidsceneProjectViewSet, MidsceneDeviceViewSet,
+    MidsceneCaseViewSet, MidsceneExecutionRecordViewSet,
+)
 
 router = DefaultRouter()
 router.register(r'dashboard', UiDashboardViewSet, basename='dashboard')
@@ -52,6 +56,12 @@ router.register(r'operation-records', OperationRecordViewSet)
 router.register(r'config/environment', EnvironmentConfigViewSet, basename='config-environment')
 router.register(r'config/ai-mode', AIIntelligentModeConfigViewSet, basename='config-ai-mode')
 router.register(r'ai-models', AIIntelligentModeConfigViewSet, basename='ai-models')
+
+# Midscene AI 移动端自动化
+router.register(r'midscene/projects', MidsceneProjectViewSet, basename='midscene-projects')
+router.register(r'midscene/devices', MidsceneDeviceViewSet, basename='midscene-devices')
+router.register(r'midscene/cases', MidsceneCaseViewSet, basename='midscene-cases')
+router.register(r'midscene/executions', MidsceneExecutionRecordViewSet, basename='midscene-executions')
 
 urlpatterns = [
     path('', include(router.urls)),

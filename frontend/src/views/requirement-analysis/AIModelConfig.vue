@@ -152,6 +152,8 @@
                 <option value="clarifier">{{ $t('configuration.aiModel.roles.clarifier') }}</option>
                 <option value="reviser">{{ $t('configuration.aiModel.roles.reviser') }}</option>
                 <option value="extractor">{{ $t('configuration.aiModel.roles.extractor') }}</option>
+                <option value="browser_use_text">{{ $t('configuration.aiModel.roles.browser_use_text') }}</option>
+                <option value="app_automation_vision">APP自动化-VLM视觉模型</option>
               </select>
             </div>
 

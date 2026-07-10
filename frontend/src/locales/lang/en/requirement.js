@@ -219,6 +219,7 @@ export default {
     delete: 'Delete',
     batchAdopt: 'Batch Adopt',
     batchDiscard: 'Batch Discard',
+    retry: 'Retry',
 
     // Empty State
     noTasks: 'No Tasks',

@@ -1057,3 +1057,227 @@ class AIExecutionRecord(models.Model):
 
     def __str__(self):
         return f"{self.case_name} - {self.get_status_display()}"
+
+
+# ============================================================
+# Midscene AI 移动端自动化模型 (Android + iOS)
+# ============================================================
+
+class MidsceneProject(models.Model):
+    """Midscene 移动端测试项目"""
+    name = models.CharField(max_length=200, verbose_name='项目名称')
+    description = models.TextField(blank=True, default='', verbose_name='项目描述')
+    default_app_package = models.CharField(max_length=255, blank=True, default='', verbose_name='默认应用包名',
+                                           help_text='Android包名或iOS Bundle ID，执行时自动启动')
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='midscene_projects', verbose_name='负责人')
+    members = models.ManyToManyField(User, blank=True, related_name='midscene_member_projects', verbose_name='团队成员')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_projects'
+        verbose_name = 'Midscene项目'
+        verbose_name_plural = 'Midscene项目'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.name
+
+
+class MidsceneDevice(models.Model):
+    """Midscene 测试设备（Android + iOS）"""
+    PLATFORM_CHOICES = [
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+    ]
+    DEVICE_STATUS_CHOICES = [
+        ('online', '在线'),
+        ('offline', '离线'),
+        ('available', '可用'),
+        ('locked', '已锁定'),
+    ]
+
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name='平台类型')
+    device_id = models.CharField(max_length=255, unique=True, verbose_name='设备标识')
+    name = models.CharField(max_length=255, blank=True, default='', verbose_name='设备名称')
+    status = models.CharField(max_length=20, choices=DEVICE_STATUS_CHOICES, default='offline', verbose_name='状态')
+
+    # Android 字段
+    android_version = models.CharField(max_length=50, blank=True, default='', verbose_name='Android版本')
+    adb_serial = models.CharField(max_length=255, blank=True, default='', verbose_name='ADB序列号')
+
+    # iOS 字段
+    ios_version = models.CharField(max_length=50, blank=True, default='', verbose_name='iOS版本')
+    tidevice_udid = models.CharField(max_length=255, blank=True, default='', verbose_name='tidevice UDID')
+    wda_host = models.CharField(max_length=255, blank=True, default='', verbose_name='WebDriverAgent地址',
+                                help_text='iOS WDA的HTTP地址，如 127.0.0.1:8100')
+
+    # 锁定机制
+    locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='locked_midscene_devices', verbose_name='锁定用户')
+    locked_at = models.DateTimeField(null=True, blank=True, verbose_name='锁定时间')
+    max_lock_time = models.IntegerField(default=28800, verbose_name='最大锁定时间(秒)',
+                                        help_text='超过此时间自动解锁，默认8小时')
+
+    # 连接信息
+    ip_address = models.CharField(max_length=50, blank=True, default='', verbose_name='IP地址')
+    port = models.IntegerField(default=5555, verbose_name='端口')
+
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_devices'
+        verbose_name = 'Midscene设备'
+        verbose_name_plural = 'Midscene设备'
+        ordering = ['platform', '-created_at']
+
+    def __str__(self):
+        return f"{self.name or self.device_id} ({self.get_platform_display()})"
+
+    def lock(self, user):
+        """锁定设备"""
+        if self.status == 'locked' and self.locked_by != user:
+            raise ValueError(f"设备 {self.device_id} 已被其他用户锁定")
+        self.status = 'locked'
+        self.locked_by = user
+        self.locked_at = timezone.now()
+        self.save(update_fields=['status', 'locked_by', 'locked_at'])
+
+    def unlock(self):
+        """解锁设备"""
+        self.status = 'available'
+        self.locked_by = None
+        self.locked_at = None
+        self.save(update_fields=['status', 'locked_by', 'locked_at'])
+
+    def is_lock_expired(self):
+        """检查锁定是否过期"""
+        if self.locked_at and self.max_lock_time:
+            return (timezone.now() - self.locked_at).total_seconds() > self.max_lock_time
+        return False
+
+
+class MidsceneCase(models.Model):
+    """Midscene AI 测试用例（自然语言驱动）"""
+    project = models.ForeignKey(MidsceneProject, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='midscene_cases', verbose_name='所属项目')
+    name = models.CharField(max_length=200, verbose_name='用例名称')
+    description = models.TextField(blank=True, default='', verbose_name='用例描述')
+
+    # 核心：自然语言测试步骤，每行一个操作
+    ai_prompt = models.TextField(verbose_name='AI测试步骤',
+                                 help_text='自然语言描述的测试步骤，每行一步')
+
+    # AI 模型配置（复用 AIModelConfig）
+    ai_model_config = models.ForeignKey(
+        'requirement_analysis.AIModelConfig',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='midscene_cases',
+        verbose_name='AI模型配置',
+        help_text='Midscene执行时使用的VLM视觉模型'
+    )
+
+    # 执行参数
+    max_steps = models.IntegerField(default=30, verbose_name='最大执行步数',
+                                    help_text='AI自动决策的最大操作步数')
+    action_delay = models.FloatField(default=0.5, verbose_name='操作间隔(秒)',
+                                     help_text='每次操作之间的等待时间')
+
+    # 应用信息
+    app_package = models.CharField(max_length=255, blank=True, default='', verbose_name='Android包名/iOS Bundle ID',
+                                   help_text='如 com.example.app')
+    app_activity = models.CharField(max_length=255, blank=True, default='', verbose_name='启动Activity',
+                                    help_text='仅Android需要，iOS留空')
+
+    ai_act_context = models.TextField(blank=True, default='', verbose_name='全局背景提示',
+                                       help_text='每次VLM调用都会附加此提示，如"遇到权限弹窗先点允许"')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
+                                   related_name='created_midscene_cases', verbose_name='创建人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_cases'
+        verbose_name = 'Midscene用例'
+        verbose_name_plural = 'Midscene用例'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return self.name
+
+
+class MidsceneExecutionRecord(models.Model):
+    """Midscene 执行记录"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('running', '执行中'),
+        ('passed', '通过'),
+        ('failed', '失败'),
+        ('stopped', '已停止'),
+        ('error', '异常'),
+    ]
+    PLATFORM_CHOICES = [
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+    ]
+
+    midscene_case = models.ForeignKey(MidsceneCase, on_delete=models.SET_NULL, null=True,
+                                      related_name='execution_records', verbose_name='关联用例')
+    case_name = models.CharField(max_length=200, verbose_name='用例名称快照')
+
+    # 设备信息
+    device = models.ForeignKey(MidsceneDevice, on_delete=models.SET_NULL, null=True, verbose_name='执行设备')
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, blank=True, default='', verbose_name='平台')
+
+    # 执行状态
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='执行状态')
+    auto_plan = models.BooleanField(default=False, verbose_name='智能规划模式',
+                                    help_text='开启后VLM自动将复杂指令拆解为多步执行')
+    progress = models.IntegerField(default=0, verbose_name='进度')
+
+    # 时间
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name='结束时间')
+    duration = models.FloatField(default=0, verbose_name='执行时长(秒)')
+
+    # AI 模型信息快照（执行时保存，方便回溯）
+    model_config_snapshot = models.JSONField(default=dict, verbose_name='AI模型快照')
+
+    # 报告
+    report_path = models.CharField(max_length=500, blank=True, default='', verbose_name='Midscene报告路径')
+
+    # 步骤结果
+    total_steps = models.IntegerField(default=0, verbose_name='总步数')
+    passed_steps = models.IntegerField(default=0, verbose_name='通过步数')
+    failed_steps = models.IntegerField(default=0, verbose_name='失败步数')
+    steps_detail = models.JSONField(default=list, verbose_name='步骤详情',
+                                    help_text='每一步的截图、AI推理、结果')
+
+    # 任务追踪
+    task_id = models.CharField(max_length=255, blank=True, default='', verbose_name='Celery任务ID')
+
+    # 错误信息
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+
+    executed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
+                                    related_name='midscene_executions', verbose_name='执行人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_execution_records'
+        verbose_name = 'Midscene执行记录'
+        verbose_name_plural = 'Midscene执行记录'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.case_name} - {self.get_status_display()}"
+
+    @property
+    def pass_rate(self):
+        """通过率"""
+        if self.total_steps == 0:
+            return 0
+        return round((self.passed_steps / self.total_steps) * 100, 2)

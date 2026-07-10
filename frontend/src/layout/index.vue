@@ -209,6 +209,20 @@
               <span>{{ $t('menu.aiExecutionRecords') }}</span>
             </el-menu-item>
 
+            <!-- Midscene 移动端 AI 自动化 -->
+            <el-menu-item index="/ai-intelligent-mode/midscene">
+              <el-icon><Cellphone /></el-icon>
+              <span>Midscene 移动端测试</span>
+            </el-menu-item>
+            <el-menu-item index="/ai-intelligent-mode/midscene/projects">
+              <el-icon><Folder /></el-icon>
+              <span>Midscene 项目管理</span>
+            </el-menu-item>
+            <el-menu-item index="/ai-intelligent-mode/midscene/executions">
+              <el-icon><Timer /></el-icon>
+              <span>Midscene 执行历史</span>
+            </el-menu-item>
+
           </template>
 
           <!-- 配置中心模块菜单 -->
@@ -429,6 +443,11 @@ const breadcrumbTitle = computed(() => {
     '/ai-intelligent-mode/testing': t('menu.aiIntelligentTesting'),
     '/ai-intelligent-mode/cases': t('menu.aiCaseManagement'),
     '/ai-intelligent-mode/execution-records': t('menu.aiExecutionRecords'),
+
+    // Midscene 移动端 AI
+    '/ai-intelligent-mode/midscene': 'Midscene 移动端测试',
+    '/ai-intelligent-mode/midscene/projects': 'Midscene 项目管理',
+    '/ai-intelligent-mode/midscene/executions': 'Midscene 执行历史',
 
 
     // 配置中心

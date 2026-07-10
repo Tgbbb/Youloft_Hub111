@@ -9,7 +9,7 @@ from django.db import models
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.views import APIView
 
-from .models import TestCase, TestCaseStep, TestCaseAttachment, TestCaseComment, TestCaseImportRecord
+from .models import TestCase, TestCaseStep, TestCaseAttachment, TestCaseComment, TestCaseImportRecord, TestCaseExecution
 from .serializers import (
     TestCaseSerializer, TestCaseListSerializer, TestCaseCreateSerializer, TestCaseUpdateSerializer,
     TestCaseImportRecordListSerializer, TestCaseImportRecordDetailSerializer
@@ -276,8 +276,12 @@ def testcase_neighbors(request, pk):
     # 后一条：ID 大于当前的最小 ID
     next_item = qs.filter(id__gt=current.id).order_by('id').values('id', 'title').first()
 
+    # 当前位置（在筛选结果中的序号）和总数
+    position = qs.filter(id__lt=current.id).count() + 1
+    total = qs.count()
+
     return Response({
-        'current': {'id': current.id, 'title': current.title},
+        'current': {'id': current.id, 'title': current.title, 'position': position, 'total': total},
         'previous': prev,
         'next': next_item,
     })
@@ -296,6 +300,15 @@ def testcase_execute(request, pk):
     if new_status not in ('passed', 'failed', None):
         return Response({'error': '无效的执行状态'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # 更新用例当前状态
     tc.execution_status = new_status
     tc.save(update_fields=['execution_status'])
+
+    # 记录执行历史
+    TestCaseExecution.objects.create(
+        testcase=tc,
+        user=request.user,
+        status=new_status
+    )
+
     return Response({'id': tc.id, 'execution_status': tc.execution_status})

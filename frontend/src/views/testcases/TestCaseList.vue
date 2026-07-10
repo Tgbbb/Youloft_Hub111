@@ -295,10 +295,20 @@ const goToTestCase = (id) => {
   if (moduleFilter.value) query.function_module = moduleFilter.value
   if (priorityFilter.value) query.priority = priorityFilter.value
   if (searchText.value) query.search = searchText.value
+  query.page = currentPage.value
   router.push({ path: `/ai-generation/testcases/${id}`, query })
 }
 
-const editTestCase = (tc) => router.push(`/ai-generation/testcases/${tc.id}/edit`)
+const editTestCase = (tc) => {
+  const query = {}
+  if (projectFilter.value) query.project = projectFilter.value
+  if (versionFilter.value) query.versions = versionFilter.value
+  if (moduleFilter.value) query.function_module = moduleFilter.value
+  if (priorityFilter.value) query.priority = priorityFilter.value
+  if (searchText.value) query.search = searchText.value
+  query.page = currentPage.value
+  router.push({ path: `/ai-generation/testcases/${tc.id}/edit`, query })
+}
 
 const executeCase = async (tc, status) => {
   try {
@@ -413,6 +423,7 @@ onMounted(() => {
   if (route.query.function_module) moduleFilter.value = Number(route.query.function_module)
   if (route.query.priority) priorityFilter.value = route.query.priority
   if (route.query.search) searchText.value = route.query.search
+  if (route.query.page) currentPage.value = Number(route.query.page)
   if (hasAnyFilter()) fetchTestCases()
 })
 </script>

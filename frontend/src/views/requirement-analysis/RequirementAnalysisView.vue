@@ -682,6 +682,7 @@ export default {
       clarificationQuestions: [],  // AI返回的澄清问题 [{id, question}]
       clarificationAnswers: {},  // 用户对每个问题的回答 {questionId: answerText}
       clarificationRaw: '',  // AI原始返回文本（用于调试）
+      clarificationTaskId: null,  // 澄清阶段创建的task_id
       pendingGeneration: null  // 待执行的生成上下文
     }
   },
@@ -1122,6 +1123,7 @@ export default {
         const questions = response.data.questions || []
         this.clarificationQuestions = questions
         this.clarificationRaw = response.data.raw || ''
+        this.clarificationTaskId = response.data.task_id || null
 
         if (questions.length === 0) {
           // 没有不明确点，提示用户可以跳过
@@ -1170,6 +1172,7 @@ export default {
         const questions = response.data.questions || []
         this.clarificationQuestions = questions
         this.clarificationRaw = response.data.raw || ''
+        this.clarificationTaskId = response.data.task_id || null
 
         if (questions.length === 0) {
           ElMessage.info(this.$t('requirementAnalysis.clarificationNoQuestions'))
@@ -1202,6 +1205,18 @@ export default {
 
       // 隐藏澄清面板
       this.showClarificationPanel = false
+
+      // 如果已有 task_id，先保存澄清答案到 task
+      if (this.clarificationTaskId) {
+        try {
+          await api.post(`/requirement-analysis/testcase-generation/${this.clarificationTaskId}/save-answers/`, {
+            clarification_answers: answers
+          })
+        } catch (e) {
+          console.error('保存澄清答案失败:', e)
+          // 不阻塞流程，继续往下
+        }
+      }
 
       // 根据pendingGeneration类型执行对应的生成
       const ctx = this.pendingGeneration
@@ -1395,6 +1410,10 @@ export default {
         if (moduleId) {
           formData.append('function_module_id', moduleId)
         }
+        // 传递 clarify task_id 复用已有任务
+        if (this.clarificationTaskId) {
+          formData.append('task_id', this.clarificationTaskId)
+        }
 
         ElMessage.info('正在上传PDF并提取图文...')
         const response = await api.post(
@@ -1481,6 +1500,10 @@ export default {
         // 如果选择了功能模块，添加到请求中
         if (functionModuleId) {
           requestData.function_module_id = functionModuleId
+        }
+        // 传递 clarify task_id 复用已有任务
+        if (this.clarificationTaskId) {
+          requestData.task_id = this.clarificationTaskId
         }
 
         const response = await api.post('/requirement-analysis/testcase-generation/generate/', requestData)

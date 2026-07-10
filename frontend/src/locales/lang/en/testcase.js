@@ -22,6 +22,9 @@ export default {
     project: 'Project',
     relatedProject: 'Related Project',
     relatedVersions: 'Related Versions',
+    moduleName: 'Module',
+    selectModule: 'Select Module',
+    noModule: 'No Module',
     priority: 'Priority',
     status: 'Status',
     testType: 'Test Type',
@@ -30,6 +33,8 @@ export default {
     expectedResult: 'Expected Result',
     author: 'Author',
     createdAt: 'Created At',
+    executionHistory: 'Exec History',
+    copyCase: 'Copy',
     serialNumber: 'No.',
 
     // Priority

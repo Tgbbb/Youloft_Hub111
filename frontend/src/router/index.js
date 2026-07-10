@@ -335,6 +335,22 @@ const routes = [
                 path: 'execution-records',
                 name: 'AIExecutionRecords',
                 component: UiAIExecutionRecords
+            },
+            // Midscene 移动端 AI 自动化
+            {
+                path: 'midscene',
+                name: 'MidsceneTesting',
+                component: () => import('@/views/ui-automation/ai/MidsceneTesting.vue')
+            },
+            {
+                path: 'midscene/projects',
+                name: 'MidsceneProjects',
+                component: () => import('@/views/ui-automation/ai/MidsceneProjectList.vue')
+            },
+            {
+                path: 'midscene/executions',
+                name: 'MidsceneExecutionList',
+                component: () => import('@/views/ui-automation/ai/MidsceneExecutionList.vue')
             }
         ]
     },

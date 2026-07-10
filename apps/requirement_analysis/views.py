@@ -42,7 +42,7 @@ from .serializers import (
     AnalysisTaskSerializer, DocumentUploadSerializer,
     TestCaseGenerationRequestSerializer, TestCaseReviewRequestSerializer,
     AIModelConfigSerializer, PromptConfigSerializer, TestCaseGenerationTaskSerializer,
-    GenerationConfigSerializer
+    GenerationConfigSerializer, ClarificationRequestSerializer
 )
 from .services import RequirementAnalysisService, DocumentProcessor
 
@@ -1681,6 +1681,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
     def clarify(self, request):
         """
         需求澄清：分析需求文档，返回不明确的问题点。
+        前置创建 task，后续流程通过 task_id 关联。
 
         支持两种模式：
         1. 纯文本模式：POST { requirement_text: "..." }
@@ -1701,6 +1702,27 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     pass
 
             files = request.FILES.getlist('files') or ([request.FILES.get('file')] if request.FILES.get('file') else [])
+
+            # --- 前置创建 task ---
+            import uuid as uuid_mod
+            task_kwargs = {
+                'task_id': f"TASK_{uuid_mod.uuid4().hex[:8].upper()}",
+                'title': request.data.get('title', '需求澄清任务'),
+                'requirement_text': request.data.get('requirement_text', request.data.get('description', '')),
+                'status': 'pending',
+                'pipeline_stage': 'clarifying',
+                'project': project if project_id else None,
+                'knowledge_base': knowledge_base,
+                'version_ids': request.data.get('version_ids', []),
+                'created_by': request.user if request.user.is_authenticated else None,
+            }
+            # 确保 created_by 不为 None
+            if not task_kwargs['created_by']:
+                from apps.users.models import User
+                task_kwargs['created_by'] = User.objects.filter(is_superuser=True).first() or User.objects.first()
+
+            task = TestCaseGenerationTask.objects.create(**task_kwargs)
+            logger.info(f"[clarify] 前置创建 task={task.task_id} pipeline_stage=clarifying")
 
             if files:
                 # --- 多模态模式：上传文件 → 提取文本和图片 → 视觉模型澄清 ---
@@ -1796,7 +1818,13 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 future = executor.submit(run_clarify_multimodal)
                 questions = future.result(timeout=300)
 
+                # 保存澄清结果到 task
+                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
+                task.pipeline_stage = 'awaiting_answers'
+                task.save(update_fields=['clarification_questions', 'pipeline_stage'])
+
                 return Response({
+                    'task_id': task.task_id,
                     'questions': questions,
                     'mode': 'multimodal',
                     'text_length': len(requirement_text),
@@ -1872,7 +1900,13 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 future = executor.submit(run_clarify)
                 questions = future.result(timeout=120)  # 2分钟超时
 
+                # 保存澄清结果到 task
+                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
+                task.pipeline_stage = 'awaiting_answers'
+                task.save(update_fields=['clarification_questions', 'pipeline_stage'])
+
                 return Response({
+                    'task_id': task.task_id,
                     'questions': questions,
                     'mode': 'text',
                     'text_length': len(requirement_text),
@@ -1880,10 +1914,276 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             logger.error(f"需求澄清接口错误: {e}")
+            # 如果 task 已创建，标记为 failed
+            try:
+                task.pipeline_stage = 'failed'
+                task.error_message = str(e)[:500]
+                task.save(update_fields=['pipeline_stage', 'error_message'])
+            except Exception:
+                pass
             return Response(
                 {'error': f'需求澄清失败: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['post'], url_path='save-answers')
+    def save_clarification_answers(self, request, task_id=None):
+        """保存澄清答案，将 pipeline_stage 推进到 answers_ready"""
+        try:
+            task = self.get_object()
+            answers = request.data.get('clarification_answers', [])
+
+            if not answers:
+                return Response(
+                    {'error': '没有提供澄清答案'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            task.clarification_answers = answers
+            task.pipeline_stage = 'answers_ready'
+            task.save(update_fields=['clarification_answers', 'pipeline_stage'])
+
+            logger.info(f"[save-answers] task={task.task_id} 答案已保存, stage=answers_ready")
+            return Response({
+                'message': '澄清答案已保存',
+                'task_id': task.task_id,
+                'pipeline_stage': task.pipeline_stage,
+            })
+        except Exception as e:
+            logger.error(f"保存澄清答案失败: {e}")
+            return Response(
+                {'error': f'保存失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'], url_path='retry')
+    def retry(self, request, task_id=None):
+        """重试失败的任务 — 从断点继续，跑完剩余全部流程"""
+        try:
+            task = self.get_object()
+            stage = task.pipeline_stage
+
+            logger.info(f"[retry] task={task.task_id} stage={stage}")
+
+            # 根据断点决定从哪步开始
+            if stage in ('failed', 'generating', 'answers_ready'):
+                # 从生成阶段重新开始 → 生成 → 评审 → 改进 → 完成
+                logger.info(f"[retry] 从生成阶段重新开始")
+                task.status = 'generating'
+                task.pipeline_stage = 'generating'
+                task.error_message = ''
+                task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+
+                import threading
+                thread = threading.Thread(
+                    target=self._execute_generation_pipeline,
+                    args=(task,),
+                    daemon=True
+                )
+                thread.start()
+
+                return Response({
+                    'message': '重试已启动，从生成阶段继续',
+                    'task_id': task.task_id,
+                    'pipeline_stage': 'generating',
+                })
+
+            elif stage == 'reviewing':
+                # 从评审阶段重新开始 → 评审 → 改进 → 完成
+                logger.info(f"[retry] 从评审阶段重新开始")
+                task.status = 'reviewing'
+                task.pipeline_stage = 'reviewing'
+                task.error_message = ''
+                task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+
+                self._start_review_pipeline(task)
+
+                return Response({
+                    'message': '重试已启动，从评审阶段继续',
+                    'task_id': task.task_id,
+                    'pipeline_stage': 'reviewing',
+                })
+
+            elif stage == 'revising':
+                # 从改进阶段重新开始 → 改进 → 完成
+                logger.info(f"[retry] 从改进阶段重新开始")
+                task.status = 'revising'
+                task.pipeline_stage = 'revising'
+                task.error_message = ''
+                task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+
+                self._start_revise_pipeline(task)
+
+                return Response({
+                    'message': '重试已启动，从改进阶段继续',
+                    'task_id': task.task_id,
+                    'pipeline_stage': 'revising',
+                })
+
+            elif stage == 'awaiting_answers':
+                return Response({
+                    'message': '任务等待用户填写澄清答案',
+                    'task_id': task.task_id,
+                    'pipeline_stage': 'awaiting_answers',
+                    'questions': task.clarification_questions,
+                })
+
+            elif stage == 'completed':
+                return Response({
+                    'message': '任务已完成，无需重试',
+                    'task_id': task.task_id,
+                    'pipeline_stage': 'completed',
+                })
+
+            else:
+                return Response({
+                    'error': f'当前阶段 {stage} 不支持重试',
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            logger.error(f"重试失败: {e}")
+            return Response(
+                {'error': f'重试失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    # ── Pipeline Helpers ──
+
+    def _execute_generation_pipeline(self, task):
+        """执行生成 → 评审 → 改进 全流程（用于重试）"""
+        import asyncio, os as _os
+        _os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
+        try:
+            task.status = 'generating'
+            task.pipeline_stage = 'generating'
+            task.progress = 10
+            task.save(update_fields=['status', 'pipeline_stage', 'progress'])
+
+            logger.info(f"[pipeline] task={task.task_id} 开始生成")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    AIModelService.generate_test_cases_stream(task)
+                )
+                task.generated_test_cases = result
+                task.progress = 50
+                task.pipeline_stage = 'generated'
+                task.save(update_fields=['generated_test_cases', 'progress', 'pipeline_stage'])
+                logger.info(f"[pipeline] task={task.task_id} 生成完成")
+            finally:
+                loop.close()
+
+            self._start_review_pipeline(task)
+
+        except Exception as e:
+            logger.error(f"[pipeline] 生成阶段失败: {e}")
+            task.status = 'failed'
+            task.pipeline_stage = 'failed'
+            task.error_message = str(e)[:500]
+            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+
+    def _start_review_pipeline(self, task):
+        """执行评审 → 改进 流程"""
+        import asyncio, os as _os
+        _os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
+        try:
+            reviewer_config = task.reviewer_model_config
+            if not reviewer_config:
+                reviewer_config = AIModelConfig.objects.filter(role='reviewer', is_active=True).first()
+            reviewer_prompt = task.reviewer_prompt_config
+            if not reviewer_prompt:
+                reviewer_prompt = PromptConfig.get_active_config('reviewer')
+
+            if not reviewer_config or not reviewer_prompt:
+                logger.info(f"[pipeline] 无评审配置，跳过评审，直接完成")
+                task.status = 'completed'
+                task.pipeline_stage = 'completed'
+                task.final_test_cases = task.generated_test_cases
+                task.progress = 100
+                task.completed_at = timezone.now()
+                task.save(update_fields=['status', 'pipeline_stage', 'final_test_cases', 'progress', 'completed_at'])
+                return
+
+            task.status = 'reviewing'
+            task.pipeline_stage = 'reviewing'
+            task.progress = 60
+            task.save(update_fields=['status', 'pipeline_stage', 'progress'])
+
+            logger.info(f"[pipeline] task={task.task_id} 开始评审")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                review_result = loop.run_until_complete(
+                    AIModelService.review_test_cases(task, task.generated_test_cases)
+                )
+                task.review_feedback = review_result
+                task.progress = 75
+                task.pipeline_stage = 'reviewed'
+                task.save(update_fields=['review_feedback', 'progress', 'pipeline_stage'])
+                logger.info(f"[pipeline] task={task.task_id} 评审完成")
+            finally:
+                loop.close()
+
+            self._start_revise_pipeline(task)
+
+        except Exception as e:
+            logger.error(f"[pipeline] 评审阶段失败: {e}")
+            task.status = 'failed'
+            task.pipeline_stage = 'failed'
+            task.error_message = str(e)[:500]
+            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+
+    def _start_revise_pipeline(self, task):
+        """执行改进 → 完成"""
+        import asyncio, os as _os
+        _os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
+        try:
+            has_feedback = bool(task.review_feedback)
+
+            if not has_feedback:
+                logger.info(f"[pipeline] 无评审反馈，跳过改进，直接完成")
+                task.status = 'completed'
+                task.pipeline_stage = 'completed'
+                task.final_test_cases = task.generated_test_cases
+                task.progress = 100
+                task.completed_at = timezone.now()
+                task.save(update_fields=['status', 'pipeline_stage', 'final_test_cases', 'progress', 'completed_at'])
+                return
+
+            task.status = 'revising'
+            task.pipeline_stage = 'revising'
+            task.progress = 85
+            task.save(update_fields=['status', 'pipeline_stage', 'progress'])
+
+            logger.info(f"[pipeline] task={task.task_id} 开始改进")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                revised = loop.run_until_complete(
+                    AIModelService.revise_test_cases_based_on_review(
+                        task,
+                        task.generated_test_cases,
+                        task.review_feedback,
+                    )
+                )
+                task.final_test_cases = revised
+            finally:
+                loop.close()
+
+            task.status = 'completed'
+            task.pipeline_stage = 'completed'
+            task.progress = 100
+            task.completed_at = timezone.now()
+            task.save(update_fields=['status', 'pipeline_stage', 'final_test_cases', 'progress', 'completed_at'])
+            logger.info(f"[pipeline] task={task.task_id} 改进完成，全流程结束")
+
+        except Exception as e:
+            logger.error(f"[pipeline] 改进阶段失败: {e}")
+            task.status = 'failed'
+            task.pipeline_stage = 'failed'
+            task.error_message = str(e)[:500]
+            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
              url_path='generate_multimodal')
@@ -2062,18 +2362,39 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             else:
                 logger.info(f"[generate_multimodal] 未收到澄清回答，直接生成")
 
+            # 检查是否复用已有的 clarify task
+            existing_task_id = request.data.get('task_id')
+            existing_task_obj = None
+            if existing_task_id:
+                try:
+                    existing_task_obj = TestCaseGenerationTask.objects.get(task_id=existing_task_id)
+                except TestCaseGenerationTask.DoesNotExist:
+                    logger.warning(f"[generate_multimodal] task_id={existing_task_id} 不存在，将创建新任务")
+                    existing_task_id = None
+
             task_serializer = TestCaseGenerationTaskSerializer(
                 data=task_data, context={'request': request}
             )
-
             if not task_serializer.is_valid():
                 return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
             task = task_serializer.save()
 
-            # 异步执行（复用 generate 的 run_generation_task）
+            # 如果有旧任务，把澄清数据迁移过来，标记旧任务为已废弃
+            if existing_task_obj:
+                task.clarification_questions = existing_task_obj.clarification_questions
+                task.clarification_answers = existing_task_obj.clarification_answers
+                task.pipeline_stage = 'answers_ready'
+                task.save(update_fields=['clarification_questions', 'clarification_answers', 'pipeline_stage'])
+                existing_task_obj.pipeline_stage = 'completed'
+                existing_task_obj.status = 'cancelled'
+                existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
+                logger.info(f"[generate_multimodal] 迁移澄清数据 task={existing_task_id} → {task.task_id}")
+
+            # 异步执行
             def run_generation_task():
                 try:
+                    import os as _os
+                    _os.environ['DJANGO_ALLOW_ASYNC_UNSAFE'] = 'true'
                     import threading
 
                     def execute_task():
@@ -2305,7 +2626,6 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             return Response({
                 'message': '多模态测试用例生成任务已创建',
                 'task_id': task.task_id,
-                'task': task_serializer.data
             }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
@@ -2442,6 +2762,16 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     # 如果没有配置，默认使用流式输出
                     task_data['output_mode'] = 'stream'
 
+            # 检查是否复用已有的 clarify task
+            existing_task_id = request.data.get('task_id')
+            existing_task_obj = None
+            if existing_task_id:
+                try:
+                    existing_task_obj = TestCaseGenerationTask.objects.get(task_id=existing_task_id)
+                except TestCaseGenerationTask.DoesNotExist:
+                    logger.warning(f"[generate] task_id={existing_task_id} 不存在，将创建新任务")
+                    existing_task_id = None
+
             task_serializer = TestCaseGenerationTaskSerializer(
                 data=task_data,
                 context={'request': request}
@@ -2449,9 +2779,21 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
             if task_serializer.is_valid():
                 task = task_serializer.save()
+                # 如果有旧任务，把澄清数据迁移过来，标记旧任务为已废弃
+                if existing_task_obj:
+                    task.clarification_questions = existing_task_obj.clarification_questions
+                    task.clarification_answers = existing_task_obj.clarification_answers
+                    task.pipeline_stage = 'answers_ready'
+                    task.save(update_fields=['clarification_questions', 'clarification_answers', 'pipeline_stage'])
+                    existing_task_obj.pipeline_stage = 'completed'
+                    existing_task_obj.status = 'cancelled'
+                    existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
+                    logger.info(f"[generate] 迁移澄清数据 task={existing_task_id} → {task.task_id}")
+            else:
+                return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-                # 异步执行生成任务
-                def run_generation_task():
+            # 异步执行生成任务
+            def run_generation_task():
                     try:
                         import threading
 
@@ -2867,16 +3209,13 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         task.error_message = str(e)
                         task.save()
 
-                # 启动异步任务
-                run_generation_task()
+            # 启动异步任务
+            run_generation_task()
 
-                return Response({
-                    'message': '测试用例生成任务已创建',
-                    'task_id': task.task_id,
-                    'task': task_serializer.data
-                }, status=status.HTTP_201_CREATED)
-            else:
-                return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                'message': '测试用例生成任务已创建',
+                'task_id': task.task_id,
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             logger.error(f"创建生成任务时出错: {e}")

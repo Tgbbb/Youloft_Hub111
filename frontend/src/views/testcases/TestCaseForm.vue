@@ -142,13 +142,14 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const formRef = ref()
 const submitting = ref(false)
 const projects = ref([])
@@ -235,7 +236,7 @@ const handleSubmit = async () => {
       try {
         await api.post('/testcases/', form)
         ElMessage.success(t('testcase.createSuccess'))
-        router.push('/ai-generation/testcases')
+        router.push({ path: '/ai-generation/testcases', query: route.query })
       } catch (error) {
         ElMessage.error(t('testcase.createFailed'))
         console.error('Submit error:', error)
@@ -246,7 +247,28 @@ const handleSubmit = async () => {
   })
 }
 
-onMounted(() => {
-  fetchProjects()
+onMounted(async () => {
+  await fetchProjects()
+  const copyId = route.query.copy_from
+  if (copyId) {
+    try {
+      const { data } = await api.get(`/testcases/${copyId}/`)
+      form.title = `${data.title || ''} (副本)`
+      form.description = data.description || ''
+      form.priority = data.priority || 'medium'
+      form.test_type = data.test_type || 'functional'
+      form.preconditions = data.preconditions || ''
+      form.steps = data.steps || ''
+      form.expected_result = data.expected_result || ''
+      form.project_id = data.project?.id || null
+      if (data.project?.id) {
+        await fetchProjectVersions(data.project.id)
+        form.version_ids = (data.versions || []).map(v => v.id)
+        form.function_module_id = data.function_module?.id || null
+      }
+    } catch (e) {
+      console.error('复制用例失败:', e)
+    }
+  }
 })
 </script>
