@@ -31,8 +31,8 @@
         </el-table-column>
         <el-table-column label="连通" width="80">
           <template #default="{ row }">
-            <el-tag v-if="row.platform==='ios'" :type="connectionStatus[row.id] ? 'success' : 'danger'" size="small">
-              {{ connectionStatus[row.id] ? '已通' : '不通' }}
+            <el-tag v-if="row.platform==='ios'" :type="row.status==='online' ? 'success' : 'danger'" size="small">
+              {{ row.status==='online' ? '已通' : '不通' }}
             </el-tag>
             <span v-else>-</span>
           </template>

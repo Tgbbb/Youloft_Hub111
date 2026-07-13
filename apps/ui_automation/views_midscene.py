@@ -127,6 +127,11 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
 
                     discovered.append(device_id)
 
+            # 把不在线的旧设备标记为 offline
+            MidsceneDevice.objects.filter(platform='android').exclude(
+                device_id__in=discovered
+            ).update(status='offline')
+
             return Response({
                 'message': f'发现 {len(discovered)} 台 Android 设备',
                 'devices': discovered,
