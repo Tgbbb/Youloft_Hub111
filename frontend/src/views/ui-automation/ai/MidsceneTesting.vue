@@ -55,7 +55,10 @@
                   :label="`${d.name || d.device_id}`" :value="d.id" :disabled="d.status === 'offline'" />
               </el-option-group>
             </el-select>
-            <el-button size="small" @click="discoverDevices('android')" :loading="discovering" icon="Refresh">发现设备</el-button>
+            <el-button size="small" @click="discoverDevices('android')" :loading="discovering" icon="Refresh">发现 Android</el-button>
+            <el-input v-if="showIosInput" v-model="wdaHost" placeholder="WDA地址 例:172.16.8.168:8100" size="small" style="width:200px" />
+            <el-button size="small" @click="showIosInput=!showIosInput" v-if="!showIosInput">+iOS</el-button>
+            <el-button v-if="showIosInput" size="small" @click="discoverDevices('ios')" :loading="discoveringIos">发现 iOS</el-button>
           </div>
 
           <!-- 背景提示 -->
@@ -173,6 +176,9 @@ const selectedDeviceId = ref(null)
 const saving = ref(false)
 const executing = ref(false)
 const discovering = ref(false)
+const discoveringIos = ref(false)
+const wdaHost = ref('')
+const showIosInput = ref(false)
 
 const autoPlanMode = ref(false)
 
@@ -254,18 +260,21 @@ const loadVisionModels = async () => {
 }
 
 const discoverDevices = async (platform) => {
-  discovering.value = true
+  if (platform === 'android') discovering.value = true
+  else discoveringIos.value = true
   try {
     const ep = platform === 'android'
       ? '/ui-automation/midscene/devices/discover_android/'
       : '/ui-automation/midscene/devices/discover_ios/'
-    await api.post(ep)
+    const payload = platform === 'ios' ? { wda_host: wdaHost.value } : {}
+    await api.post(ep, payload)
     ElMessage.success('设备扫描完成')
     await loadDevices()
   } catch (e) {
     ElMessage.error('扫描失败: ' + (e.response?.data?.error || e.message))
   } finally {
-    discovering.value = false
+    if (platform === 'android') discovering.value = false
+    else discoveringIos.value = false
   }
 }
 

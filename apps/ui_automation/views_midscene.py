@@ -3,6 +3,7 @@
 Midscene AI 移动端自动化 - API 视图
 """
 import logging
+import os
 from django.utils import timezone
 from django.db import models as db_models
 from rest_framework import viewsets, status, mixins
@@ -135,58 +136,78 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def discover_ios(self, request):
-        """发现 iOS 设备（tidevice）"""
+        """发现 iOS 设备（go-ios / tidevice）"""
         import subprocess
         import platform as sys_platform
+        import json as json_module
 
-        tidevice_path = request.data.get('tidevice_path', 'tidevice')
+        tool = request.data.get('tool_path', '')
+        wda_host = request.data.get('wda_host', '')
+
+        # 自动检测工具路径
+        if not tool:
+            candidates = [
+                r'E:\iOS相关\go-ios-win\ios.exe',  # Windows go-ios
+                'ios', 'tidevice',
+            ]
+            for c in candidates:
+                if os.path.exists(c) or subprocess.run(['where', c] if sys_platform.system() == 'Windows' else ['which', c],
+                                        capture_output=True, timeout=3).returncode == 0:
+                    tool = c; break
+
+        if not tool:
+            return Response({'error': '找不到 iOS 工具。请安装 go-ios 或 tidevice'}, status=500)
+
         try:
             kwargs = {}
             if sys_platform.system() == 'Windows':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
 
-            # tidevice list
-            result = subprocess.run(
-                [tidevice_path, 'list'],
-                capture_output=True, text=True, timeout=10, **kwargs
-            )
+            is_go_ios = 'ios.exe' in tool or tool.endswith('ios')
             discovered = []
-            for line in result.stdout.strip().split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split()
-                if len(parts) >= 1:
-                    udid = parts[0]
-                    name = ' '.join(parts[1:]) if len(parts) > 1 else ''
 
-                    device, created = MidsceneDevice.objects.update_or_create(
-                        device_id=udid,
-                        defaults={
-                            'platform': 'ios',
-                            'status': 'available',
-                            'tidevice_udid': udid,
-                            'name': name,
-                            'wda_host': f'127.0.0.1:8100',
-                        }
-                    )
-
-                    # 获取 iOS 版本
+            if is_go_ios:
+                # go-ios: 输出 JSON
+                result = subprocess.run([tool, 'list'], capture_output=True, text=True,
+                                        timeout=10, **kwargs)
+                for line in result.stdout.strip().split('\n'):
                     try:
-                        info = subprocess.run(
-                            [tidevice_path, 'info', udid],
-                            capture_output=True, text=True, timeout=5, **kwargs
-                        )
-                        if info.returncode == 0:
-                            import re
-                            ver_match = re.search(r'ProductVersion["\']?\s*:["\']?\s*(\d+\.\d+)', info.stdout)
-                            if ver_match:
-                                device.ios_version = ver_match.group(1)
-                                device.save(update_fields=['ios_version'])
-                    except Exception:
+                        data = json_module.loads(line)
+                        if 'deviceList' in data:
+                            for udid in data['deviceList']:
+                                device, _ = MidsceneDevice.objects.update_or_create(
+                                    device_id=udid,
+                                    defaults={
+                                        'platform': 'ios',
+                                        'status': 'available',
+                                        'tidevice_udid': udid,
+                                        'name': f'iPhone ({udid[:12]}...)',
+                                        'wda_host': wda_host or '127.0.0.1:8100',
+                                    }
+                                )
+                                discovered.append(udid)
+                    except json_module.JSONDecodeError:
                         pass
-
-                    discovered.append(udid)
+            else:
+                # tidevice: 纯文本输出
+                result = subprocess.run([tool, 'list'], capture_output=True, text=True,
+                                        timeout=10, **kwargs)
+                for line in result.stdout.strip().split('\n'):
+                    parts = line.strip().split()
+                    if parts:
+                        udid = parts[0]
+                        name = ' '.join(parts[1:]) if len(parts) > 1 else f'iPhone ({udid[:12]}...)'
+                        device, _ = MidsceneDevice.objects.update_or_create(
+                            device_id=udid,
+                            defaults={
+                                'platform': 'ios',
+                                'status': 'available',
+                                'tidevice_udid': udid,
+                                'name': name,
+                                'wda_host': wda_host or '127.0.0.1:8100',
+                            }
+                        )
+                        discovered.append(udid)
 
             return Response({
                 'message': f'发现 {len(discovered)} 台 iOS 设备',
@@ -211,6 +232,26 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
         device = self.get_object()
         device.unlock()
         return Response({'status': 'unlocked'})
+
+    @action(detail=True, methods=['get'])
+    def test_wda(self, request, pk=None):
+        """测试 WDA 连通性"""
+        device = self.get_object()
+        host = request.query_params.get('host', device.wda_host or 'localhost:8100')
+        # 去掉协议前缀和尾部斜杠
+        host = host.replace('http://', '').replace('https://', '').rstrip('/')
+        try:
+            import requests as req
+            resp = req.get(f'http://{host}/status', timeout=5)
+            ok = resp.status_code == 200
+            if ok:
+                device.status = 'online'
+                device.save(update_fields=['status'])
+            return Response({'ok': ok, 'data': resp.json() if ok else {}})
+        except Exception as e:
+            device.status = 'offline'
+            device.save(update_fields=['status'])
+            return Response({'ok': False, 'error': str(e)})
 
     @action(detail=True, methods=['post'])
     def screenshot(self, request, pk=None):

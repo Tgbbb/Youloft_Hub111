@@ -8,10 +8,16 @@
     <div class="card-container">
       <el-table :data="projects" v-loading="loading" stripe>
         <el-table-column prop="name" label="项目名称" min-width="160" />
-        <el-table-column prop="default_app_package" label="默认包名" min-width="220">
+        <el-table-column label="Android包名" width="200">
           <template #default="{ row }">
-            <el-tag v-if="row.default_app_package" type="success">{{ row.default_app_package }}</el-tag>
-            <span v-else class="text-muted">未配置</span>
+            <el-tag v-if="row.default_app_package" type="success" size="small">{{ row.default_app_package }}</el-tag>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="iOS Bundle ID" width="200">
+          <template #default="{ row }">
+            <el-tag v-if="row.default_ios_bundle_id" size="small">{{ row.default_ios_bundle_id }}</el-tag>
+            <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
@@ -32,10 +38,13 @@
         <el-form-item label="项目名称" required>
           <el-input v-model="form.name" placeholder="如：心动日常" />
         </el-form-item>
-        <el-form-item label="默认包名">
+        <el-form-item label="Android包名">
           <el-input v-model="form.default_app_package" placeholder="如：com.youloft.icloser" />
+        </el-form-item>
+        <el-form-item label="iOS Bundle ID">
+          <el-input v-model="form.default_ios_bundle_id" placeholder="如：com.youloft.icloser" />
           <div style="font-size:11px;color:#909399;margin-top:4px">
-            所有关联此项目的用例执行时，将自动启动该应用
+            执行时根据设备平台自动选择对应的包名
           </div>
         </el-form-item>
         <el-form-item label="描述">
@@ -65,6 +74,7 @@ const saving = ref(false)
 const form = reactive({
   name: '',
   default_app_package: '',
+  default_ios_bundle_id: '',
   description: '',
 })
 
@@ -85,11 +95,13 @@ const showForm = (row) => {
     editingId.value = row.id
     form.name = row.name
     form.default_app_package = row.default_app_package || ''
+    form.default_ios_bundle_id = row.default_ios_bundle_id || ''
     form.description = row.description || ''
   } else {
     editingId.value = null
     form.name = ''
     form.default_app_package = ''
+    form.default_ios_bundle_id = ''
     form.description = ''
   }
   formVisible.value = true

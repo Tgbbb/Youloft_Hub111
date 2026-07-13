@@ -212,24 +212,61 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     steps = parse_ai_prompt(ai_prompt)
     if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
 
-    device_id = device.adb_serial if device.platform == 'android' else device.tidevice_udid
-    if not device_id: raise ValueError('设备标识无效')
-
+    platform = device.platform
     mc = execution_record.midscene_case
     ai_context = (mc.ai_act_context if mc and mc.ai_act_context else '')
 
-    logger.info(f'[Runner] 开始执行: {execution_record.id}, 设备={device_id}, 步骤数={len(steps)}')
+    # ---- 平台初始化 ----
+    ios_dev = None
+    device_id = None
+    if platform == 'android':
+        device_id = device.adb_serial
+        if not device_id: raise ValueError('Android 设备标识无效')
+    elif platform == 'ios':
+        from .ios_device import IOSDevice
+        wda_host = (device.wda_host or 'localhost:8100').replace('http://','').replace('https://','').rstrip('/')
+        host, port_str = wda_host.rsplit(':', 1) if ':' in wda_host else (wda_host, '8100')
+        port = int(port_str)
+        ios_bundle = (mc.app_package if mc and mc.app_package
+                      else (mc.project.default_app_package if mc and mc.project else ''))
+        ios_dev = IOSDevice(host, int(port), ios_bundle)
+        ios_dev.connect()
+        device_id = device.tidevice_udid or device.device_id
+    else:
+        raise ValueError(f'不支持的平台: {platform}')
 
-    width, height = adb_get_screen_size(device_id)
+    logger.info(f'[Runner] 开始执行: {execution_record.id}, 平台={platform}, 设备={device_id}, 步骤数={len(steps)}')
+
+    # ---- 获取分辨率 ----
+    if platform == 'android':
+        width, height = adb_get_screen_size(device_id)
+    else:
+        width, height = ios_dev.screen_size
     logger.info(f'[Runner] 屏幕分辨率: {width}x{height}')
 
     # ---- 启动应用 ----
-    app_package = (mc.app_package if mc and mc.app_package
+    if platform == 'android':
+        # Android: 用例包名 → 项目Android包名
+        app_pkg = (mc.app_package if mc and mc.app_package
                    else (mc.project.default_app_package if mc and mc.project else ''))
-    if app_package:
-        grant_permissions(device_id, app_package)
-        _adb(device_id, 'shell', 'monkey', '-p', app_package, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
-        time.sleep(2)
+        if app_pkg:
+            grant_permissions(device_id, app_pkg)
+            _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
+            time.sleep(2)
+    elif platform == 'ios':
+        # iOS: 用例包名 → 项目iOS Bundle ID
+        ios_bid = (mc.app_package if mc and mc.app_package
+                   else (mc.project.default_ios_bundle_id if mc and mc.project else ''))
+        if ios_bid:
+            ios_dev.bundle_id = ios_bid
+            ios_dev.launch_app()
+            # iOS 17+ 必须激活应用到前台，否则 WDA tap 会被蒙层挡住
+            import requests as _req
+            try:
+                _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
+                          json={'bundleId': ios_bid}, timeout=5)
+            except Exception: pass
+            time.sleep(1)
 
     # ---- 智能规划模式 ----
     auto_plan = getattr(execution_record, 'auto_plan', False)
@@ -267,7 +304,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     results.append({'step':i+1,'instruction':instruction,'status':'stopped',
                                     'screenshot':'','aiReasoning':reasonings,'action':'stopped'})
                     break
-                png = adb_screenshot(device_id)
+                # 截图（分平台）
+                png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
 
                 # aiAct 模式: 参照 Midscene conversationHistory 机制
                 if is_ai_act and reasonings:
@@ -318,7 +356,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 # 1. 按类型执行
                 if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, i+1); break
                 if t == 'wait': time.sleep(3); continue  # 加载中等待
-                if t == 'swipe': adb_execute(device_id, action)
+                if t == 'swipe':
+                    if ios_dev: ios_dev.execute_action(action)
+                    else: adb_execute(device_id, action)
                 elif t == 'assert':
                     if not action.get('passed',True): raise AssertionError(f'断言失败: {reason}')
                     if is_ai_act and prev_action == 'assert':
@@ -329,7 +369,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     logger.info(f'[Runner] 提取: {str(action.get("data",""))[:200]}')
                     if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, i+1); break
                 else:  # tap/click/long_press/input/back
-                    adb_execute(device_id, action)
+                    if ios_dev: ios_dev.execute_action(action)
+                    else: adb_execute(device_id, action)
 
                 # 2. 按动作类型等待
                 w = {'tap':2,'click':2,'long_press':0.5,'back':0.5,
@@ -356,10 +397,17 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         except Exception as e:
             logger.error(f'[Runner] 步骤 {i+1} 失败: {e}')
             su = ''; png = None
-            try: png = adb_screenshot(device_id); su = save_screenshot(png, execution_record.id, i+1)
+            try:
+                png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                su = save_screenshot(png, execution_record.id, i+1)
             except: pass
             results.append({'step':i+1,'instruction':instruction,'status':'failed',
                             'error':str(e),'screenshot':su,'aiReasoning':reasonings})
+
+    # 清理 iOS 连接
+    if ios_dev:
+        try: ios_dev.disconnect()
+        except: pass
 
     total = len(results); passed = sum(1 for r in results if r['status']=='passed')
     failed = sum(1 for r in results if r['status']=='failed')

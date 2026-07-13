@@ -351,6 +351,11 @@ const routes = [
                 path: 'midscene/executions',
                 name: 'MidsceneExecutionList',
                 component: () => import('@/views/ui-automation/ai/MidsceneExecutionList.vue')
+            },
+            {
+                path: 'midscene/devices',
+                name: 'MidsceneDevices',
+                component: () => import('@/views/ui-automation/ai/MidsceneDeviceList.vue')
             }
         ]
     },

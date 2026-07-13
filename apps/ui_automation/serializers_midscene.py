@@ -16,7 +16,7 @@ class MidsceneProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = MidsceneProject
         fields = [
-            'id', 'name', 'description', 'default_app_package',
+            'id', 'name', 'description', 'default_app_package', 'default_ios_bundle_id',
             'owner', 'owner_name',
             'members', 'member_count', 'case_count',
             'created_at', 'updated_at',

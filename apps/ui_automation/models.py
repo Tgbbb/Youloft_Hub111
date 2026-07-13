@@ -1067,8 +1067,10 @@ class MidsceneProject(models.Model):
     """Midscene 移动端测试项目"""
     name = models.CharField(max_length=200, verbose_name='项目名称')
     description = models.TextField(blank=True, default='', verbose_name='项目描述')
-    default_app_package = models.CharField(max_length=255, blank=True, default='', verbose_name='默认应用包名',
-                                           help_text='Android包名或iOS Bundle ID，执行时自动启动')
+    default_app_package = models.CharField(max_length=255, blank=True, default='', verbose_name='Android包名',
+                                           help_text='Android应用包名，如 com.example.app')
+    default_ios_bundle_id = models.CharField(max_length=255, blank=True, default='', verbose_name='iOS Bundle ID',
+                                             help_text='iOS应用Bundle Identifier，如 com.example.app')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='midscene_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='midscene_member_projects', verbose_name='团队成员')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')

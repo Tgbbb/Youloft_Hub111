@@ -222,6 +222,10 @@
               <el-icon><Timer /></el-icon>
               <span>Midscene 执行历史</span>
             </el-menu-item>
+            <el-menu-item index="/ai-intelligent-mode/midscene/devices">
+              <el-icon><Cellphone /></el-icon>
+              <span>Midscene 设备管理</span>
+            </el-menu-item>
 
           </template>
 
@@ -448,6 +452,7 @@ const breadcrumbTitle = computed(() => {
     '/ai-intelligent-mode/midscene': 'Midscene 移动端测试',
     '/ai-intelligent-mode/midscene/projects': 'Midscene 项目管理',
     '/ai-intelligent-mode/midscene/executions': 'Midscene 执行历史',
+    '/ai-intelligent-mode/midscene/devices': 'Midscene 设备管理',
 
 
     // 配置中心

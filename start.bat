@@ -13,7 +13,7 @@ echo   Done.
 
 echo.
 echo [2/5] Starting MySQL...
-start "" /B "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqld.exe" --datadir="E:\TestHub\mysql_data" --port=3307
+start "" /B "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqld.exe" --datadir="E:\TestHub\mysql_data" --port=3307 --skip-log-bin
 timeout /t 2 /nobreak >nul
 echo   MySQL started on port 3307
 
