@@ -4,7 +4,7 @@
       <!-- 侧边栏 -->
       <el-aside width="240px">
         <div class="logo" @click="router.push('/home')" style="cursor: pointer;">
-          <img :src="logoImage" alt="TestHub" class="logo-img" />
+          <span class="logo-text">TestHub</span>
         </div>
         <el-menu
           :default-active="$route.path"
@@ -344,8 +344,7 @@ import {
   DataAnalysis, ChatDotRound, DocumentCopy, Link, MagicStick,
   Odometer, Timer, Setting, AlarmClock, Bell, Aim, Edit, Cpu, ArrowDown, Cellphone, Connection, FolderOpened
 } from '@element-plus/icons-vue'
-import logoSvg from '@/assets/images/logo.svg'
-import logoHomePng from '@/assets/images/logo_home.png'
+
 
 const router = useRouter()
 const route = useRoute()
@@ -353,9 +352,7 @@ const userStore = useUserStore()
 const appStore = useAppStore()
 const { t } = useI18n()
 
-const logoImage = computed(() => {
-		return route.path === '/home' ? logoSvg : logoHomePng
-	})
+const logoImage = computed(() => '')
 	
 
 // 当前语言显示
@@ -501,6 +498,13 @@ const handleCommand = (command) => {
   color: white;
   border-bottom: 1px solid #1f1f1f;
   flex-shrink: 0;
+
+  .logo-text {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #fff;
+  }
 
 		.logo-img {
 			width: 100%;

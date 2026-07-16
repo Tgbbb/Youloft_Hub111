@@ -4,6 +4,8 @@ Midscene AI 移动端自动化 - API 视图
 """
 import logging
 import os
+import subprocess
+import platform as sys_platform
 from django.utils import timezone
 from django.db import models as db_models
 from rest_framework import viewsets, status, mixins
@@ -70,12 +72,88 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
         serializer = MidsceneDeviceSimpleSerializer(devices, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['post'], url_path='connect_network')
+    def connect_network(self, request):
+        """通过 WiFi ADB 连接局域网 Android 设备"""
+        ip = request.data.get('ip', '').strip()
+        port = request.data.get('port', 5555)
+
+        if not ip:
+            return Response({'error': '请输入设备 IP 地址'}, status=400)
+
+        target = f'{ip}:{port}'
+        kwargs = {}
+        if sys_platform.system() == 'Windows':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
+        result = subprocess.run(
+            ['adb', 'connect', target],
+            capture_output=True, text=True, timeout=10, **kwargs
+        )
+        output = (result.stdout + result.stderr).strip()
+
+        if 'connected' in output.lower():
+            # 获取设备属性
+            name = ''
+            version = ''
+            try:
+                info = subprocess.run(
+                    ['adb', '-s', target, 'shell', 'getprop', 'ro.product.model'],
+                    capture_output=True, text=True, timeout=5, **kwargs
+                )
+                if info.returncode == 0:
+                    name = info.stdout.strip()
+                ver = subprocess.run(
+                    ['adb', '-s', target, 'shell', 'getprop', 'ro.build.version.release'],
+                    capture_output=True, text=True, timeout=5, **kwargs
+                )
+                if ver.returncode == 0:
+                    version = ver.stdout.strip()
+            except Exception:
+                pass
+
+            device, _ = MidsceneDevice.objects.update_or_create(
+                device_id=target,
+                defaults={
+                    'platform': 'android',
+                    'status': 'available',
+                    'adb_serial': target,
+                    'name': name or target,
+                    'android_version': version,
+                    'ip_address': ip,
+                    'port': port,
+                }
+            )
+            from .serializers_midscene import MidsceneDeviceSimpleSerializer
+            return Response({
+                'success': True,
+                'message': f'已连接到 {target}',
+                'device': MidsceneDeviceSimpleSerializer(device).data,
+            })
+        else:
+            return Response({
+                'success': False,
+                'message': f'连接失败: {output}',
+            }, status=400)
+
+    @action(detail=True, methods=['post'], url_path='disconnect_network')
+    def disconnect_network(self, request, pk=None):
+        """断开 WiFi ADB 连接"""
+        device = self.get_object()
+        target = f'{device.ip_address}:{device.port}' if device.ip_address else device.device_id
+
+        kwargs = {}
+        if sys_platform.system() == 'Windows':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
+        subprocess.run(['adb', 'disconnect', target], capture_output=True, timeout=5, **kwargs)
+        device.status = 'offline'
+        device.save(update_fields=['status'])
+        return Response({'success': True, 'message': f'已断开 {target}'})
+
     @action(detail=False, methods=['post'])
     def discover_android(self, request):
         """发现 Android 设备（ADB）"""
-        import subprocess
-        import platform as sys_platform
-
         adb_path = request.data.get('adb_path', 'adb')
         try:
             kwargs = {}

@@ -56,6 +56,7 @@
               </el-option-group>
             </el-select>
             <el-button size="small" @click="discoverDevices" :loading="discovering" icon="Refresh">发现设备</el-button>
+            <el-button size="small" @click="showNetworkDialog = true" icon="Connection">连接局域网</el-button>
           </div>
 
           <!-- 背景提示 -->
@@ -154,13 +155,61 @@
     <el-dialog v-model="showPreview" title="步骤截图" width="400px">
       <img :src="previewImage" style="width:100%" v-if="previewImage" />
     </el-dialog>
+
+    <!-- ====== 连接局域网设备弹窗 ====== -->
+    <el-dialog v-model="showNetworkDialog" title="连接局域网 Android 设备" width="520px">
+      <el-alert type="info" :closable="false" style="margin-bottom:16px">
+        <template #title>📱 对方手机需要先开启 WiFi 调试</template>
+        <div style="font-size:12px;line-height:1.8;margin-top:4px">
+          1. 手机用 <b>USB</b> 连接到自己电脑<br/>
+          2. 在自己电脑终端执行：<code>adb tcpip 5555</code><br/>
+          3. 拔掉 USB（WiFi 调试已开启）<br/>
+          4. 查看手机 WiFi 设置中的 <b>IP 地址</b><br/>
+          5. 把 IP 告诉你，在下方输入连接
+        </div>
+      </el-alert>
+
+      <el-form label-width="60px">
+        <el-form-item label="IP 地址">
+          <el-input v-model="networkForm.ip" placeholder="如：192.168.1.100" />
+        </el-form-item>
+        <el-form-item label="端口">
+          <el-input-number v-model="networkForm.port" :min="1" :max="65535" />
+        </el-form-item>
+      </el-form>
+
+      <div v-if="networkDevices.length > 0" style="margin-top:12px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#303133">已连接的局域网设备</div>
+        <div v-for="d in networkDevices" :key="d.id"
+             style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f5f7fa;border-radius:4px;margin-bottom:6px">
+          <div>
+            <span style="font-size:13px">{{ d.name || d.device_id }}</span>
+            <span style="font-size:11px;color:#909399;margin-left:8px">{{ d.ip_address }}:{{ d.port }}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <el-tag :type="d.status==='online'||d.status==='available'?'success':'danger'" size="small">
+              {{ d.status }}
+            </el-tag>
+            <el-button v-if="d.status==='offline'" size="small" type="success" @click="reconnectDialogDevice(d)" :loading="dialogConnecting[d.id]">连接</el-button>
+            <el-button v-else size="small" type="danger" @click="disconnectDevice(d)" :loading="dialogDisconnecting[d.id]">断开</el-button>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showNetworkDialog = false">关闭</el-button>
+        <el-button type="primary" @click="connectNetwork" :loading="connecting">
+          连接
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh } from '@element-plus/icons-vue'
+import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 
 // ---- 状态 ----
@@ -173,6 +222,11 @@ const selectedDeviceId = ref(null)
 const saving = ref(false)
 const executing = ref(false)
 const discovering = ref(false)
+const showNetworkDialog = ref(false)
+const connecting = ref(false)
+const dialogConnecting = reactive({})
+const dialogDisconnecting = reactive({})
+const networkForm = reactive({ ip: '', port: 5555 })
 
 const autoPlanMode = ref(false)
 
@@ -208,6 +262,7 @@ const projectPackage = computed(() => {
 })
 const androidDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.status !== 'offline'))
 const iosDevices = computed(() => devices.value.filter(d => d.platform === 'ios' && d.status !== 'offline'))
+const networkDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.ip_address))
 const isRunning = computed(() => execution.value && ['pending', 'running'].includes(execution.value.status))
 const canExecute = computed(() => form.ai_prompt && selectedDeviceId.value && form.ai_model_config_id)
 const statusTagType = computed(() => {
@@ -256,13 +311,82 @@ const loadVisionModels = async () => {
 const discoverDevices = async () => {
   discovering.value = true
   try {
-    await api.post('/ui-automation/midscene/devices/discover_android/')
-    ElMessage.success('设备扫描完成')
+    // 同时扫描 Android 和 iOS
+    const results = await Promise.allSettled([
+      api.post('/ui-automation/midscene/devices/discover_android/'),
+      api.post('/ui-automation/midscene/devices/discover_ios/'),
+    ])
+    const androidOk = results[0].status === 'fulfilled'
+    const iosOk = results[1].status === 'fulfilled'
+    if (androidOk || iosOk) {
+      const parts = []
+      if (androidOk) parts.push('Android')
+      if (iosOk) parts.push('iOS')
+      ElMessage.success(`${parts.join(' + ')} 设备扫描完成`)
+    } else {
+      ElMessage.warning('未发现设备，请检查连接')
+    }
     await loadDevices()
   } catch (e) {
     ElMessage.error('扫描失败: ' + (e.response?.data?.error || e.message))
   } finally {
     discovering.value = false
+  }
+}
+
+// ---- 局域网设备连接 ----
+const connectNetwork = async () => {
+  if (!networkForm.ip.trim()) { ElMessage.warning('请输入 IP 地址'); return }
+  connecting.value = true
+  try {
+    const { data } = await api.post('/ui-automation/midscene/devices/connect_network/', {
+      ip: networkForm.ip.trim(),
+      port: networkForm.port,
+    })
+    if (data.success) {
+      ElMessage.success(data.message || '已连接')
+      networkForm.ip = ''
+      await loadDevices()
+    } else {
+      ElMessage.error(data.message || '连接失败')
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '连接失败')
+  } finally {
+    connecting.value = false
+  }
+}
+
+const disconnectDevice = async (device) => {
+  dialogDisconnecting[device.id] = true
+  try {
+    await api.post(`/ui-automation/midscene/devices/${device.id}/disconnect_network/`)
+    ElMessage.success('已断开')
+    await loadDevices()
+  } catch (e) {
+    ElMessage.error('断开失败')
+  } finally {
+    dialogDisconnecting[device.id] = false
+  }
+}
+
+const reconnectDialogDevice = async (device) => {
+  dialogConnecting[device.id] = true
+  try {
+    const { data } = await api.post('/ui-automation/midscene/devices/connect_network/', {
+      ip: device.ip_address,
+      port: device.port || 5555,
+    })
+    if (data.success) {
+      ElMessage.success(data.message || '已连接')
+    } else {
+      ElMessage.error(data.message || '连接失败')
+    }
+    await loadDevices()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '连接失败')
+  } finally {
+    dialogConnecting[device.id] = false
   }
 }
 
@@ -302,7 +426,17 @@ const saveCase = async () => {
     }
     await loadCases()
   } catch (e) {
-    ElMessage.error('保存失败')
+    const data = e.response?.data
+    let errMsg = e.message
+    if (data && typeof data === 'object') {
+      const msgs = []
+      Object.entries(data).forEach(([field, errors]) => {
+        const vals = Array.isArray(errors) ? errors : [errors]
+        msgs.push(...vals.map(v => typeof v === 'string' ? `${field}: ${v}` : v))
+      })
+      if (msgs.length > 0) errMsg = msgs.join('; ')
+    }
+    ElMessage.error('保存失败: ' + errMsg)
   } finally {
     saving.value = false
   }

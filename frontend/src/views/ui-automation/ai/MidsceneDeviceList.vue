@@ -37,10 +37,14 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="showForm(row)">编辑</el-button>
             <el-button v-if="row.platform==='ios'" size="small" @click="testConnection(row)" :loading="testing[row.id]">测通</el-button>
+            <template v-if="row.platform==='android' && row.ip_address">
+              <el-button v-if="row.status==='offline'" size="small" type="success" @click="reconnectDevice(row)" :loading="connecting[row.id]">连接</el-button>
+              <el-button v-else size="small" type="warning" @click="disconnectDevice(row)" :loading="disconnecting[row.id]">断开</el-button>
+            </template>
             <el-button size="small" type="danger" @click="deleteDevice(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -95,7 +99,8 @@ const formVisible = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const testing = reactive({})
-const connectionStatus = reactive({})
+const connecting = reactive({})
+const disconnecting = reactive({})
 
 const form = reactive({
   name: '',
@@ -150,7 +155,18 @@ const saveDevice = async () => {
     formVisible.value = false
     loadDevices()
   } catch (e) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.error || e.message))
+    // 解析 DRF 校验错误（字段级错误对象）
+    const data = e.response?.data
+    let errMsg = e.message
+    if (data && typeof data === 'object') {
+      const msgs = []
+      Object.entries(data).forEach(([field, errors]) => {
+        const vals = Array.isArray(errors) ? errors : [errors]
+        msgs.push(...vals.map(v => typeof v === 'string' ? `${field}: ${v}` : v))
+      })
+      if (msgs.length > 0) errMsg = msgs.join('; ')
+    }
+    ElMessage.error('保存失败: ' + errMsg)
   } finally { saving.value = false }
 }
 
@@ -181,6 +197,39 @@ const deleteDevice = async (row) => {
     loadDevices()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
+const reconnectDevice = async (row) => {
+  connecting[row.id] = true
+  try {
+    const { data } = await api.post('/ui-automation/midscene/devices/connect_network/', {
+      ip: row.ip_address,
+      port: row.port || 5555,
+    })
+    if (data.success) {
+      ElMessage.success(data.message || '已连接')
+    } else {
+      ElMessage.error(data.message || '连接失败')
+    }
+    loadDevices()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '连接失败')
+  } finally {
+    connecting[row.id] = false
+  }
+}
+
+const disconnectDevice = async (row) => {
+  disconnecting[row.id] = true
+  try {
+    await api.post(`/ui-automation/midscene/devices/${row.id}/disconnect_network/`)
+    ElMessage.success('已断开')
+    loadDevices()
+  } catch (e) {
+    ElMessage.error('断开失败')
+  } finally {
+    disconnecting[row.id] = false
   }
 }
 

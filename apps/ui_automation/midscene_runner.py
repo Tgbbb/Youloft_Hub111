@@ -96,6 +96,24 @@ def _compress_png(png_bytes):
         buf = io.BytesIO(); img.save(buf, format='PNG'); return buf.getvalue()
     except: return png_bytes
 
+def _phash(png_bytes):
+    """感知哈希：8x8灰度图 → 64位指纹"""
+    try:
+        from PIL import Image; import io
+        img = Image.open(io.BytesIO(png_bytes)).convert('L').resize((8, 8), Image.LANCZOS)
+        pixels = list(img.getdata())
+        avg = sum(pixels) / 64
+        return sum((1 << i) for i, v in enumerate(pixels) if v > avg)
+    except: return 0
+
+def _is_same_page(png1, png2):
+    """比较两张截图的感知哈希，汉明距离 < 5 判定为同一页"""
+    h1 = _phash(png1)
+    h2 = _phash(png2)
+    if h1 == 0 or h2 == 0:
+        return False  # pHash 失败时不误判
+    return (h1 ^ h2).bit_count() < 3
+
 def save_screenshot(png_bytes, execution_id, step_num):
     d = os.path.join(settings.MEDIA_ROOT, 'midscene', str(execution_id))
     os.makedirs(d, exist_ok=True)
@@ -114,15 +132,19 @@ VLM_SYSTEM_PROMPT = """你是移动端自动化测试助手。观察手机截图
 {context}
 
 响应（一行JSON）：
-{"action":"tap","x_pct":50,"y_pct":25,"reasoning":"..."}
-{"action":"long_press","x_pct":50,"y_pct":25,"duration":2000,"reasoning":"..."}
-{"action":"input","text":"hello","reasoning":"..."}
-{"action":"swipe","x1_pct":50,"y1_pct":80,"x2_pct":50,"y2_pct":30,"reasoning":"..."}
-{"action":"back","reasoning":"..."}
-{"action":"wait","reasoning":"页面加载中，等待..."}
+{"action":"tap","x_pct":50,"y_pct":25,"step_status":"done","reasoning":"..."}
+{"action":"long_press","x_pct":50,"y_pct":25,"duration":2000,"step_status":"done","reasoning":"..."}
+{"action":"input","text":"hello","step_status":"done","reasoning":"..."}
+{"action":"swipe","x1_pct":50,"y1_pct":80,"x2_pct":50,"y2_pct":30,"step_status":"done","reasoning":"..."}
+{"action":"back","step_status":"done","reasoning":"..."}
+{"action":"wait","step_status":"in_progress","reasoning":"页面加载中，等待..."}
 {"action":"assert","passed":true,"reasoning":"..."}
 {"action":"query","data":"提取的数据","reasoning":"..."}
 {"action":"done","reasoning":"..."}
+
+step_status 说明：
+- "done": 动作直接完成了当前步骤指令，可以进入下一步
+- "in_progress": 动作是在处理弹窗/渠道选择/权限请求等障碍（需根据全局提示处理），步骤尚未完成，仍需继续
 
 规则：
 - 指令含"验证/检查/确认/断言"→用assert，看图判断passed=true/false
@@ -148,6 +170,8 @@ def _parse_vlm_response(content):
         line = re.sub(r'([a-z_]+)="(\d+)([,}\]])', r'"\1":"\2"\3', line)
         # 修复 y_pct="   → "y_pct":0 (空值)
         line = re.sub(r'([a-z_]+)="([,}\]])', r'"\1":0\2', line)
+        # 修复 VLM 误输出 ] 而非 } 或 ,  (如 y_pct":590]  → y_pct":590,)
+        line = re.sub(r'(\d+)\]\s*"', r'\1,"', line)
         try:
             r = json.loads(line)
             if isinstance(r, dict) and 'action' in r: return r
@@ -159,7 +183,8 @@ def _parse_vlm_response(content):
                 'x': int(re.search(r'"x"\s*:\s*(\d+)', content).group(1)) if re.search(r'"x"\s*:\s*(\d+)', content) else 0,
                 'y': int(re.search(r'"y"\s*:\s*(\d+)', content).group(1)) if re.search(r'"y"\s*:\s*(\d+)', content) else 0,
                 'text': (re.search(r'"text"\s*:\s*"([^"]*)"', content) or re.search(r'"text"\s*:\s*"([^"]*)', content) or [None,''])[1],
-                'reasoning': (re.search(r'"reasoning"\s*:\s*"([^"]*)"', content) or [None,''])[1] or ''}
+                'reasoning': (re.search(r'"reasoning"\s*:\s*"([^"]*)"', content) or [None,''])[1] or '',
+                'step_status': (re.search(r'"step_status"\s*:\s*"([^"]+)"', content) or [None,'done'])[1]}
     raise ValueError(f'无法解析 VLM 响应: {content[:300]}')
 
 
@@ -277,35 +302,67 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
     # ---- 逐步执行 ----
     results = []
-    for i, step in enumerate(steps):
+    prev_png = None  # 跨步骤持久化，检测步骤间页面变化
+    step_retry_count = {}  # 每个步骤的回退计数，防止无限循环
+    step_idx = 0
+    while step_idx < len(steps):
+        step = steps[step_idx]
         instruction = step['instruction']
         is_ai_act = auto_plan  # 智能规划模式 VLM 自己决定 done
 
         if re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
-            results.append({'step':i+1,'instruction':instruction,'status':'passed',
-                            'screenshot':'','aiReasoning':['ADB启动'],'action':'launch'}); continue
+            results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
+                            'screenshot':'','aiReasoning':['ADB启动'],'action':'launch'})
+            step_idx += 1; continue
 
-        logger.info(f'[Runner] 步骤 {i+1}/{len(steps)}: {instruction}')
+        logger.info(f'[Runner] 步骤 {step_idx+1}/{len(steps)}: {instruction}')
 
         if progress_callback:
-            progress_callback(i+1, len(steps), {'type':'step_start','step':i+1,'total':len(steps),
-                                                 'instruction':instruction,'progress':int(i/len(steps)*100)})
+            progress_callback(step_idx+1, len(steps), {'type':'step_start','step':step_idx+1,'total':len(steps),
+                                                 'instruction':instruction,'progress':int(step_idx/len(steps)*100)})
 
         reasonings = []
-        max_turns = 20 if is_ai_act else 5
+        max_turns = 20 if is_ai_act else 8
         screenshot_url = ''
         last_action = ''
+        # 重复动作检测（每步独立）
+        last_action_fp = ''
+        repeat_count = 0
 
         try:
             for turn in range(max_turns):
                 # 检查是否被用户停止
                 execution_record.refresh_from_db()
                 if execution_record.status == 'stopped':
-                    results.append({'step':i+1,'instruction':instruction,'status':'stopped',
+                    results.append({'step':step_idx+1,'instruction':instruction,'status':'stopped',
                                     'screenshot':'','aiReasoning':reasonings,'action':'stopped'})
-                    break
+                    step_idx += 1; break
                 # 截图（分平台）
                 png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+
+                # 页面未变检测
+                page_unchanged = False
+                if prev_png is not None and _is_same_page(prev_png, png):
+                    if turn == 0 and step_idx > 0:
+                        # 新步骤开头页面与上一步结束时一样 → 上一步操作未生效
+                        retries = step_retry_count.get(step_idx - 1, 0)
+                        if retries < 1:
+                            # 移除上一条无效结果，退回重试一次
+                            step_retry_count[step_idx - 1] = retries + 1
+                            logger.warning(f'[Runner] 新步骤页面未变，上一步操作可能未生效，退回步骤 {step_idx} 重试')
+                            if results:
+                                results.pop()
+                            reasonings = []
+                            step_idx -= 1
+                            instruction = steps[step_idx]['instruction']
+                            prev_png = png
+                            continue
+                        else:
+                            # 已重试过，不再回退，继续当前步骤
+                            logger.info(f'[Runner] 上一步已重试过，不再回退')
+                    page_unchanged = True
+                    logger.info(f'[Runner] 步骤 {step_idx+1} 页面未变化')
+                prev_png = png
 
                 # aiAct 模式: 参照 Midscene conversationHistory 机制
                 if is_ai_act and reasonings:
@@ -333,8 +390,28 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         f'全部完成后返回 done。'
                     )
                 else:
-                    prompt = instruction
+                    # 条件步骤检测
+                    is_conditional = instruction.startswith('如果') or instruction.startswith('若')
+                    # 构建本步骤已有的操作历史
+                    history_text = ''
+                    if reasonings:
+                        recent = [r.split('] ', 1)[1] if '] ' in r else r for r in reasonings[-3:]]
+                        history_text = '\n'.join(f'第{turn-len(recent)+j+1}次: {r[:80]}' for j, r in enumerate(recent))
+                        history_text = f'\n你本轮已执行的操作:\n{history_text}\n请基于以上历史判断下一步，不要重复已做过的操作。'
+                    conditional_hint = ''
+                    if is_conditional:
+                        conditional_hint = '这是一个条件步骤：如果截图中能看到目标就点击，看不到就直接返回 done 跳过。'
+                    prompt = (
+                        f'当前步骤({step_idx+1}/{len(steps)}): {instruction}\n'
+                        f'{conditional_hint}'
+                        f'如果当前截图与步骤目标无关（如弹窗、渠道选择页），'
+                        f'请根据「全局提示」处理，step_status 填 "in_progress"。'
+                        f'只有当你的动作直接执行了这条步骤指令时，step_status 填 "done"。'
+                        f'{history_text}'
+                    )
 
+                if page_unchanged:
+                    prompt += '\n上一次操作后页面未变化，请自行判断是否需要重试或调整。'
                 action = call_vlm(png, prompt, model_config, width, height, ai_context)
 
                 # 百分比→像素
@@ -353,8 +430,18 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 prev_action = last_action
                 last_action = t
 
+                # 重复动作检测：连续3次相同操作且页面未变 → 卡死
+                action_fp = f"{t}_{action.get('x_pct','')}_{action.get('y_pct','')}"
+                if action_fp == last_action_fp and t in ('tap', 'click'):
+                    repeat_count += 1
+                else:
+                    last_action_fp = action_fp
+                    repeat_count = 0
+                if repeat_count >= 2:
+                    raise RuntimeError(f'连续{repeat_count+1}次重复{t}: ({action.get("x_pct","")},{action.get("y_pct","")})，操作无效，页面可能卡死或元素不可点击')
+
                 # 1. 按类型执行
-                if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, i+1); break
+                if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
                 if t == 'wait': time.sleep(3); continue  # 加载中等待
                 if t == 'swipe':
                     if ios_dev: ios_dev.execute_action(action)
@@ -363,11 +450,11 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if not action.get('passed',True): raise AssertionError(f'断言失败: {reason}')
                     if is_ai_act and prev_action == 'assert':
                         reasonings.append('[Done] 连续断言通过，任务完成')
-                        screenshot_url = save_screenshot(png, execution_record.id, i+1); break
-                    if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, i+1); break
+                        screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
+                    if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
                 elif t == 'query':
                     logger.info(f'[Runner] 提取: {str(action.get("data",""))[:200]}')
-                    if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, i+1); break
+                    if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
                 else:  # tap/click/long_press/input/back
                     if ios_dev: ios_dev.execute_action(action)
                     else: adb_execute(device_id, action)
@@ -377,32 +464,38 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                      'input':0.2,'swipe':0.3,'wait':0,'assert':0,'query':0,'done':0}.get(t,0.5)
                 if w: time.sleep(w)
 
-                # 3. aiAct 继续循环；逐行模式结束本轮
+                # 3. aiAct 继续循环；逐行模式按 step_status 决定是否结束本轮
                 if is_ai_act: continue
-                if t not in ('assert','query','done'):
-                    screenshot_url = save_screenshot(png, execution_record.id, i+1); break
+                step_status = action.get('step_status', 'done')
+                if step_status == 'in_progress':
+                    logger.info(f'[Runner] 步骤 {step_idx+1} 处理障碍中，继续...')
+                    continue
+                # step_status == 'done': 步骤完成
+                screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
             else:
                 raise RuntimeError(f'达到最大轮次({max_turns})')
 
-            results.append({'step':i+1,'instruction':instruction,'status':'passed',
+            results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
                             'screenshot':screenshot_url,'aiReasoning':reasonings,'action':last_action})
 
             if progress_callback:
-                progress_callback(i+1, len(steps), {'type':'step_done','step':i+1,'total':len(steps),
+                progress_callback(step_idx+1, len(steps), {'type':'step_done','step':step_idx+1,'total':len(steps),
                                                      'instruction':instruction,'status':'passed',
                                                      'screenshot':screenshot_url,'aiReasoning':reasonings,
-                                                     'progress':int((i+1)/len(steps)*100)})
-            logger.info(f'[Runner] 步骤 {i+1} 通过: {reasonings[-1] if reasonings else ""}')
+                                                     'progress':int((step_idx+1)/len(steps)*100)})
+            logger.info(f'[Runner] 步骤 {step_idx+1} 通过: {reasonings[-1] if reasonings else ""}')
+            step_idx += 1
 
         except Exception as e:
-            logger.error(f'[Runner] 步骤 {i+1} 失败: {e}')
+            logger.error(f'[Runner] 步骤 {step_idx+1} 失败: {e}')
             su = ''; png = None
             try:
                 png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
-                su = save_screenshot(png, execution_record.id, i+1)
+                su = save_screenshot(png, execution_record.id, step_idx+1)
             except: pass
-            results.append({'step':i+1,'instruction':instruction,'status':'failed',
+            results.append({'step':step_idx+1,'instruction':instruction,'status':'failed',
                             'error':str(e),'screenshot':su,'aiReasoning':reasonings})
+            step_idx += 1
 
     # 清理 iOS 连接
     if ios_dev:

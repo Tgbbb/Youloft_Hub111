@@ -44,7 +44,7 @@
                 </span>
               </div>
               <div class="kb-toolbar-right">
-                <el-button size="small" text @click="triggerFileUpload" v-if="editingKnowledge">
+                <el-button size="small" text @click="triggerFileUpload">
                   📂 {{ $t('project.uploadMd') }}
                 </el-button>
                 <input
@@ -53,21 +53,42 @@
                   accept=".md,.txt,.markdown"
                   style="display: none"
                   @change="handleFileUpload" />
-                <el-button size="small" text @click="applyTemplate" v-if="editingKnowledge">
+                <el-button size="small" text @click="applyTemplate">
                   📄 {{ $t('project.useTemplate') }}
                 </el-button>
                 <el-button
+                  v-if="parsedSections.length > 0"
                   size="small"
-                  :type="editingKnowledge ? 'primary' : 'default'"
-                  @click="toggleEdit">
-                  {{ editingKnowledge ? $t('project.preview') : $t('project.edit') }}
+                  :type="globalEditMode ? 'primary' : 'default'"
+                  @click="globalEditMode = !globalEditMode">
+                  {{ globalEditMode ? $t('project.preview') : $t('project.rawEdit') }}
+                </el-button>
+                <el-button
+                  type="primary"
+                  size="small"
+                  @click="saveKnowledgeBase"
+                  :loading="savingKnowledge">
+                  {{ $t('common.save') }}
                 </el-button>
               </div>
             </div>
 
-            <!-- 主体：目录侧边栏 + 内容区 -->
-            <div class="kb-content-wrapper" v-if="knowledgeBaseText || editingKnowledge">
-              <!-- ===== TOC Sidebar ===== -->
+            <!-- ===== 空状态 ===== -->
+            <div v-if="!knowledgeBaseText" class="kb-empty">
+              <div class="kb-empty-icon">📋</div>
+              <p>{{ $t('project.noKnowledgeBase') }}</p>
+              <el-button type="primary" @click="addSection()">
+                {{ $t('project.addFirstSection') }}
+              </el-button>
+              <div style="margin-top:12px;display:flex;gap:8px">
+                <el-button size="small" text @click="triggerFileUpload">📂 {{ $t('project.uploadMd') }}</el-button>
+                <el-button size="small" text @click="applyTemplate">📄 {{ $t('project.useTemplate') }}</el-button>
+              </div>
+            </div>
+
+            <!-- ===== 主体：目录侧边栏 + 内容区 ===== -->
+            <div class="kb-content-wrapper" v-else>
+              <!-- TOC Sidebar -->
               <aside
                 class="kb-toc-sidebar"
                 :class="{ 'kb-toc-open': showToc }"
@@ -96,9 +117,14 @@
                     <span class="kb-toc-item-text">{{ section.heading }}</span>
                   </div>
                 </div>
+                <div class="kb-toc-footer">
+                  <el-button size="small" text @click="addSection()" class="kb-add-section-btn">
+                    + {{ $t('project.addSection') }}
+                  </el-button>
+                </div>
               </aside>
 
-              <!-- ===== Content Area ===== -->
+              <!-- Content Area -->
               <div class="kb-content-area">
                 <!-- Mobile TOC toggle -->
                 <el-button
@@ -111,68 +137,120 @@
                   {{ $t('project.tableOfContents') }}
                 </el-button>
 
-                <!-- Section indicator tag -->
-                <div class="kb-section-indicator" v-if="activeSection !== null && parsedSections[activeSection]">
-                  <el-tag type="warning" size="small" closable @close="selectSection(null)">
-                    {{ parsedSections[activeSection].heading }}
-                  </el-tag>
-                  <span class="kb-section-hint">{{ $t('project.sectionEditingHint') }}</span>
-                </div>
-
-                <!-- === Edit Mode === -->
-                <div class="kb-editor-area" v-if="editingKnowledge">
+                <!-- ===== 全局 Raw 编辑模式（高级用户） ===== -->
+                <div class="kb-editor-area" v-if="globalEditMode">
                   <div class="kb-split-pane">
                     <div class="kb-pane kb-pane-left">
-                      <div class="kb-pane-label">
-                        {{ $t('common.edit') }}
-                        <span v-if="activeSection !== null" class="kb-pane-sub-label">
-                          · {{ parsedSections[activeSection]?.heading }}
-                        </span>
-                      </div>
+                      <div class="kb-pane-label">{{ $t('common.edit') }}</div>
                       <el-input
-                        v-model="effectiveText"
+                        v-model="knowledgeBaseText"
                         type="textarea"
                         :rows="18"
                         :placeholder="$t('project.knowledgeBasePlaceholder')"
                         class="kb-textarea" />
                     </div>
                     <div class="kb-pane kb-pane-right">
-                      <div class="kb-pane-label">
-                        {{ $t('project.preview') }}
-                        <span v-if="activeSection !== null" class="kb-pane-sub-label">
-                          · {{ parsedSections[activeSection]?.heading }}
-                        </span>
-                      </div>
-                      <div
-                        class="kb-markdown-preview markdown-body"
-                        v-html="renderMarkdown(effectiveText)" />
+                      <div class="kb-pane-label">{{ $t('project.preview') }}</div>
+                      <div class="kb-markdown-preview markdown-body" v-html="renderMarkdown(knowledgeBaseText)" />
                     </div>
                   </div>
-                  <div class="kb-actions">
-                    <el-button @click="cancelEdit">{{ $t('common.cancel') }}</el-button>
-                    <el-button type="primary" @click="saveKnowledgeBase" :loading="savingKnowledge">
-                      {{ $t('common.save') }}
+                </div>
+
+                <!-- ===== 区块编辑器（默认） ===== -->
+                <div class="kb-blocks-area" v-else>
+                  <div
+                    v-for="(section, idx) in filteredSections"
+                    :key="idx"
+                    class="kb-section-card"
+                    :class="{ 'kb-section-editing': editingSectionIndex === realSectionIndex(idx) }"
+                    :id="`kb-section-${idx}`"
+                  >
+                    <!-- 卡片头部 -->
+                    <div class="kb-section-header">
+                      <span class="kb-section-heading-icon">📄</span>
+                      <span class="kb-section-heading-text">{{ section.heading }}</span>
+                      <el-dropdown trigger="click" class="kb-section-menu">
+                        <el-button size="small" text class="kb-section-menu-btn">
+                          <el-icon><MoreFilled /></el-icon>
+                        </el-button>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item @click="renameSection(realSectionIndex(idx))">
+                              <el-icon><Edit /></el-icon> {{ $t('project.renameSection') }}
+                            </el-dropdown-item>
+                            <el-dropdown-item
+                              @click="moveSection(realSectionIndex(idx), -1)"
+                              :disabled="realSectionIndex(idx) === 0">
+                              <el-icon><Top /></el-icon> {{ $t('project.moveUp') }}
+                            </el-dropdown-item>
+                            <el-dropdown-item
+                              @click="moveSection(realSectionIndex(idx), 1)"
+                              :disabled="realSectionIndex(idx) === parsedSections.length - 1">
+                              <el-icon><Bottom /></el-icon> {{ $t('project.moveDown') }}
+                            </el-dropdown-item>
+                            <el-dropdown-item divided @click="deleteSection(realSectionIndex(idx))">
+                              <span style="color:#f56c6c">
+                                <el-icon><Delete /></el-icon> {{ $t('project.deleteSection') }}
+                              </span>
+                            </el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </div>
+
+                    <!-- 正文 -->
+                    <div class="kb-section-body">
+                      <!-- 编辑模式：textarea + 实时预览 -->
+                      <template v-if="editingSectionIndex === realSectionIndex(idx)">
+                        <div class="kb-format-toolbar" @click.stop>
+                          <el-button size="small" text title="粗体" @click="insertMdSyntax(realSectionIndex(idx), 'bold')"><b>B</b></el-button>
+                          <el-button size="small" text title="斜体" @click="insertMdSyntax(realSectionIndex(idx), 'italic')"><i>I</i></el-button>
+                          <el-divider direction="vertical" />
+                          <el-button size="small" text title="三级标题" @click="insertMdSyntax(realSectionIndex(idx), 'h3')">H3</el-button>
+                          <el-button size="small" text title="无序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ul')">•</el-button>
+                          <el-button size="small" text title="有序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ol')">1.</el-button>
+                          <el-divider direction="vertical" />
+                          <el-button size="small" text title="行内代码" @click="insertMdSyntax(realSectionIndex(idx), 'code')">&lt;/&gt;</el-button>
+                          <el-button size="small" text title="代码块" @click="insertMdSyntax(realSectionIndex(idx), 'codeblock')">```</el-button>
+                          <el-button size="small" text title="链接" @click="insertMdSyntax(realSectionIndex(idx), 'link')">🔗</el-button>
+                          <el-button size="small" text title="表格" @click="insertMdSyntax(realSectionIndex(idx), 'table')">⊞</el-button>
+                        </div>
+                        <div class="kb-split-pane">
+                          <div class="kb-pane kb-pane-left">
+                            <div class="kb-pane-label">{{ $t('common.edit') }}</div>
+                            <el-input
+                              :ref="el => setTextareaRef(realSectionIndex(idx), el)"
+                              v-model="editingContent"
+                              type="textarea"
+                              :rows="Math.max(6, (editingContent || '').split('\n').length + 2)"
+                              :placeholder="$t('project.sectionPlaceholder')"
+                              class="kb-section-textarea" />
+                          </div>
+                          <div class="kb-pane kb-pane-right">
+                            <div class="kb-pane-label">{{ $t('project.preview') }}</div>
+                            <div class="kb-markdown-preview markdown-body" v-html="renderMarkdown(editingContent)" />
+                          </div>
+                        </div>
+                        <div class="kb-section-edit-actions" @click.stop>
+                          <el-button size="small" type="primary" @click="exitSectionEdit()">
+                            ✓ {{ $t('project.doneEditing') }}
+                          </el-button>
+                          <span class="kb-section-edit-hint">{{ $t('project.clickOutsideHint') }}</span>
+                        </div>
+                      </template>
+
+                      <!-- 预览模式 -->
+                      <div v-else class="kb-section-preview markdown-body" @click="enterSectionEdit(realSectionIndex(idx))" v-html="renderMarkdown(section.content || '*（空）*')" />
+                    </div>
+                  </div>
+
+                  <!-- 新增板块按钮 -->
+                  <div class="kb-add-section-wrapper">
+                    <el-button @click="addSection()" class="kb-add-section-block">
+                      <el-icon><Plus /></el-icon> {{ $t('project.addSection') }}
                     </el-button>
                   </div>
                 </div>
-
-                <!-- === Preview Mode === -->
-                <div class="kb-preview-area" v-else>
-                  <div
-                    class="kb-markdown-preview markdown-body"
-                    v-html="renderMarkdown(effectiveText)" />
-                </div>
-              </div>
-            </div>
-
-            <!-- 空状态 -->
-            <div class="kb-preview-area" v-if="!knowledgeBaseText && !editingKnowledge">
-              <div class="kb-empty">
-                <div class="kb-empty-icon">📋</div>
-                <p>{{ $t('project.noKnowledgeBase') }}</p>
-                <el-button type="primary" @click="toggleEdit">
-                  {{ $t('common.edit') }}
-                </el-button>
               </div>
             </div>
           </div>
@@ -243,10 +321,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api'
 import dayjs from 'dayjs'
 import { marked } from 'marked'
@@ -259,17 +337,99 @@ const showAddMemberDialog = ref(false)
 const showAddEnvDialog = ref(false)
 const addingMember = ref(false)
 const newMember = reactive({ username: '', role: 'tester' })
-const editingKnowledge = ref(false)
+
+// ── Knowledge base state ──
+const editingKnowledge = ref(false)  // deprecated, kept for compat
 const knowledgeBaseText = ref('')
 const knowledgeBaseOriginal = ref('')
 const savingKnowledge = ref(false)
 const fileInputRef = ref(null)
+const globalEditMode = ref(false)      // raw markdown textarea mode
+const editingSectionIndex = ref(null)  // which section card is in edit mode
+const textareaRefs = reactive({})      // section index → textarea element
+const editingContent = ref('')         // MD text buffer for inline editing
 
-// TOC state
+function setTextareaRef(idx, el) {
+  if (el) textareaRefs[idx] = el
+}
+
+function enterSectionEdit(idx) {
+  if (globalEditMode.value) return
+  // Strip leading newlines — they're structural spacing between heading and body
+  // They get added back in exitSectionEdit
+  const raw = parsedSections.value[idx]?.content || ''
+  editingContent.value = raw.replace(/^\n+/, '')
+  editingSectionIndex.value = idx
+  nextTick(() => {
+    // Focus the textarea
+    const ta = textareaRefs[idx]
+    const el = ta?.$el?.querySelector?.('textarea') || ta?.$el || ta
+    if (el) {
+      el.focus()
+      const len = el.value?.length || 0
+      el.setSelectionRange?.(len, len)
+    }
+  })
+}
+
+function exitSectionEdit() {
+  if (editingSectionIndex.value === null) return
+  const idx = editingSectionIndex.value
+  const sections = parsedSections.value.slice()
+  if (idx >= 0 && idx < sections.length) {
+    let content = editingContent.value || ''
+    // Restore leading newline (stripped on enter for clean editing)
+    if (content && !content.startsWith('\n')) content = '\n' + content
+    if (!content.endsWith('\n')) content += '\n'
+    sections[idx].content = content
+    knowledgeBaseText.value = sections.map(s => `## ${s.heading}${s.content}`).join('')
+  }
+  editingSectionIndex.value = null
+  editingContent.value = ''
+}
+
+// ── Markdown syntax insertion ──
+
+function insertMdSyntax(idx, type) {
+  const ta = textareaRefs[idx]
+  const el = ta?.$el?.querySelector?.('textarea') || ta?.$el || ta
+  if (!el) return
+  const text = el.value || ''
+  const start = el.selectionStart ?? text.length
+  const end = el.selectionEnd ?? text.length
+  const selected = text.slice(start, end)
+
+  const tpl = {
+    bold:      { before: '**', after: '**', placeholder: 'bold' },
+    italic:    { before: '*', after: '*', placeholder: 'italic' },
+    h3:        { before: '\n### ', after: '', placeholder: '小标题', line: true },
+    ul:        { before: '\n- ', after: '', placeholder: '列表项', line: true },
+    ol:        { before: '\n1. ', after: '', placeholder: '列表项', line: true },
+    code:      { before: '`', after: '`', placeholder: 'code' },
+    codeblock: { before: '\n```\n', after: '\n```\n', placeholder: '代码' },
+    link:      { before: '[', after: '](url)', placeholder: '链接文字' },
+    table:     { before: '\n| 列1 | 列2 | 列3 |\n|------|------|------|\n| ', after: ' |  |  |\n', placeholder: '内容' },
+  }[type]
+  if (!tpl) return
+
+  const insert = selected
+    ? tpl.before + selected + tpl.after
+    : tpl.before + (tpl.placeholder || '') + tpl.after
+
+  const prefix = tpl.line && start > 0 && text[start - 1] !== '\n' ? '\n' : ''
+  editingContent.value = text.slice(0, start) + prefix + insert + text.slice(end)
+
+  nextTick(() => {
+    const cursor = start + prefix.length + tpl.before.length + (selected ? selected.length : (tpl.placeholder || '').length) + tpl.after.length
+    el.value = editingContent.value
+    el.setSelectionRange(cursor, cursor)
+    el.focus()
+  })
+}
 const activeSection = ref(null)  // null = all, number = section index
 const showToc = ref(true)
 
-// ── Section parsing ──
+// ── Section parsing (reuses existing logic) ──
 
 function parseSections(text) {
   if (!text || !text.trim()) return []
@@ -287,7 +447,7 @@ function parseSections(text) {
       })
     }
     lastHeading = match[0].replace(/^## /, '').trim()
-    lastIndex = match.index
+    lastIndex = match.index + match[0].length  // skip past the heading line
   }
   if (lastHeading !== null) {
     sections.push({
@@ -298,27 +458,47 @@ function parseSections(text) {
   return sections
 }
 
+// Clean up duplicated headings caused by previous bug
+// Pattern: ## H1## H1\ncontent → ## H1\ncontent
+function dedupeKnowledgeBase(text) {
+  if (!text) return ''
+  let fixed = text
+  // Iterate until no more duplicates found (handles nested cases)
+  let prev = ''
+  while (prev !== fixed) {
+    prev = fixed
+    fixed = fixed.replace(/(## [^\n]+?)\1/g, '$1')
+  }
+  return fixed
+}
+
 const parsedSections = computed(() => parseSections(knowledgeBaseText.value))
 
-// effectiveText: what to show in the editor/preview
-// get: slice of knowledgeBaseText for current section (or full text for "all")
-// set: write back to the correct section, rebuild full text
-const effectiveText = computed({
-  get() {
-    if (activeSection.value === null) return knowledgeBaseText.value
-    const sec = parsedSections.value[activeSection.value]
-    return sec ? sec.content : knowledgeBaseText.value
-  },
-  set(val) {
-    if (activeSection.value === null) {
-      knowledgeBaseText.value = val
-    } else if (activeSection.value < parsedSections.value.length) {
-      const parts = parsedSections.value.map(s => s.content)
-      parts[activeSection.value] = val
-      knowledgeBaseText.value = parts.join('')
-    }
-  }
+// Filtered sections based on activeSection: null=all, number=single
+const filteredSections = computed(() => {
+  if (activeSection.value === null) return parsedSections.value
+  const sec = parsedSections.value[activeSection.value]
+  return sec ? [sec] : parsedSections.value
 })
+
+// Map filtered index back to real index in parsedSections
+function realSectionIndex(filteredIdx) {
+  if (activeSection.value === null) return filteredIdx
+  return activeSection.value
+}
+
+// ── Full-text rebuild from sections ──
+
+function rebuildFullText() {
+  if (parsedSections.value.length === 0) return knowledgeBaseText.value
+  const parts = parsedSections.value.map(s => {
+    let content = s.content
+    if (content && !content.startsWith('\n')) content = '\n' + content
+    if (!content.endsWith('\n')) content += '\n'
+    return `## ${s.heading}${content}`
+  })
+  return parts.join('')
+}
 
 function selectSection(index) {
   if (index === null) {
@@ -328,10 +508,117 @@ function selectSection(index) {
     if (window.innerWidth <= 768) {
       showToc.value = false
     }
+    nextTick(() => {
+      const el = document.getElementById(`kb-section-${index}`)
+      if (el) {
+        // Scroll within the content area, not the full page
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+    })
   }
 }
 
-// Configure marked for safe rendering
+// ── Section CRUD ──
+
+async function addSection(heading) {
+  if (!heading) {
+    try {
+      const { value } = await ElMessageBox.prompt(
+        t('project.addSectionPrompt'),
+        t('project.addSection'),
+        { confirmButtonText: t('common.ok'), cancelButtonText: t('common.cancel') }
+      )
+      if (!value || !value.trim()) return
+      heading = value.trim()
+    } catch {
+      return  // user cancelled
+    }
+  }
+  const newBlock = `\n## ${heading}\n\n`
+  knowledgeBaseText.value = knowledgeBaseText.value
+    ? knowledgeBaseText.value.replace(/\n*$/, '\n') + newBlock
+    : `## ${heading}\n\n`
+  knowledgeBaseOriginal.value = knowledgeBaseText.value
+  // Auto-enter edit on new section
+  await nextTick()
+  const newIdx = parsedSections.value.length - 1
+  editingSectionIndex.value = newIdx
+  activeSection.value = newIdx
+  await nextTick()
+  // Focus the new section's textarea
+  await nextTick()
+  const ta = textareaRefs[newIdx]
+  const el = ta?.$el?.querySelector?.('textarea') || ta?.$el || ta
+  if (el) {
+    el.focus()
+    const len = el.value?.length || 0
+    el.setSelectionRange?.(len, len)
+  }
+}
+
+async function renameSection(idx) {
+  const section = parsedSections.value[idx]
+  if (!section) return
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('project.renameSectionPrompt'),
+      t('project.renameSection'),
+      {
+        confirmButtonText: t('common.ok'),
+        cancelButtonText: t('common.cancel'),
+        inputValue: section.heading,
+      }
+    )
+    if (!value || !value.trim()) return
+    const newHeading = value.trim()
+    // Replace the heading in the raw text
+    const oldBlock = `## ${section.heading}`
+    const newBlock = `## ${newHeading}`
+    knowledgeBaseText.value = knowledgeBaseText.value.replace(oldBlock, newBlock)
+    knowledgeBaseOriginal.value = knowledgeBaseText.value
+  } catch {
+    // cancelled
+  }
+}
+
+async function deleteSection(idx) {
+  const section = parsedSections.value[idx]
+  if (!section) return
+  try {
+    await ElMessageBox.confirm(
+      t('project.deleteSectionConfirm', { name: section.heading }),
+      t('project.deleteSection'),
+      { type: 'warning', confirmButtonText: t('common.ok'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
+    return
+  }
+  // Remove the ## heading + content from raw text
+  const block = `## ${section.heading}${section.content}`
+  knowledgeBaseText.value = knowledgeBaseText.value.replace(block, '')
+  // Clean up extra blank lines
+  knowledgeBaseText.value = knowledgeBaseText.value.replace(/\n{3,}/g, '\n\n').trim()
+  knowledgeBaseText.value += '\n'
+  knowledgeBaseOriginal.value = knowledgeBaseText.value
+  if (editingSectionIndex.value === idx) editingSectionIndex.value = null
+  if (activeSection.value === idx) activeSection.value = null
+}
+
+function moveSection(idx, dir) {
+  const sections = parsedSections.value.slice()
+  const target = idx + dir
+  if (target < 0 || target >= sections.length) return
+  // Swap in array
+  ;[sections[idx], sections[target]] = [sections[target], sections[idx]]
+  // Rebuild full text
+  knowledgeBaseText.value = sections.map(s => `## ${s.heading}${s.content}`).join('')
+  knowledgeBaseOriginal.value = knowledgeBaseText.value
+  if (editingSectionIndex.value === idx) editingSectionIndex.value = target
+  if (activeSection.value === idx) activeSection.value = target
+}
+
+// ── Markdown rendering ──
+
 marked.setOptions({
   breaks: true,
   gfm: true
@@ -342,26 +629,27 @@ const renderMarkdown = (text) => {
   return marked(text)
 }
 
+// ── Data & persistence ──
+
 const fetchProject = async () => {
   try {
     const response = await api.get(`/projects/${route.params.id}/`)
     project.value = response.data
-    knowledgeBaseText.value = response.data.knowledge_base || ''
-    knowledgeBaseOriginal.value = knowledgeBaseText.value
+    let raw = response.data.knowledge_base || ''
+    // Auto-clean duplicates from previous bug
+    raw = dedupeKnowledgeBase(raw)
+    if (raw !== (response.data.knowledge_base || '')) {
+      // Silently fix server data
+      api.patch(`/projects/${route.params.id}/`, { knowledge_base: raw }).catch(() => {})
+    }
+    knowledgeBaseText.value = raw
+    knowledgeBaseOriginal.value = raw
     activeSection.value = null
+    editingSectionIndex.value = null
+    globalEditMode.value = false
   } catch (error) {
     ElMessage.error(t('project.fetchDetailFailed'))
   }
-}
-
-const toggleEdit = () => {
-  editingKnowledge.value = !editingKnowledge.value
-}
-
-const cancelEdit = () => {
-  knowledgeBaseText.value = knowledgeBaseOriginal.value
-  editingKnowledge.value = false
-  activeSection.value = null
 }
 
 const triggerFileUpload = () => {
@@ -380,8 +668,10 @@ const handleFileUpload = (event) => {
     } else {
       knowledgeBaseText.value = content
     }
+    knowledgeBaseOriginal.value = knowledgeBaseText.value
     activeSection.value = null
-    ElMessage.success(`已导入: ${file.name}`)
+    editingSectionIndex.value = null
+    ElMessage.success(t('project.fileImported', { name: file.name }))
   }
   reader.readAsText(file, 'UTF-8')
   event.target.value = ''
@@ -394,18 +684,25 @@ const applyTemplate = () => {
   } else {
     knowledgeBaseText.value = template
   }
+  knowledgeBaseOriginal.value = knowledgeBaseText.value
   activeSection.value = null
+  editingSectionIndex.value = null
   ElMessage.success(t('project.templateApplied'))
 }
 
 const saveKnowledgeBase = async () => {
   savingKnowledge.value = true
   try {
+    // If editing a section, rebuild full text first
+    if (editingSectionIndex.value !== null) {
+      knowledgeBaseText.value = rebuildFullText()
+    }
     await api.patch(`/projects/${route.params.id}/`, {
       knowledge_base: knowledgeBaseText.value
     })
     ElMessage.success(t('project.knowledgeBaseSaved'))
-    editingKnowledge.value = false
+    editingSectionIndex.value = null
+    globalEditMode.value = false
     knowledgeBaseOriginal.value = knowledgeBaseText.value
     activeSection.value = null
     await fetchProject()
@@ -492,6 +789,8 @@ $radius: 8px;
 
 // ── Knowledge Base Layout ──
 
+// ── Knowledge Base Layout ──
+
 .knowledge-base-layout {
   display: flex;
   flex-direction: column;
@@ -507,6 +806,8 @@ $radius: 8px;
   background: $bg-subtle;
   border-radius: $radius;
   border: 1px solid $border;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .kb-toolbar-left {
@@ -517,19 +818,9 @@ $radius: 8px;
   color: $text-secondary;
 }
 
-.kb-char-count {
-  font-weight: 500;
-  color: $text-primary;
-}
-
-.kb-update-info {
-  color: $text-secondary;
-}
-
-.kb-toolbar-right {
-  display: flex;
-  gap: 8px;
-}
+.kb-char-count { font-weight: 500; color: $text-primary; }
+.kb-update-info { color: $text-secondary; }
+.kb-toolbar-right { display: flex; gap: 8px; align-items: center; }
 
 // ── Two-column wrapper ──
 
@@ -569,14 +860,25 @@ $radius: 8px;
   flex-shrink: 0;
 }
 
-.kb-toc-close {
-  display: none;
-}
+.kb-toc-close { display: none; }
 
 .kb-toc-list {
   overflow-y: auto;
   flex: 1;
   padding: 4px 0;
+}
+
+.kb-toc-footer {
+  padding: 8px 10px;
+  border-top: 1px solid $border;
+  flex-shrink: 0;
+}
+
+.kb-add-section-btn {
+  width: 100%;
+  justify-content: center;
+  color: $primary;
+  font-size: 13px;
 }
 
 .kb-toc-item {
@@ -587,18 +889,8 @@ $radius: 8px;
   transition: all 0.15s ease;
   border-left: 3px solid transparent;
   line-height: 1.4;
-
-  &:hover {
-    background: $primary-light;
-    color: $primary;
-  }
-
-  &.kb-toc-item-active {
-    background: $primary-light;
-    color: $primary;
-    border-left-color: $primary;
-    font-weight: 500;
-  }
+  &:hover { background: $primary-light; color: $primary; }
+  &.kb-toc-item-active { background: $primary-light; color: $primary; border-left-color: $primary; font-weight: 500; }
 }
 
 .kb-toc-item-all {
@@ -620,6 +912,8 @@ $radius: 8px;
 .kb-content-area {
   flex: 1;
   min-width: 0;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
 }
 
 .kb-toc-toggle {
@@ -629,28 +923,141 @@ $radius: 8px;
   justify-content: flex-start;
 }
 
-// Section indicator
-.kb-section-indicator {
+// ── Section Cards (default block editor) ──
+
+.kb-blocks-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.kb-section-card {
+  border: 1px solid $border;
+  border-radius: $radius;
+  background: $bg-card;
+  transition: border-color 0.2s, box-shadow 0.2s;
+
+  &:hover { border-color: darken($border, 10%); }
+  &.kb-section-editing {
+    border-color: $primary;
+    box-shadow: 0 0 0 2px rgba($primary, 0.15);
+  }
+}
+
+.kb-section-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: $bg-subtle;
+  border-bottom: 1px solid $border;
+  border-radius: $radius $radius 0 0;
 }
 
-.kb-section-hint {
-  font-size: 12px;
+.kb-section-heading-icon { font-size: 14px; }
+.kb-section-heading-text {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.kb-section-menu-btn {
+  opacity: 0.4;
+  &:hover { opacity: 1; }
+}
+
+// Section body
+.kb-section-body {
+  cursor: pointer;
+  transition: background 0.15s;
+  &:hover { background: #fafbfc; }
+}
+
+.kb-section-preview {
+  padding: 16px 20px;
+  min-height: 60px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: $text-primary;
+}
+
+// WYSIWYG editor
+.kb-wysiwyg-editor {
+  min-height: 150px;
+  padding: 16px 20px;
+  font-size: 14px;
+  line-height: 1.75;
+  color: $text-primary;
+  outline: none;
+  background: #fff;
+  &:focus { background: #fafbfc; }
+  &:empty::before {
+    content: attr(placeholder);
+    color: #c0c4cc;
+  }
+}
+
+// Format toolbar
+.kb-format-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  background: #fafbfc;
+  border-bottom: 1px solid $border;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+
+  .el-button {
+    min-width: 28px;
+    height: 28px;
+    font-size: 13px;
+    color: $text-secondary;
+    &:hover { color: $primary; background: $primary-light; }
+  }
+}
+
+// Edit actions
+.kb-section-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: #fafbfc;
+  border-top: 1px solid $border;
+}
+
+.kb-section-edit-hint {
+  font-size: 11px;
   color: $text-secondary;
 }
 
-// Pane sub-label
-.kb-pane-sub-label {
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
-  color: $primary;
+// Add section block
+.kb-add-section-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
 }
 
-// ── Split Pane (Edit Mode) ──
+.kb-add-section-block {
+  width: 100%;
+  border: 2px dashed $border;
+  border-radius: $radius;
+  padding: 14px;
+  font-size: 14px;
+  color: $primary;
+  background: transparent;
+  transition: all 0.2s;
+  &:hover {
+    border-color: $primary;
+    background: $primary-light;
+  }
+}
+
+// ── Split Pane (Global Edit Mode / Raw) ──
 
 .kb-editor-area {
   display: flex;
@@ -698,55 +1105,14 @@ $radius: 8px;
       font-size: 13px;
       line-height: 1.7;
       padding: 14px;
-      &:focus {
-        box-shadow: none;
-      }
+      &:focus { box-shadow: none; }
     }
   }
 }
 
-.kb-pane-right {
-  background: #fff;
-}
+.kb-pane-right { background: #fff; }
 
-// Save/cancel buttons
-.kb-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding-top: 4px;
-}
-
-// Preview Mode
-.kb-preview-area {
-  border: 1px solid $border;
-  border-radius: $radius;
-  min-height: 300px;
-  background: #fff;
-}
-
-// Empty state
-.kb-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: $text-secondary;
-
-  .kb-empty-icon {
-    font-size: 48px;
-    margin-bottom: 12px;
-  }
-
-  p {
-    margin: 0 0 16px 0;
-    font-size: 14px;
-  }
-}
-
-// ── Markdown Preview Container (scoped — applies to the wrapper div) ──
-
+// Markdown preview in cards (scoped)
 .markdown-body {
   padding: 24px 28px;
   font-size: 14px;
@@ -754,6 +1120,19 @@ $radius: 8px;
   color: $text-primary;
   word-wrap: break-word;
   overflow-x: auto;
+}
+
+// ── Empty state ──
+
+.kb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: $text-secondary;
+  .kb-empty-icon { font-size: 48px; margin-bottom: 12px; }
+  p { margin: 0 0 16px 0; font-size: 14px; }
 }
 
 // ── Members & Environments ──
@@ -765,46 +1144,21 @@ $radius: 8px;
 // ── Responsive ──
 
 @media (max-width: 768px) {
-  .kb-content-wrapper {
-    flex-direction: column;
-  }
-
-  .kb-toc-toggle {
-    display: inline-flex;
-  }
-
+  .kb-content-wrapper { flex-direction: column; }
+  .kb-toc-toggle { display: inline-flex; }
   .kb-toc-sidebar {
-    position: fixed;
-    left: 0;
-    top: 0;
-    z-index: 1000;
-    width: 260px;
-    height: 100vh;
-    max-height: 100vh;
+    position: fixed; left: 0; top: 0; z-index: 1000;
+    width: 260px; height: 100vh; max-height: 100vh;
     border-radius: 0;
     transform: translateX(-100%);
     transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: 0 0 0 rgba(0,0,0,0);
-
-    &.kb-toc-open {
-      transform: translateX(0);
-      box-shadow: 4px 0 24px rgba(0,0,0,0.12);
-    }
+    &.kb-toc-open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,0.12); }
   }
-
-  .kb-toc-close {
-    display: inline-flex;
-  }
-
-  .kb-split-pane {
-    grid-template-columns: 1fr;
-  }
-
-  .kb-toolbar {
-    flex-direction: column;
-    gap: 8px;
-    align-items: flex-start;
-  }
+  .kb-toc-close { display: inline-flex; }
+  .kb-split-pane { grid-template-columns: 1fr; }
+  .kb-toolbar { flex-direction: column; align-items: flex-start; }
+  .kb-format-toolbar { gap: 0; }
 }
 </style>
 
