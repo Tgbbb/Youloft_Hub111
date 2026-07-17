@@ -82,9 +82,32 @@
               {{ currentCaseId ? '更新' : '保存' }}
             </el-button>
             <span style="margin-left:12px;display:flex;align-items:center;gap:4px">
-              <el-switch v-model="autoPlanMode" size="small" />
+              <el-switch v-model="autoPlanMode" size="small" :disabled="replayMode" />
               <span style="font-size:12px;color:#909399">智能规划</span>
             </span>
+            <span style="display:flex;align-items:center;gap:4px">
+              <el-switch v-model="recordMode" size="small" />
+              <span style="font-size:12px;color:#909399">录制保存</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:4px">
+              <el-switch v-model="replayMode" size="small" :disabled="autoPlanMode" />
+              <span style="font-size:12px;color:#909399">回放执行</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:4px">
+              <el-switch v-model="clearAppData" size="small" :disabled="isIosDevice" />
+              <el-tooltip :content="isIosDevice ? 'iOS 不支持' : '执行前清除App数据'" placement="top">
+                <span style="font-size:12px;color:#909399;cursor:help">清除数据</span>
+              </el-tooltip>
+            </span>
+            <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" style="width:195px;margin-left:4px">
+              <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.recorded_at?.substring(5,16) || '未知'} (${r.result || ''})`" :value="i">
+                <span style="float:left">{{ r.recorded_at?.substring(5,16) || '未知' }}</span>
+                <span style="float:right;color:#8492a6;font-size:12px">{{ r.result }}</span>
+              </el-option>
+            </el-select>
+            <el-button v-if="replayList.length > 0" size="small" type="danger" text style="margin-left:2px" @click="deleteReplayEntry">
+              <el-icon><Delete /></el-icon>
+            </el-button>
             <el-button type="success" @click="doExecute" :loading="executing" :disabled="!canExecute" icon="VideoPlay">
               执行
             </el-button>
@@ -229,6 +252,15 @@ const dialogDisconnecting = reactive({})
 const networkForm = reactive({ ip: '', port: 5555 })
 
 const autoPlanMode = ref(false)
+const recordMode = ref(false)
+const replayMode = ref(false)
+const clearAppData = ref(false)
+
+const isIosDevice = computed(() => {
+  if (!selectedDeviceId.value) return false
+  const d = devices.value.find(d => d.id === selectedDeviceId.value)
+  return d?.platform === 'ios'
+})
 
 const form = reactive({
   name: '',
@@ -265,6 +297,15 @@ const iosDevices = computed(() => devices.value.filter(d => d.platform === 'ios'
 const networkDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.ip_address))
 const isRunning = computed(() => execution.value && ['pending', 'running'].includes(execution.value.status))
 const canExecute = computed(() => form.ai_prompt && selectedDeviceId.value && form.ai_model_config_id)
+const selectedReplayIndex = ref(0)
+const replayList = computed(() => {
+  if (!currentCaseId.value) return []
+  const c = cases.value.find(c => c.id === currentCaseId.value)
+  if (!c?.replay_data) return []
+  if (Array.isArray(c.replay_data)) return c.replay_data
+  return [c.replay_data]  // 兼容旧格式
+})
+const onReplaySelect = (val) => { selectedReplayIndex.value = val }
 const statusTagType = computed(() => {
   const m = { pending: 'info', running: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
   return m[execution.value?.status] || 'info'
@@ -334,6 +375,34 @@ const discoverDevices = async () => {
   }
 }
 
+const clearReplay = async () => {
+  if (!currentCaseId.value) return
+  try {
+    await ElMessageBox.confirm('确定要清空所有录制数据吗？', '确认', { type: 'warning' })
+    await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/clear_replay/`)
+    selectedReplayIndex.value = 0
+    await loadCases()
+    ElMessage.success('录制数据已清空')
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('清空失败')
+  }
+}
+
+const deleteReplayEntry = async () => {
+  if (!currentCaseId.value) return
+  try {
+    await ElMessageBox.confirm('确定要删除这条录制数据吗？', '确认删除', { type: 'warning' })
+    await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/delete_replay/`, {
+      index: selectedReplayIndex.value,
+    })
+    if (selectedReplayIndex.value > 0) selectedReplayIndex.value--
+    await loadCases()
+    ElMessage.success('已删除')
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
 // ---- 局域网设备连接 ----
 const connectNetwork = async () => {
   if (!networkForm.ip.trim()) { ElMessage.warning('请输入 IP 地址'); return }
@@ -396,6 +465,9 @@ const newCase = () => {
   form.name = ''
   form.ai_prompt = ''
   form.project_id = null
+  recordMode.value = false
+  replayMode.value = false
+  clearAppData.value = false
 }
 
 const loadCase = (c) => {
@@ -487,6 +559,12 @@ const doExecute = async () => {
   if (!form.ai_model_config_id) { ElMessage.warning('请选择 AI 模型'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
 
+  // 回放模式：检查是否有录制数据
+  if (replayMode.value && replayList.value.length === 0) {
+    ElMessage.warning('暂无录制数据，请先开启录制保存执行一次')
+    return
+  }
+
   executing.value = true
   try {
     // 如果没有保存过的用例，先自动保存
@@ -496,6 +574,10 @@ const doExecute = async () => {
     const { data } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/execute/`, {
       device_id: selectedDeviceId.value,
       auto_plan: autoPlanMode.value,
+      record: recordMode.value,
+      replay: replayMode.value,
+      replay_index: selectedReplayIndex.value,
+      clear_app_data: clearAppData.value,
     })
     execution.value = { id: data.execution_id, status: 'pending', progress: 0, total_steps: 0, steps_detail: [], passed_steps: 0, failed_steps: 0 }
     currentScreenshot.value = ''

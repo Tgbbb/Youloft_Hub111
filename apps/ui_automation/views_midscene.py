@@ -390,6 +390,29 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=['post'])
+    def clear_replay(self, request, pk=None):
+        """清除录制数据"""
+        midscene_case = self.get_object()
+        midscene_case.replay_data = None
+        midscene_case.save(update_fields=['replay_data'])
+        return Response({'message': '录制数据已清除'})
+
+    @action(detail=True, methods=['post'], url_path='delete_replay')
+    def delete_replay(self, request, pk=None):
+        """删除指定录制条目"""
+        midscene_case = self.get_object()
+        index = request.data.get('index', 0)
+        existing = midscene_case.replay_data
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not isinstance(existing, list) or index >= len(existing):
+            return Response({'error': '无效的索引'}, status=400)
+        existing.pop(index)
+        midscene_case.replay_data = existing if existing else None
+        midscene_case.save(update_fields=['replay_data'])
+        return Response({'message': '已删除', 'replay_data': midscene_case.replay_data})
+
+    @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         """执行 Midscene 用例"""
         midscene_case = self.get_object()
@@ -416,6 +439,10 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
 
         # 创建执行记录
         auto_plan = request.data.get('auto_plan', False)
+        record_mode = request.data.get('record', False)
+        replay_mode = request.data.get('replay', False)
+        replay_index = request.data.get('replay_index', 0)
+        clear_app_data = request.data.get('clear_app_data', False)
         execution = MidsceneExecutionRecord.objects.create(
             midscene_case=midscene_case,
             case_name=midscene_case.name,
@@ -434,7 +461,8 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
 
         # 异步执行
         from .tasks import execute_midscene_task
-        task = execute_midscene_task.delay(execution.id)
+        task = execute_midscene_task.delay(execution.id, record_mode=record_mode, replay_mode=replay_mode,
+                                          replay_index=replay_index, clear_app_data=clear_app_data)
 
         # 记录 Celery task_id
         execution.task_id = task.id

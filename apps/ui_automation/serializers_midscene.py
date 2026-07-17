@@ -81,6 +81,7 @@ class MidsceneCaseSerializer(serializers.ModelSerializer):
             'ai_prompt', 'ai_act_context', 'ai_model_config', 'model_config_name',
             'max_steps', 'action_delay',
             'app_package', 'app_activity',
+            'replay_data',
             'created_by', 'created_by_name',
             'created_at', 'updated_at', 'latest_result',
         ]

@@ -1195,6 +1195,8 @@ class MidsceneCase(models.Model):
 
     ai_act_context = models.TextField(blank=True, default='', verbose_name='全局背景提示',
                                        help_text='每次VLM调用都会附加此提示，如"遇到权限弹窗先点允许"')
+    replay_data = models.JSONField(default=None, null=True, blank=True, verbose_name='回放数据',
+                                    help_text='录制成功后的回放脚本，包含设备信息、步骤动作和pHash校验值')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
                                    related_name='created_midscene_cases', verbose_name='创建人')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')

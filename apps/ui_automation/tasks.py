@@ -34,7 +34,8 @@ def _send_progress_update(execution_id, status, progress, message=''):
 
 
 @shared_task(bind=True, max_retries=0)
-def execute_midscene_task(self, execution_id):
+def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=False,
+                          replay_index=0, clear_app_data=False):
     """
     异步执行 Midscene 测试任务（纯 Python Runner）。
     """
@@ -106,6 +107,10 @@ def execute_midscene_task(self, execution_id):
             model_config=model_config,
             execution_record=execution,
             progress_callback=on_progress,
+            record_mode=record_mode,
+            replay_mode=replay_mode,
+            replay_index=replay_index,
+            clear_app_data=clear_app_data,
         )
 
         # ---- 保存结果 ----
@@ -119,6 +124,21 @@ def execute_midscene_task(self, execution_id):
         execution.passed_steps = result['passedSteps']
         execution.failed_steps = result['failedSteps']
         execution.save()
+
+        # ---- 录制: 成功后加入列表，保留最近3条 ----
+        if record_mode and result.get('replay_data') and result['status'] == 'passed':
+            midscene_case.refresh_from_db()
+            entry = result['replay_data']
+            entry['result'] = f'{result["passedSteps"]}/{result["totalSteps"]} passed'
+            existing = midscene_case.replay_data
+            if isinstance(existing, dict):
+                existing = [existing]
+            elif not isinstance(existing, list):
+                existing = []
+            existing.insert(0, entry)
+            midscene_case.replay_data = existing[:3]
+            midscene_case.save(update_fields=['replay_data'])
+            logger.info(f'[Task] 回放数据已保存到用例 {midscene_case.id}（共{len(existing[:3])}条）')
 
         _send_progress_update(
             execution.id, result['status'], 100,
