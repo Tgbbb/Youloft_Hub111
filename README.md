@@ -1,4 +1,4 @@
-# TestHub 智能测试管理平台
+# TestHub 基于原仓库二次开发，请支持原仓库地址：https://github.com/chenjigang4167/testhub_platform/ 该仓库为自用测试
 
 <div align="center">
 
