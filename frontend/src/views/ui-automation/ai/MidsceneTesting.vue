@@ -2,49 +2,71 @@
   <div class="midscene-page">
     <!-- ====== 左侧用例列表 ====== -->
     <aside class="sidebar">
-      <div class="sidebar-header">
-        <span class="sidebar-title">用例列表</span>
-        <el-button size="small" @click="newCase" :icon="Plus">新建</el-button>
+      <div class="sidebar-filter">
+        <el-select v-model="filterProjectId" placeholder="全部项目" size="small" clearable style="width:100%">
+          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
+        <span class="filter-count">共 {{ filteredCases.length }} 条</span>
       </div>
       <div class="case-list">
         <div
-          v-for="c in cases"
+          v-for="c in filteredCases"
           :key="c.id"
           class="case-item"
           :class="{ active: c.id === currentCaseId }"
           @click="loadCase(c)"
         >
-          <div class="case-item-name">{{ c.name }}</div>
-          <div class="case-item-meta">
-            {{ getStepCount(c.ai_prompt) }} 步 ·
-            <el-tag v-if="c.latest_result" :type="c.latest_result.status === 'passed' ? 'success' : 'danger'" size="small">
-              {{ c.latest_result.status === 'passed' ? '✓' : '✗' }} {{ c.latest_result.pass_rate }}%
-            </el-tag>
-            <span v-else class="text-muted">未执行</span>
+          <span class="case-status-bar" :class="c._draft ? 'status-draft' : 'status-' + caseStatusClass(c)"></span>
+          <div class="case-body">
+            <div class="case-item-name" :class="{ 'is-draft': c._draft }">{{ c.name }}</div>
+            <div class="case-item-meta" v-if="!c._draft">
+              {{ getStepCount(c.ai_prompt) }} 步
+              <span class="case-project-tag" v-if="getProjectName(c.project)">{{ getProjectName(c.project) }}</span>
+              <el-tag v-if="c.latest_result" :type="c.latest_result.status === 'passed' ? 'success' : 'danger'" size="small">
+                {{ c.latest_result.pass_rate }}%
+              </el-tag>
+              <span v-else class="text-muted">未执行</span>
+            </div>
+            <div class="case-item-meta" v-else>
+              <span style="color:#e6a23c">草稿</span>
+            </div>
           </div>
           <el-button class="case-delete-btn" size="small" type="danger" text @click.stop="deleteCase(c)">
             <el-icon><Delete /></el-icon>
           </el-button>
         </div>
-        <div v-if="cases.length === 0" class="empty-hint">暂无用例，点「新建」开始</div>
+        <div v-if="filteredCases.length === 0" class="empty-hint">
+          {{ filterProjectId ? '该项目暂无用例' : '暂无用例，点下方按钮新建' }}
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <el-button @click="newCase" :icon="Plus" style="width:100%">新建用例</el-button>
       </div>
     </aside>
 
     <!-- ====== 主编辑 + 执行区 ====== -->
     <main class="main-area">
-      <div class="editor-section">
-        <el-form label-width="80px" size="default">
-          <!-- 第一行 -->
-          <div class="form-row">
-            <el-input v-model="form.name" placeholder="用例名称" style="width:180px" />
-            <el-select v-model="form.project_id" placeholder="项目" style="width:150px" clearable>
-              <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
-            <span v-if="projectPackage" style="font-size:11px;color:#67c23a">包名: {{ projectPackage }}</span>
+
+      <!-- 区块1: 用例信息 -->
+      <section class="card-section">
+        <div class="section-label">用例信息</div>
+        <div class="info-row">
+          <el-input v-model="form.name" placeholder="用例名称" style="width:220px" size="default" />
+          <el-select v-model="form.project_id" placeholder="所属项目" style="width:160px" clearable>
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
           <el-select v-model="form.ai_model_config_id" placeholder="AI 模型" style="width:180px">
-              <el-option v-for="m in visionModels" :key="m.id" :label="m.name" :value="m.id" />
-            </el-select>
-            <el-select v-model="selectedDeviceId" placeholder="选择设备" style="width:180px">
+            <el-option v-for="m in visionModels" :key="m.id" :label="m.name" :value="m.id" />
+          </el-select>
+        </div>
+      </section>
+
+      <!-- 区块2: 执行控制 -->
+      <section class="card-section command-bar">
+        <div class="section-label">执行控制</div>
+        <div class="command-row">
+          <div class="command-left">
+            <el-select v-model="selectedDeviceId" placeholder="选择设备" style="width:180px" size="default">
               <el-option-group label="Android">
                 <el-option v-for="d in androidDevices" :key="d.id"
                   :label="`${d.name || d.device_id} ${d.status === 'locked' ? '🔒' : ''}`"
@@ -55,66 +77,70 @@
                   :label="`${d.name || d.device_id}`" :value="d.id" :disabled="d.status === 'offline'" />
               </el-option-group>
             </el-select>
-            <el-button size="small" @click="discoverDevices" :loading="discovering" icon="Refresh">发现设备</el-button>
-            <el-button size="small" @click="showNetworkDialog = true" icon="Connection">连接局域网</el-button>
+            <el-button size="small" @click="discoverDevices" :loading="discovering" :icon="Refresh">发现设备</el-button>
+            <el-button size="small" @click="showNetworkDialog = true" :icon="Connection">连接局域网</el-button>
+            <el-divider direction="vertical" />
+            <span class="switch-group">
+              <span class="switch-item">
+                <el-switch v-model="autoPlanMode" size="small" :disabled="replayMode" />
+                <label>智能规划</label>
+              </span>
+              <span class="switch-item">
+                <el-switch v-model="recordMode" size="small" />
+                <label>录制保存</label>
+              </span>
+              <span class="switch-item">
+                <el-switch v-model="replayMode" size="small" :disabled="autoPlanMode" />
+                <label>回放执行</label>
+              </span>
+              <span class="switch-item">
+                <el-switch v-model="clearAppData" size="small" :disabled="isIosDevice" />
+                <el-tooltip :content="isIosDevice ? 'iOS 不支持' : '执行前清除App数据'" placement="top">
+                  <label style="cursor:help">清除数据</label>
+                </el-tooltip>
+              </span>
+            </span>
           </div>
-
-          <!-- 背景提示 -->
-          <el-input v-model="form.ai_act_context" placeholder="全局背景提示，如：遇到权限弹窗先点允许" size="small" clearable style="margin-bottom:8px">
-            <template #prepend>全局提示</template>
-          </el-input>
-
-          <!-- 步骤编辑 -->
-          <div class="steps-editor">
-            <el-input
-              v-model="form.ai_prompt"
-              type="textarea"
-              :rows="8"
-              placeholder="每行一个自然语言操作步骤，例如：&#10;打开应用&#10;点击登录按钮&#10;输入用户名 admin&#10;输入密码 123456&#10;点击登录&#10;验证页面显示欢迎信息"
-              class="steps-textarea"
-            />
-          </div>
-
-          <!-- 操作按钮 -->
-          <div class="action-row">
-            <el-button @click="showAiGen = true" icon="MagicStick">AI 展开步骤</el-button>
-            <el-button type="primary" @click="saveCase" :loading="saving" icon="DocumentAdd">
-              {{ currentCaseId ? '更新' : '保存' }}
-            </el-button>
-            <span style="margin-left:12px;display:flex;align-items:center;gap:4px">
-              <el-switch v-model="autoPlanMode" size="small" :disabled="replayMode" />
-              <span style="font-size:12px;color:#909399">智能规划</span>
-            </span>
-            <span style="display:flex;align-items:center;gap:4px">
-              <el-switch v-model="recordMode" size="small" />
-              <span style="font-size:12px;color:#909399">录制保存</span>
-            </span>
-            <span style="display:flex;align-items:center;gap:4px">
-              <el-switch v-model="replayMode" size="small" :disabled="autoPlanMode" />
-              <span style="font-size:12px;color:#909399">回放执行</span>
-            </span>
-            <span style="display:flex;align-items:center;gap:4px">
-              <el-switch v-model="clearAppData" size="small" :disabled="isIosDevice" />
-              <el-tooltip :content="isIosDevice ? 'iOS 不支持' : '执行前清除App数据'" placement="top">
-                <span style="font-size:12px;color:#909399;cursor:help">清除数据</span>
-              </el-tooltip>
-            </span>
-            <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" style="width:195px;margin-left:4px">
+          <div class="command-right">
+            <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" style="width:185px">
               <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.recorded_at?.substring(5,16) || '未知'} (${r.result || ''})`" :value="i">
                 <span style="float:left">{{ r.recorded_at?.substring(5,16) || '未知' }}</span>
                 <span style="float:right;color:#8492a6;font-size:12px">{{ r.result }}</span>
               </el-option>
             </el-select>
-            <el-button v-if="replayList.length > 0" size="small" type="danger" text style="margin-left:2px" @click="deleteReplayEntry">
+            <el-button v-if="replayList.length > 0" size="small" type="danger" text @click="deleteReplayEntry">
               <el-icon><Delete /></el-icon>
             </el-button>
-            <el-button type="success" @click="doExecute" :loading="executing" :disabled="!canExecute" icon="VideoPlay">
+            <el-button type="success" @click="doExecute" :loading="executing" :disabled="!canExecute" :icon="VideoPlay">
               执行
             </el-button>
-            <el-button v-if="isRunning" type="danger" @click="stopExecution" icon="SwitchButton">停止</el-button>
+            <el-button v-if="isRunning" type="danger" @click="stopExecution" :icon="SwitchButton">停止</el-button>
           </div>
-        </el-form>
-      </div>
+        </div>
+      </section>
+
+      <!-- 区块3: 测试步骤 -->
+      <section class="card-section">
+        <div class="section-label">测试步骤</div>
+        <el-input v-model="form.ai_act_context" placeholder="全局提示，如：遇到权限弹窗先点允许、遇到渠道选择选抖音" size="small" clearable style="margin-bottom:10px">
+          <template #prepend>全局提示</template>
+        </el-input>
+        <div class="steps-editor">
+          <el-input
+            v-model="form.ai_prompt"
+            type="textarea"
+            :rows="7"
+            placeholder="每行一个自然语言操作步骤，例如：&#10;打开应用&#10;点击登录按钮&#10;输入用户名 admin&#10;输入密码 123456&#10;点击登录&#10;验证页面显示欢迎信息"
+            class="steps-textarea"
+          />
+        </div>
+        <div class="action-row">
+          <el-button @click="showAiGen = true" :icon="MagicStick">AI 展开步骤</el-button>
+          <el-button type="primary" @click="saveCase" :loading="saving" :icon="DocumentAdd">
+            {{ currentCaseId ? '更新' : '保存' }}
+          </el-button>
+        </div>
+      </section>
 
       <!-- ====== 执行实时展示（执行时才显示） ====== -->
       <div v-if="execution" class="execution-section">
@@ -255,12 +281,28 @@ const autoPlanMode = ref(false)
 const recordMode = ref(false)
 const replayMode = ref(false)
 const clearAppData = ref(false)
+const filterProjectId = ref(null)
 
 const isIosDevice = computed(() => {
   if (!selectedDeviceId.value) return false
   const d = devices.value.find(d => d.id === selectedDeviceId.value)
   return d?.platform === 'ios'
 })
+
+const filteredCases = computed(() => {
+  if (!filterProjectId.value) return cases.value
+  return cases.value.filter(c => c.project === filterProjectId.value)
+})
+
+const getProjectName = (projectId) => {
+  if (!projectId) return ''
+  return projects.value.find(p => p.id === projectId)?.name || ''
+}
+
+const caseStatusClass = (c) => {
+  if (!c.latest_result) return 'never'
+  return c.latest_result.status === 'passed' ? 'passed' : 'failed'
+}
 
 const form = reactive({
   name: '',
@@ -460,11 +502,15 @@ const reconnectDialogDevice = async (device) => {
 }
 
 // ---- 用例操作 ----
+const draftId = '__draft__'
 const newCase = () => {
-  currentCaseId.value = null
+  // 如果已有草稿没保存，不再新建
+  if (cases.value.some(c => c.id === draftId)) return
+  currentCaseId.value = draftId
+  cases.value.unshift({ id: draftId, name: '新建用例', ai_prompt: '', project: filterProjectId.value, _draft: true })
   form.name = ''
   form.ai_prompt = ''
-  form.project_id = null
+  form.project_id = filterProjectId.value || null
   recordMode.value = false
   replayMode.value = false
   clearAppData.value = false
@@ -488,11 +534,17 @@ const saveCase = async () => {
   saving.value = true
   try {
     const payload = { ...form }
-    if (currentCaseId.value) {
+    const isDraft = currentCaseId.value === draftId
+    if (currentCaseId.value && !isDraft) {
       await api.put(`/ui-automation/midscene/cases/${currentCaseId.value}/`, payload)
       ElMessage.success('已更新')
     } else {
       const { data } = await api.post('/ui-automation/midscene/cases/', payload)
+      // 移除草稿，替换为真实数据
+      if (isDraft) {
+        const idx = cases.value.findIndex(c => c.id === draftId)
+        if (idx >= 0) cases.value.splice(idx, 1)
+      }
       currentCaseId.value = data.id
       ElMessage.success('已保存')
     }
@@ -647,126 +699,123 @@ onUnmounted(() => stopPolling())
 
   // === 左侧栏 ===
   .sidebar {
-    width: 250px;
+    width: 260px;
     flex-shrink: 0;
     background: #fff;
     border-right: 1px solid #e4e7ed;
     display: flex;
     flex-direction: column;
-    .sidebar-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 14px 12px;
+    .sidebar-filter {
+      padding: 12px;
       border-bottom: 1px solid #ebeef5;
-      .sidebar-title { font-weight: 600; font-size: 14px; }
+      .filter-count { font-size: 11px; color: #909399; margin-top: 6px; display: block; }
     }
     .case-list {
       flex: 1;
       overflow-y: auto;
       .case-item {
-        padding: 10px 12px;
+        padding: 10px 10px 10px 0;
         border-bottom: 1px solid #f2f3f5;
         cursor: pointer;
         position: relative;
-        &:hover { background: #f5f7fa; }
-        &.active { background: #ecf5ff; border-left: 3px solid #409eff; }
-        .case-item-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
-        .case-item-meta { font-size: 11px; color: #909399; }
+        display: flex;
+        align-items: stretch;
+        &:hover { background: #f5f7fa; .case-delete-btn { opacity: 1; } }
+        &.active { background: #ecf5ff; }
+        .case-status-bar {
+          width: 3px; flex-shrink: 0; border-radius: 0 2px 2px 0;
+          &.status-never { background: #dcdfe6; }
+          &.status-draft { background: #e6a23c; }
+          &.status-passed { background: #67c23a; }
+          &.status-failed { background: #f56c6c; }
+        }
+        .case-body { flex: 1; padding-left: 10px; min-width: 0; }
+        .case-item-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          &.is-draft { color: #e6a23c; font-style: italic; }
+        }
+        .case-item-meta { font-size: 11px; color: #909399; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .case-project-tag { background: #f0f2f5; color: #909399; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
         .case-delete-btn { position: absolute; top: 6px; right: 4px; opacity: 0; }
-        &:hover .case-delete-btn { opacity: 1; }
       }
       .empty-hint { padding: 40px 12px; text-align: center; color: #c0c4cc; font-size: 13px; }
     }
+    .sidebar-footer { padding: 10px 12px; border-top: 1px solid #ebeef5; }
   }
 
   // === 主区域 ===
   .main-area {
     flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    padding: 20px;
+    gap: 12px;
 
-    .editor-section {
+    .card-section {
       background: #fff;
-      border-radius: 4px;
-      padding: 20px;
-      box-shadow: 0 1px 4px rgba(0,0,0,.06);
-      .form-row {
-        display: flex;
-        gap: 10px;
-        margin-bottom: 12px;
-        align-items: center;
-      }
-      .steps-editor {
-        margin-bottom: 12px;
-        .steps-textarea :deep(textarea) {
-          font-family: 'SF Mono','Menlo','Consolas',monospace;
-          font-size: 14px;
-          line-height: 1.8;
-        }
-      }
-      .action-row {
-        display: flex;
-        gap: 8px;
+      border-radius: 6px;
+      padding: 16px 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.04);
+      .section-label {
+        font-size: 12px; font-weight: 600; color: #909399; text-transform: uppercase;
+        letter-spacing: 1px; margin-bottom: 12px;
       }
     }
 
+    .info-row {
+      display: flex; gap: 10px; align-items: center;
+      .package-hint { font-size: 11px; color: #67c23a; }
+    }
+
+    .command-bar {
+      .command-row {
+        display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+        .command-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .command-right { display: flex; align-items: center; gap: 6px; }
+      }
+      .switch-group { display: flex; align-items: center; gap: 14px; }
+      .switch-item { display: flex; align-items: center; gap: 4px;
+        label { font-size: 12px; color: #606266; }
+      }
+    }
+
+    .steps-editor { margin-bottom: 10px;
+      .steps-textarea :deep(textarea) {
+        font-family: 'SF Mono','Menlo','Consolas',monospace;
+        font-size: 14px; line-height: 1.8;
+      }
+    }
+    .action-row { display: flex; gap: 8px; }
+
     .execution-section {
-      margin-top: 16px;
       .exec-progress {
-        display: flex;
-        align-items: center;
-        margin-bottom: 16px;
+        display: flex; align-items: center; margin-bottom: 16px;
         .exec-status { min-width: 70px; }
         .exec-step-count { min-width: 80px; font-size: 13px; color: #606266; text-align: right; }
       }
       .realtime-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-        margin-bottom: 16px;
+        display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;
         .screenshot-box, .reasoning-box {
-          background: #fff;
-          border-radius: 4px;
-          padding: 12px;
-          box-shadow: 0 1px 4px rgba(0,0,0,.06);
+          background: #fff; border-radius: 4px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
           .box-label { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
         }
         .screenshot-area {
-          min-height: 300px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: #1a1a2e;
-          border-radius: 4px;
+          min-height: 300px; display: flex; align-items: center; justify-content: center;
+          background: #1a1a2e; border-radius: 4px;
           .screen-img { max-width: 100%; max-height: 500px; object-fit: contain; }
         }
         .reasoning-area {
-          min-height: 300px;
-          max-height: 500px;
-          overflow-y: auto;
-          .reasoning-line {
-            padding: 4px 0;
-            border-bottom: 1px dashed #ebeef5;
-            font-size: 13px;
-            color: #606266;
+          min-height: 300px; max-height: 500px; overflow-y: auto;
+          .reasoning-line { padding: 4px 0; border-bottom: 1px dashed #ebeef5; font-size: 13px; color: #606266;
             &:last-child { border-bottom: none; }
           }
         }
       }
       .step-results {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        display: flex; flex-wrap: wrap; gap: 6px;
         .step-tag {
-          padding: 4px 10px;
-          border-radius: 4px;
-          font-size: 12px;
-          cursor: pointer;
-          background: #ecf5ff;
-          color: #409eff;
+          padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;
+          background: #ecf5ff; color: #409eff;
           &.passed { background: #f0f9eb; color: #67c23a; }
           &.failed { background: #fef0f0; color: #f56c6c; }
           &.running { background: #fdf6ec; color: #e6a23c; animation: pulse 1s infinite; }

@@ -547,7 +547,23 @@ class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.Destr
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'platform']
     search_fields = ['case_name']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            qs = qs.filter(midscene_case__project_id=project_id)
+        return qs
     ordering_fields = ['created_at', 'status']
+
+    @action(detail=False, methods=['post'], url_path='batch_delete')
+    def batch_delete(self, request):
+        """批量删除执行记录"""
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'error': '请选择要删除的记录'}, status=400)
+        deleted, _ = MidsceneExecutionRecord.objects.filter(id__in=ids).delete()
+        return Response({'message': f'已删除 {deleted} 条记录'})
 
     @action(detail=True, methods=['post'])
     def stop(self, request, pk=None):

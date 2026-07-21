@@ -35,9 +35,13 @@ def parse_ai_prompt(ai_prompt):
     for line in ai_prompt.strip().split('\n'):
         line = line.strip()
         if not line: continue
+        # 检测「重复」前缀
+        repeat_mode = line.startswith('重复')
+        if repeat_mode:
+            line = line[2:].strip()
         line = re.sub(r'^(\d+[\.\)、]\s*)', '', line)
         line = re.sub(r'^[-*•]\s*', '', line)
-        if line: steps.append({'instruction': line})
+        if line: steps.append({'instruction': line, 'repeat': repeat_mode})
     return steps
 
 
@@ -355,6 +359,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     while step_idx < len(steps):
         step = steps[step_idx]
         instruction = step['instruction']
+        is_repeat = step.get('repeat', False)
         is_ai_act = auto_plan  # 智能规划模式 VLM 自己决定 done
 
         if re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
@@ -455,7 +460,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 # 页面未变检测
                 page_unchanged = False
                 if prev_png is not None and _is_same_page(prev_png, png):
-                    if turn == 0 and step_idx > 0:
+                    if turn == 0 and step_idx > 0 and last_action in ('tap', 'click'):
                         # 新步骤开头页面与上一步结束时一样 → 上一步操作未生效
                         retries = step_retry_count.get(step_idx - 1, 0)
                         if retries < 1:
@@ -532,13 +537,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if pk in action and coord not in action:
                         v = float(action[pk])
                         ref = width if coord.startswith('x') else height
-                        is_y = coord.startswith('y')
-                        if is_y:
-                            # VLM 对 y 坐标始终输出 10x 真实百分比，统一除以 10
-                            pct = v / 10.0
-                        else:
-                            # x 坐标：>100 的是 10x 百分比，≤100 的已是真实百分比
-                            pct = v / 10.0 if v > 100 else v
+                        # >100 的是旧模型(qwen3-vl-plus)的10x百分比，≤100 的已是真实百分比
+                        pct = v / 10.0 if v > 100 else v
                         action[coord] = int(pct/100.0*ref)
 
                 t = action.get('action','done')
@@ -613,7 +613,15 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 if step_status == 'in_progress':
                     logger.info(f'[Runner] 步骤 {step_idx+1} 处理障碍中，继续...')
                     continue
-                # step_status == 'done': 步骤完成
+                # step_status == 'done': 重复步骤检测页面是否还有变化
+                if is_repeat and not is_ai_act:
+                    time.sleep(0.5)
+                    after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                    if not _is_same_page(png, after_png):
+                        # 页面还在变化，可能还有下一层弹窗，继续循环
+                        logger.info(f'[Runner] 重复步骤 {step_idx+1} 页面有变化，继续下一次')
+                        action['step_status'] = 'in_progress'
+                        continue
                 screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
             else:
                 raise RuntimeError(f'达到最大轮次({max_turns})')

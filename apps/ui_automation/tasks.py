@@ -123,6 +123,8 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution.total_steps = result['totalSteps']
         execution.passed_steps = result['passedSteps']
         execution.failed_steps = result['failedSteps']
+        # 保存完整步骤详情（包含失败步骤的错误信息）
+        execution.steps_detail = result.get('steps', [])
         execution.save()
 
         # ---- 录制: 成功后加入列表，保留最近3条 ----

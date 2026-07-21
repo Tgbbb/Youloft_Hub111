@@ -6,6 +6,98 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ---
 
+## [LRN-20260717-001] best_practice
+
+**Logged**: 2026-07-17
+**Priority**: high
+**Status**: pending
+**Area**: backend
+
+### Summary
+VLM 视觉模型对 y 坐标始终输出 10x 真实百分比，需要统一除以 10
+
+### Details
+Midscene runner 使用 qwen3-vl-plus 等 VLM 看图识别元素坐标。VLM 对 x 坐标输出基本正确（50=50%），但对 y 坐标始终输出 10x 真实百分比。之前的 `>100 → /10` 修正只能兜住底部元素（y_pct=625→62.5%），顶部元素如 y_pct=65 在 100 以内不做修正，导致 65% 被计算为 1560px 而非实际的 156px（6.5%）。
+
+### Suggested Action
+y 坐标始终除以 10，x 坐标保留 >100 修正逻辑。已在 midscene_runner.py 修复。
+
+### Metadata
+- Source: conversation
+- Related Files: apps/ui_automation/midscene_runner.py
+- Tags: vlm, coordinate, mobile-automation, qwen
+
+---
+
+## [LRN-20260717-002] best_practice
+
+**Logged**: 2026-07-17
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+录制数据按 step_idx 索引写入，而非 append，避免回退重试产生重复条目
+
+### Details
+Midscene 录制回放中，步骤被回退重试时会再次执行同一步。如果用 list.append() 存录制数据，会产生重复条目导致回放时下标错位。改用 recording[step_idx] = data 直接索引覆盖，回退重试自动覆盖旧数据。
+
+### Suggested Action
+录制数据存储逻辑已改为索引覆盖模式。类似场景（任何需要保证步骤唯一性的列表）都应优先考虑索引写入而非追加。
+
+### Metadata
+- Source: conversation
+- Related Files: apps/ui_automation/midscene_runner.py
+- Tags: recording, replay, midscene, index-overwrite
+
+---
+
+## [LRN-20260717-003] best_practice
+
+**Logged**: 2026-07-17
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+adb input tap 偶尔丢事件，自动重试可显著减少 VLM 调用
+
+### Details
+adb shell input tap 在页面刚跳转完成时偶尔不注册（View 的 OnClickListener 尚未绑定）。tap 后截图对比 pHash，若页面未变则原地重试一次，第二次通常成功，避免触发 VLM 再决策一次。
+
+### Suggested Action
+tap/click 类动作增加轮内重试：执行→智能等待→截图对比→未变则重试→仍未变则强制 in_progress 让 VLM 继续
+
+### Metadata
+- Source: conversation
+- Related Files: apps/ui_automation/midscene_runner.py
+- Tags: adb, tap, retry, phash, midscene
+
+---
+
+## [LRN-20260717-004] best_practice
+
+**Logged**: 2026-07-17
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+智能等待（pHash 轮询）比固定等待节省 30-50% 时间
+
+### Details
+原来 tap 后固定等 2s。改用 pHash 每 800ms 截图对比，连续两帧相同时页面稳定即返回。快速页面 0.8s 就过，慢的等满 2s。首次间隔用 800ms 而非 500ms，给 View 初始化留足时间，减少误判。
+
+### Suggested Action
+所有 UI 自动化等待都应优先用轮询（截图对比）而非固定延时。初始间隔根据场景调整（tap 类 800ms，输入类 300ms）。
+
+### Metadata
+- Source: conversation
+- Related Files: apps/ui_automation/midscene_runner.py
+- Tags: smart-wait, phash, midscene, optimization
+
+---
+
 ## [LRN-20260618-001] best_practice
 
 **Logged**: 2026-06-18T12:00:00+08:00

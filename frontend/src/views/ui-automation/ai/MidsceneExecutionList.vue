@@ -7,13 +7,15 @@
     <div class="card-container">
       <!-- 筛选 -->
       <div class="filter-bar">
-        <el-select v-model="filterStatus" placeholder="按状态筛选" clearable style="width: 160px">
+        <el-select v-model="filterProject" placeholder="按项目筛选" clearable style="width: 160px" @change="loadExecutions">
+          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
+        <el-select v-model="filterStatus" placeholder="按状态筛选" clearable style="width: 140px">
           <el-option label="通过" value="passed" />
           <el-option label="失败" value="failed" />
-          <el-option label="执行中" value="running" />
           <el-option label="异常" value="error" />
         </el-select>
-        <el-select v-model="filterPlatform" placeholder="按平台筛选" clearable style="width: 140px">
+        <el-select v-model="filterPlatform" placeholder="按平台筛选" clearable style="width: 130px">
           <el-option label="Android" value="android" />
           <el-option label="iOS" value="ios" />
         </el-select>
@@ -25,15 +27,22 @@
           @keyup.enter="loadExecutions"
         />
         <el-button @click="loadExecutions">刷新</el-button>
+        <el-button v-if="selectedIds.length > 0" type="danger" @click="batchDelete" :loading="batchDeleting">
+          批量删除 ({{ selectedIds.length }})
+        </el-button>
       </div>
 
-      <el-table :data="records" v-loading="loading" stripe>
+      <el-table :data="records" v-loading="loading" stripe @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="40" />
         <el-table-column prop="case_name" label="用例名称" min-width="180" />
         <el-table-column prop="device_name" label="设备" width="150" />
         <el-table-column prop="platform_display" label="平台" width="80" />
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)">{{ row.status_display || row.status }}</el-tag>
+            <el-tooltip v-if="row.status === 'failed' && row.error_message" :content="row.error_message" placement="top">
+              <el-tag :type="statusTagType(row.status)">{{ row.status_display || row.status }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="statusTagType(row.status)">{{ row.status_display || row.status }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="通过率" width="100">
@@ -115,7 +124,7 @@
               </el-tag>
               <span>{{ step.instruction }}</span>
             </div>
-            <div class="detail-step-screenshot" v-if="step.screenshot" @click="previewImg = step.screenshot">
+            <div class="detail-step-screenshot" v-if="step.screenshot" @click="previewImg = step.screenshot; showImgPreview = true">
               <img :src="step.screenshot" alt="截图" class="thumb" />
             </div>
             <div class="detail-step-error" v-if="step.error">
@@ -142,9 +151,11 @@ import api from '@/utils/api'
 const router = useRouter()
 const loading = ref(false)
 const records = ref([])
+const filterProject = ref('')
 const filterStatus = ref('')
 const filterPlatform = ref('')
 const searchKeyword = ref('')
+const projects = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
@@ -153,11 +164,14 @@ const showDetail = ref(false)
 const detailRecord = ref(null)
 const showImgPreview = ref(false)
 const previewImg = ref('')
+const selectedIds = ref([])
+const batchDeleting = ref(false)
 
 const loadExecutions = async () => {
   loading.value = true
   try {
     const params = { page: page.value, page_size: pageSize.value }
+    if (filterProject.value) params.project = filterProject.value
     if (filterStatus.value) params.status = filterStatus.value
     if (filterPlatform.value) params.platform = filterPlatform.value
     if (searchKeyword.value) params.search = searchKeyword.value
@@ -196,6 +210,28 @@ const viewDetail = (row) => {
   showDetail.value = true
 }
 
+const onSelectionChange = (rows) => {
+  selectedIds.value = rows.map(r => r.id)
+}
+
+const batchDelete = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${selectedIds.value.length} 条执行记录吗？相关截图也将被删除。`,
+      '批量删除确认', { type: 'warning' }
+    )
+    batchDeleting.value = true
+    await api.post('/ui-automation/midscene/executions/batch_delete/', { ids: selectedIds.value })
+    ElMessage.success('批量删除成功')
+    selectedIds.value = []
+    loadExecutions()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
 const deleteRecord = async (row) => {
   try {
     await ElMessageBox.confirm(`删除执行记录「${row.case_name}」？相关截图也将被删除。`, '确认删除', { type: 'warning' })
@@ -207,7 +243,15 @@ const deleteRecord = async (row) => {
   }
 }
 
+const loadProjects = async () => {
+  try {
+    const { data } = await api.get('/ui-automation/midscene/projects/')
+    projects.value = data.results || []
+  } catch (e) { /* ignore */ }
+}
+
 onMounted(() => {
+  loadProjects()
   loadExecutions()
 })
 </script>

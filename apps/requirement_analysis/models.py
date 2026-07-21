@@ -884,6 +884,14 @@ class AIModelService:
                     pool=60.0  # 连接池超时：60秒
                 )
                 logger.info(f"[stream] 开始连接API: {url}, model={config.model_name}")
+                # 输出 content 结构便于排查 400 错误
+                for msg in current_messages:
+                    c = msg.get('content', '')
+                    if isinstance(c, list):
+                        types = [item.get('type', '?') for item in c]
+                        logger.info(f"[stream] role={msg['role']}, content_types={types}")
+                    else:
+                        logger.info(f"[stream] role={msg['role']}, content_type=str, len={len(str(c))}")
                 async with httpx.AsyncClient(timeout=timeout_config, http2=False) as client:
                     logger.info(f"[stream] AsyncClient已创建，发起stream请求...")
                     async with client.stream('POST', url, headers=headers, json=data) as response:
