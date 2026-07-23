@@ -1,14 +1,45 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from apps.users.models import User
 from apps.projects.models import Project
 import json
+import os
 import httpx
 import asyncio
 from typing import Dict, Any, List, AsyncIterator
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class ModaoImport(models.Model):
+    """墨刀导入记录"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('importing', '导入中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+    ]
+    title = models.CharField(max_length=300, verbose_name='标题')
+    url = models.URLField(max_length=1000, verbose_name='墨刀URL')
+    data = models.JSONField(default=dict, verbose_name='导入数据', help_text='{canvases: [...], screenshots: [...]}')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    progress = models.IntegerField(default=0, verbose_name='进度(0-100)')
+    celery_task_id = models.CharField(max_length=100, blank=True, default='', verbose_name='Celery任务ID')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='modao_imports', verbose_name='关联项目')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='modao_imports',
+                                    verbose_name='创建者', null=True)
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'modao_imports'
+        verbose_name = '墨刀导入'
+        verbose_name_plural = '墨刀导入'
+        ordering = ['-created_at']
 
 
 class RequirementDocument(models.Model):
@@ -2020,3 +2051,204 @@ class AIModelService:
         logger.info(f"重新编号完成: 共{total_cases}条测试用例，编号范围: {prefix}001-{prefix}{total_cases:03d}")
 
         return renumbered_content
+
+    @staticmethod
+    async def import_from_modao(url: str, auth_token: str = '', progress_callback=None) -> dict:
+        """
+        从墨刀导入需求内容：遍历所有画布，每个画布截一张全画布截图，保存到文件。
+        返回: {'title': str, 'canvases': [{name, screenshot_url, width, height}]}
+        """
+        from playwright.async_api import async_playwright
+        import base64 as b64
+        import uuid as uuid_mod
+
+        logger.info(f'[Modao] 开始导入: {url}')
+
+        import_id = uuid_mod.uuid4().hex[:12]
+        result = {'title': '', 'canvases': [], 'import_id': import_id}
+
+        # 截图保存目录
+        screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', import_id)
+        os.makedirs(screenshot_dir, exist_ok=True)
+
+        # 使用系统已有 Chrome（browser-use 已配置）
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+        ]
+        chrome_path = next((p for p in chrome_paths if os.path.exists(p)), None)
+
+        async with async_playwright() as p:
+            launch_args = {'headless': True, 'args': ['--no-sandbox', '--disable-gpu']}
+            if chrome_path:
+                launch_args['executable_path'] = chrome_path
+            browser = await p.chromium.launch(**launch_args)
+            context = await browser.new_context(device_scale_factor=2)
+            page = await context.new_page()
+
+            # 注入 Cookie（先设 cookie 再导航，避免预访问导致重定向）
+            if auth_token and '=' in auth_token:
+                cookies_to_add = []
+                for pair in auth_token.split(';'):
+                    pair = pair.strip()
+                    if '=' in pair:
+                        k, v = pair.split('=', 1)
+                        cookies_to_add.append({
+                            'name': k.strip(),
+                            'value': v.strip(),
+                            'domain': '.modao.cc',
+                            'path': '/',
+                        })
+                if cookies_to_add:
+                    await context.add_cookies(cookies_to_add)
+                    logger.info(f'[Modao] 已注入 {len(cookies_to_add)} 个 cookie')
+
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            # 等待页面稳定（可能触发 JS 跳转）
+            await page.wait_for_timeout(3000)
+            result['title'] = await page.title()
+            logger.info(f'[Modao] 页面标题: {result["title"]}')
+
+            # Cookie 过期检测：标题为"墨刀"说明未登录
+            if result['title'] == '墨刀':
+                await browser.close()
+                raise Exception('Cookie已失效：页面标题为"墨刀"，请重新获取Cookie')
+            current_url = page.url
+            if 'workspace' in current_url or 'login' in current_url:
+                await browser.close()
+                raise Exception(f'Cookie已失效：页面被重定向到 {current_url}，请重新获取Cookie')
+
+            # 等侧边栏渲染
+            try:
+                await page.wait_for_selector('li.rn-content-item', timeout=15000)
+            except Exception:
+                logger.warning(f'[Modao] 等待画布列表超时，当前URL: {page.url}')
+                await page.wait_for_timeout(5000)
+
+            canvas_items = await page.query_selector_all('li.rn-content-item')
+            canvas_count = len(canvas_items)
+            logger.info(f'[Modao] 发现 {canvas_count} 个画布')
+
+            if canvas_count == 0:
+                await browser.close()
+                raise Exception('Cookie已失效或页面无权限：未找到画布，请检查Cookie是否正确（F12→Network→请求头→Cookie整行复制）')
+
+            for i, item in enumerate(canvas_items):
+                try:
+                    name_el = await item.query_selector('.editable-span')
+                    name = (await name_el.inner_text()).strip() if name_el else f'画布{i+1}'
+                    name_slug = name.replace('/', '_').replace('\\', '_')
+
+                    # 滚动到可见再点击
+                    await item.scroll_into_view_if_needed()
+                    await page.wait_for_timeout(300)
+                    await item.click()
+                    await page.wait_for_timeout(1500)
+
+                    # 放大视口确保画布完整渲染
+                    await page.set_viewport_size({'width': 2560, 'height': 2560})
+                    await page.wait_for_timeout(500)
+
+                    # 计算内容包围盒（找 widget 最多的容器，排除侧边栏和注释栏）
+                    bounds = await page.evaluate('''() => {
+                        // 找包含 widget 最多的容器作为画布范围
+                        let best = null, bestCount = 0;
+                        document.querySelectorAll('[class*="canvas"], [class*="Canvas"], #canvas, #mb-artboard').forEach(el => {
+                            const c = el.querySelectorAll('.widget').length;
+                            if (c > bestCount) { bestCount = c; best = el; }
+                        });
+                        const scope = (bestCount > 0 && best) ? best : document;
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        let count = 0;
+                        scope.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
+                            const b = w.getBoundingClientRect();
+                            if (b.width > 0 && b.height > 0) {
+                                count++;
+                                minX = Math.min(minX, b.left); minY = Math.min(minY, b.top);
+                                maxX = Math.max(maxX, b.right); maxY = Math.max(maxY, b.bottom);
+                            }
+                        });
+                        if (count === 0) return null;
+                        return {
+                            x: Math.max(0, minX),
+                            y: Math.max(0, minY),
+                            w: maxX - minX,
+                            h: maxY - minY
+                        };
+                    }''')
+
+                    # 截图
+                    screenshot_bytes = None
+                    if bounds:
+                        # 少量 padding 防裁边
+                        pad = 10
+                        screenshot_bytes = await page.screenshot(clip={
+                            'x': max(0, bounds['x'] - pad),
+                            'y': max(0, bounds['y'] - pad),
+                            'width': bounds['w'] + pad * 2,
+                            'height': bounds['h'] + pad * 2
+                        }, type='png')
+                        # PIL 像素裁剪：从四边裁掉纯白/纯灰背景
+                        try:
+                            from PIL import Image
+                            import io
+                            img = Image.open(io.BytesIO(screenshot_bytes))
+                            gray = img.convert('L')
+                            arr = gray.load() if hasattr(gray, 'load') else None
+                            if arr:
+                                w, h = img.size
+                                # 从四边往内找第一个非接近纯白的像素（亮度<250）
+                                def is_bg(x, y): return arr[x, y] >= 250
+                                top = 0
+                                while top < h and all(is_bg(x, top) for x in range(w)): top += 1
+                                bottom = h - 1
+                                while bottom > top and all(is_bg(x, bottom) for x in range(w)): bottom -= 1
+                                left = 0
+                                while left < w and all(is_bg(left, y) for y in range(top, bottom + 1)): left += 1
+                                right = w - 1
+                                while right > left and all(is_bg(right, y) for y in range(top, bottom + 1)): right -= 1
+                                # 裁剪 + 少量余量
+                                crop_pad = 5
+                                crop = (max(0, left - crop_pad), max(0, top - crop_pad),
+                                        min(w, right + 1 + crop_pad), min(h, bottom + 1 + crop_pad))
+                                if crop[0] > 0 or crop[1] > 0 or crop[2] < w or crop[3] < h:
+                                    img = img.crop(crop)
+                                    logger.info(f'[Modao] 像素裁剪: {w}×{h} → {crop[2]-crop[0]}×{crop[3]-crop[1]}')
+                            # 转 JPEG 压缩（quality=85，大幅减小体积，VLM 无感知）
+                            if img.mode in ('RGBA', 'P'):
+                                img = img.convert('RGB')
+                            buf = io.BytesIO()
+                            img.save(buf, format='JPEG', quality=85)
+                            screenshot_bytes = buf.getvalue()
+                            logger.info(f'[Modao] JPEG 压缩: {len(screenshot_bytes)/1024:.0f}KB')
+                        except Exception:
+                            pass  # PIL 不可用则保留原图
+                    else:
+                        screenshot_bytes = await page.screenshot(type='png', full_page=True)
+
+                    # 保存到文件（JPEG）
+                    filename = f'{i:02d}.jpg'
+                    filepath = os.path.join(screenshot_dir, filename)
+                    with open(filepath, 'wb') as f:
+                        f.write(screenshot_bytes)
+
+                    screenshot_url = f'{settings.MEDIA_URL}modao_screenshots/{import_id}/{filename}'
+                    w = bounds['w'] if bounds else 0
+                    h = bounds['h'] if bounds else 0
+
+                    result['canvases'].append({
+                        'name': name,
+                        'screenshot_url': screenshot_url,
+                        'width': w,
+                        'height': h,
+                    })
+                    logger.info(f'[Modao] 画布 {i+1}/{canvas_count}: {name} ({w}×{h}) → {screenshot_url}')
+                    if progress_callback:
+                        progress_callback(i + 1, canvas_count, f'{name} ({w}×{h})')
+                except Exception as ex:
+                    logger.error(f'[Modao] 画布{i+1}提取失败: {ex}')
+
+            await browser.close()
+            logger.info(f'[Modao] 导入完成: {len(result["canvases"])}画布')
+            return result

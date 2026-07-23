@@ -4,12 +4,12 @@ import re
 import os  # Added import
 import json
 import time
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, mixins
 from django.conf import settings  # Added import
 from rest_framework.decorators import action, permission_classes
 from rest_framework.response import Response
 from rest_framework.renderers import BaseRenderer
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 
 class PassThroughRenderer(BaseRenderer):
@@ -34,7 +34,7 @@ from django.db import models
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService
+    GenerationConfig, AIModelService, ModaoImport
 )
 from .serializers import (
     RequirementDocumentSerializer, RequirementAnalysisSerializer,
@@ -572,7 +572,7 @@ class AnalysisTaskViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.views.decorators.csrf import csrf_exempt
 
 
@@ -1677,6 +1677,61 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['post'], url_path='import-from-modao')
+    def import_from_modao(self, request):
+        """从墨刀导入需求内容——异步Celery任务"""
+        url = request.data.get('url', '').strip()
+        auth_token = request.data.get('auth_token', '').strip()
+
+        if not url:
+            return Response({'error': '请输入墨刀页面URL'}, status=400)
+        if not auth_token:
+            return Response({'error': '请输入墨刀Token或Cookie'}, status=400)
+
+        # 立即创建 pending 记录
+        import re as _re
+        proto_match = _re.search(r'/proto/([^/?]+)', url)
+        initial_title = proto_match.group(1)[:50] if proto_match else url[:50]
+        m = ModaoImport.objects.create(
+            title=initial_title,
+            url=url,
+            status='pending',
+            progress=0,
+            project_id=request.data.get('project_id') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+
+        # 异步执行
+        from .tasks import import_from_modao_task
+        celery_task = import_from_modao_task.delay(m.id, url, auth_token)
+        m.celery_task_id = celery_task.id
+        m.save(update_fields=['celery_task_id'])
+
+        return Response({
+            'success': True,
+            'import_id': m.id,
+            'status': 'pending',
+            'message': '任务已提交，正在后台导入',
+        })
+
+    @action(detail=False, methods=['post'], url_path='replace-modao-screenshot')
+    def replace_modao_screenshot(self, request):
+        """替换墨刀画布截图"""
+        file = request.FILES.get('file')
+        filepath = request.data.get('path', '').strip()
+        if not file or not filepath:
+            return Response({'error': '缺少文件或路径'}, status=400)
+        # 安全检查：只允许修改 modao_screenshots 目录
+        norm = os.path.normpath(filepath).replace('\\', '/')
+        if not norm.startswith('modao_screenshots/'):
+            return Response({'error': '路径不合法'}, status=400)
+        dest = os.path.join(settings.MEDIA_ROOT, norm)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, 'wb+') as f:
+            for chunk in file.chunks():
+                f.write(chunk)
+        return Response({'success': True})
+
     @action(detail=False, methods=['post'], url_path='clarify')
     def clarify(self, request):
         """
@@ -1724,46 +1779,79 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task = TestCaseGenerationTask.objects.create(**task_kwargs)
             logger.info(f"[clarify] 前置创建 task={task.task_id} pipeline_stage=clarifying")
 
-            if files:
-                # --- 多模态模式：上传文件 → 提取文本和图片 → 视觉模型澄清 ---
+            # JSON 传入的图片（墨刀导入等场景）
+            # 支持两种格式: {data: "base64..."} 或 {screenshot_url: "/media/..."}
+            page_images_from_json_raw = request.data.get('page_images') or []
+            if files or page_images_from_json_raw:
+                # --- 多模态模式 ---
                 import tempfile
                 import base64 as b64
 
-                title = request.data.get('title', files[0].name.rsplit('.', 1)[0])
                 page_images = []
-                text_parts = []
-
-                for file in files:
-                    fname = file.name.lower()
-                    is_pdf = fname.endswith('.pdf')
-                    is_image = fname.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))
-
-                    if not is_pdf and not is_image:
+                for img in page_images_from_json_raw:
+                    if not isinstance(img, dict):
                         continue
+                    # 方式1: 直接 base64 data
+                    if img.get('data'):
+                        page_images.append({
+                            'page': len(page_images) + 1,
+                            'data': img['data'],
+                            'media_type': img.get('media_type', 'image/png'),
+                        })
+                    # 方式2: 截图文件 URL → 读文件转 base64
+                    elif img.get('screenshot_url'):
+                        url = img['screenshot_url']
+                        if url.startswith(settings.MEDIA_URL):
+                            filepath = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
+                        else:
+                            filepath = os.path.join(settings.MEDIA_ROOT, url.lstrip('/'))
+                        if os.path.exists(filepath):
+                            with open(filepath, 'rb') as f:
+                                img_data = b64.b64encode(f.read()).decode('utf-8')
+                            page_images.append({
+                                'page': len(page_images) + 1,
+                                'data': img_data,
+                                'media_type': 'image/png',
+                            })
+                        else:
+                            logger.warning(f'[clarify] 截图文件不存在: {filepath}')
+                text_parts = [request.data.get('requirement_text', '')]
+                if files:
+                    # 覆盖为文件内容
+                    page_images = []
+                    text_parts = []
 
-                    if is_image:
-                        image_data = b64.b64encode(file.read()).decode('utf-8')
-                        ext = fname.rsplit('.', 1)[-1]
-                        media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
-                        page_images.append({'page': len(page_images)+1, 'data': image_data, 'media_type': media_type})
-                        text_parts.append(f'图片{len(page_images)}: {file.name}')
-                    else:
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                            for chunk in file.chunks():
-                                tmp_file.write(chunk)
-                            tmp_path = tmp_file.name
-                        try:
-                            from .services import DocumentProcessor
-                            pdf_text = DocumentProcessor.extract_text_from_pdf(tmp_path)
-                            pdf_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
-                            offset = len(page_images)
-                            for img in pdf_images:
-                                img['page'] = offset + img['page']
-                            page_images.extend(pdf_images)
-                            text_parts.append(pdf_text)
-                        finally:
-                            try: os.unlink(tmp_path)
-                            except Exception: pass
+                    for file in files:
+                        fname = file.name.lower()
+                        is_pdf = fname.endswith('.pdf')
+                        is_image = fname.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))
+
+                        if not is_pdf and not is_image:
+                            continue
+
+                        if is_image:
+                            image_data = b64.b64encode(file.read()).decode('utf-8')
+                            ext = fname.rsplit('.', 1)[-1]
+                            media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
+                            page_images.append({'page': len(page_images)+1, 'data': image_data, 'media_type': media_type})
+                            text_parts.append(f'图片{len(page_images)}: {file.name}')
+                        else:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                                for chunk in file.chunks():
+                                    tmp_file.write(chunk)
+                                tmp_path = tmp_file.name
+                            try:
+                                from .services import DocumentProcessor
+                                pdf_text = DocumentProcessor.extract_text_from_pdf(tmp_path)
+                                pdf_images = DocumentProcessor.extract_page_images_as_base64(tmp_path)
+                                offset = len(page_images)
+                                for img in pdf_images:
+                                    img['page'] = offset + img['page']
+                                page_images.extend(pdf_images)
+                                text_parts.append(pdf_text)
+                            finally:
+                                try: os.unlink(tmp_path)
+                                except Exception: pass
 
                 if not page_images:
                     return Response(
@@ -2652,8 +2740,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             reviewer_prompt = None
 
             if validated_data.get('use_writer_model', True):
-                # 智能选择：纯文本场景优先非VL模型
-                writer_config = AIModelService.get_active_writer(needs_vision=False)
+                # 多模态模式（有截图）选 VL 模型，纯文本选非 VL 模型
+                needs_vision = bool(request.data.get('page_images'))
+                writer_config = AIModelService.get_active_writer(needs_vision=needs_vision)
 
                 if not writer_config:
                     return Response(
@@ -2732,6 +2821,31 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     task_data['function_module'] = int(function_module_id)
                 except (ValueError, TypeError):
                     pass
+
+            # 如果请求中包含截图（墨刀导入等场景），转 base64 并设多模态模式
+            page_images_raw = request.data.get('page_images')
+            if page_images_raw:
+                import base64 as b64
+                page_images_base64 = []
+                for img in page_images_raw:
+                    if not isinstance(img, dict):
+                        continue
+                    if img.get('data'):
+                        page_images_base64.append({'page': len(page_images_base64)+1, 'data': img['data'], 'media_type': img.get('media_type', 'image/png')})
+                    elif img.get('screenshot_url'):
+                        url = img['screenshot_url']
+                        if url.startswith(settings.MEDIA_URL):
+                            filepath = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
+                        else:
+                            filepath = os.path.join(settings.MEDIA_ROOT, url.lstrip('/'))
+                        if os.path.exists(filepath):
+                            with open(filepath, 'rb') as f:
+                                img_data = b64.b64encode(f.read()).decode('utf-8')
+                            page_images_base64.append({'page': len(page_images_base64)+1, 'data': img_data, 'media_type': 'image/png'})
+                if page_images_base64:
+                    task_data['multimodal_mode'] = True
+                    task_data['page_images_base64'] = page_images_base64
+                    logger.info(f"[generate] 多模态模式，{len(page_images_base64)} 张截图")
 
             # 如果请求中包含需求澄清回答，添加到任务数据中
             clarification_answers = request.data.get('clarification_answers')
@@ -4621,3 +4735,73 @@ class ConfigStatusViewSet(viewsets.ViewSet):
             return Response({
                 'error': f'检查配置状态失败: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixins.ListModelMixin,
+                         mixins.UpdateModelMixin, mixins.DestroyModelMixin):
+    """墨刀导入记录"""
+    queryset = ModaoImport.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        qs = ModaoImport.objects.filter(created_by=request.user).only(
+            'id', 'title', 'url', 'status', 'progress', 'created_at'
+        ).order_by('-created_at')
+        data = [{
+            'id': m.id, 'title': m.title, 'url': m.url,
+            'status': m.status, 'progress': m.progress,
+            'canvas_count': len((m.data or {}).get('canvases', [])),
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        } for m in qs]
+        return Response(data)
+
+    def retrieve(self, request, pk=None):
+        m = ModaoImport.objects.get(pk=pk, created_by=request.user)
+        return Response({
+            'id': m.id, 'title': m.title, 'url': m.url, 'data': m.data,
+            'status': m.status, 'progress': m.progress,
+            'error_message': m.error_message,
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        })
+
+    def update(self, request, pk=None):
+        m = ModaoImport.objects.get(pk=pk, created_by=request.user)
+        m.title = request.data.get('title', m.title)
+        m.url = request.data.get('url', m.url)
+        m.data = request.data.get('data', m.data)
+        if request.data.get('project_id'):
+            m.project_id = request.data.get('project_id')
+        m.save()
+        return Response({'id': m.id, 'message': '已更新'})
+
+    def create(self, request):
+        m = ModaoImport.objects.create(
+            title=request.data.get('title', ''),
+            url=request.data.get('url', ''),
+            data=request.data.get('data', {}),
+            project_id=request.data.get('project_id') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        return Response({'id': m.id, 'message': '已保存'}, status=201)
+
+    def destroy(self, request, pk=None):
+        import shutil, re
+        m = self.get_object()
+        # 删除本地截图文件夹
+        canvases = (m.data or {}).get('canvases', [])
+        if canvases:
+            for c in canvases:
+                # 兼容新旧格式：旧 screenshotUrl，新 screenshots 数组
+                url = (c.get('screenshotUrl') or c.get('screenshot_url') or '')
+                if not url:
+                    shots = c.get('screenshots') or []
+                    url = shots[0].get('url', '') if shots else ''
+                m2 = re.search(r'modao_screenshots/([^/]+)/', url)
+                if m2:
+                    screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', m2.group(1))
+                    if os.path.isdir(screenshot_dir):
+                        shutil.rmtree(screenshot_dir)
+                        logger.info(f'[Modao] 删除截图文件夹: {screenshot_dir}')
+                    break  # 一个 import 只有一个文件夹
+        m.delete()
+        return Response({'message': '已删除'})

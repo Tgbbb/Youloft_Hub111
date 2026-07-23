@@ -118,11 +118,11 @@
       <div class="manual-input-section" v-if="!isGenerating && !showResults && !showClarificationPanel">
         <div class="manual-input-card">
           <div class="tab-bar">
-            <button class="tab-btn" :class="{ active: manualTab === 'input' }" @click="manualTab = 'input'">
-              {{ $t('requirementAnalysis.manualInputTitle') }}
+            <button class="tab-btn" :class="{ active: manualTab === 'modao' }" @click="manualTab = 'modao'">
+              🔗 从墨刀导入
             </button>
-            <button class="tab-btn" :class="{ active: manualTab === 'extract' }" @click="manualTab = 'extract'">
-              🤖 {{ $t('requirementAnalysis.aiExtractTitle') }}
+            <button class="tab-btn" :class="{ active: manualTab === 'input' }" @click="manualTab = 'input'">
+              ✏️ 手动输入
             </button>
           </div>
 
@@ -277,6 +277,135 @@
             </button>
           </div>
           <!-- /Tab: AI文档提取 -->
+
+          <!-- Tab: 从墨刀导入 -->
+          <div v-if="manualTab === 'modao'" class="modao-tab">
+            <!-- 历史导入（最顶部，显眼位置） -->
+            <div style="margin-bottom: 14px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e4e7ed; border-radius: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <span style="font-size: 13px; font-weight: 600; color: #303133;">📋 历史导入</span>
+                <span style="font-size: 11px; color: #c0c4cc;">点选恢复 | × 删除</span>
+              </div>
+              <div v-if="modaoHistory.length > 0" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <span v-for="(h, i) in modaoHistory" :key="i"
+                  class="history-pill"
+                  :class="{ active: h.url === modaoUrl }"
+                  @click="loadModaoHistory(i)">
+                  <span class="history-pill-name">{{ h.title || h.url?.substring(0, 35) }}</span>
+                  <span class="history-pill-meta">{{ h.canvas_count || 0 }}画布</span>
+                  <span @click.stop="deleteModaoHistory(i)" class="history-pill-del">×</span>
+                </span>
+              </div>
+              <div v-else style="font-size: 12px; color: #c0c4cc;">暂无历史记录，导入需求后自动保存</div>
+            </div>
+
+            <div class="form-group">
+              <label>关联项目</label>
+              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
+                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
+                <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+              </select>
+            </div>
+
+            <div class="form-group" v-if="manualInput.selectedProject">
+              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
+              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
+                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
+                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
+                </option>
+              </select>
+              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
+            </div>
+
+            <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
+              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
+              <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
+                <option value="">{{ $t('testcase.selectModule') }}</option>
+                <option v-for="m in versionModules" :key="m.id" :value="m.id">
+                  {{ m.name }}
+                </option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>墨刀页面 URL</label>
+              <input v-model="modaoUrl" type="text" class="form-input" placeholder="https://modao.cc/proto/xxx/sharing?view_mode=read_only">
+            </div>
+
+            <div class="form-group">
+              <label>Cookie</label>
+              <input v-model="modaoToken" type="password" class="form-input" placeholder="F12 → Network → 点任意请求 → Request Headers → 复制 Cookie 整行">
+              <div class="select-hint">需包含 _imock_session（HttpOnly），F12 → Network → 请求头 → Cookie 整行复制</div>
+            </div>
+
+            <button class="select-file-btn" @click="importFromModao" :disabled="!modaoUrl || !modaoToken || isImportingModao" style="width:100%; margin-top: 8px;">
+              <span v-if="isImportingModao">⏳ 导入中 {{ _importProgress }}%...</span>
+              <span v-else>🔗 从墨刀导入需求</span>
+            </button>
+
+            <!-- 画布列表 -->
+            <div v-if="modaoCanvases.length > 0" style="margin-top: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <label style="font-weight: 600; color: #2c3e50; font-size: 13px;">
+                  画布列表 ({{ selectedCanvasCount }}/{{ modaoCanvases.length }})
+                </label>
+                <div>
+                  <button class="select-file-btn" style="font-size: 11px; padding: 2px 8px; margin-right: 4px;"
+                    @click="selectAllCanvases">{{ selectedCanvasCount === modaoCanvases.length ? '取消全选' : '全选' }}</button>
+                  <button class="select-file-btn" style="font-size: 11px; padding: 2px 8px; color: #f56c6c;"
+                    @click="deleteSelectedCanvases" :disabled="selectedCanvasCount === 0">删除选中</button>
+                </div>
+              </div>
+              <div style="max-height: 300px; overflow-y: auto; border: 1px solid #e4e7ed; border-radius: 4px;">
+                <div v-for="(c, i) in modaoCanvases" :key="i"
+                     style="display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #f2f3f5;"
+                     :style="{ background: c.selected ? '#ecf5ff' : '#fff' }">
+                  <input type="checkbox" v-model="c.selected" style="margin-right: 8px;">
+                  <template v-if="c.screenshots.length > 0">
+                    <img v-for="(s, si) in c.screenshots" :key="si" :src="s.url"
+                         style="width: 40px; height: auto; border-radius: 2px; border: 1px solid #ddd; margin-right: 3px;"
+                         @click.stop="previewCanvas = c; previewIdx = si"
+                         @error="s.url = ''">
+                  </template>
+                  <span v-else style="font-size: 11px; color: #c0c4cc; margin-right: 6px;">🖼️</span>
+                  <span style="flex:1; font-size: 13px; margin-left: 4px;">{{ c.name }}</span>
+                  <button class="replace-btn" title="替换截图" @click.stop="triggerReplace(i)">+</button>
+                  <button v-if="c.screenshots.length > 0" class="replace-btn" title="清空截图" @click.stop="clearScreenshots(i)" style="margin-left: 2px;">✕</button>
+                  <input type="file" accept="image/png,image/jpeg" style="display:none"
+                         :ref="el => { if (el) replaceInputs[i] = el }"
+                         @change="e => onAddScreenshot(i, e)">
+                </div>
+              </div>
+            </div>
+
+            <!-- 生成按钮 -->
+            <div v-if="modaoCanvases.length > 0" style="margin-top: 10px;">
+              <button class="generate-btn" @click="generateFromModao" :disabled="isGenerating || selectedCanvasCount === 0" style="width:100%;">
+                <span v-if="isGenerating">🤖 生成中...</span>
+                <span v-else>🤖 生成用例 ({{ selectedCanvasCount }}画布)（澄清→初版→评审→终版）</span>
+              </button>
+            </div>
+
+            <!-- 截图预览 lightbox -->
+            <div v-if="previewCanvas" class="modao-lightbox" @click="closePreview" @wheel.prevent="onPreviewWheel">
+              <button v-if="previewCanvas.screenshots.length > 1"
+                      class="preview-nav preview-prev" @click.stop="previewIdx = (previewIdx - 1 + previewCanvas.screenshots.length) % previewCanvas.screenshots.length">◀</button>
+              <img v-if="previewCanvas.screenshots[previewIdx]"
+                   :src="previewCanvas.screenshots[previewIdx].url"
+                   :style="{ maxWidth: '90vw', maxHeight: '90vh', transform: 'scale(' + previewZoom + ')', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }"
+                   @click.stop>
+              <button v-if="previewCanvas.screenshots.length > 1"
+                      class="preview-nav preview-next" @click.stop="previewIdx = (previewIdx + 1) % previewCanvas.screenshots.length">▶</button>
+              <div style="color: #fff; margin-top: 10px; text-align: center;">
+                {{ previewCanvas.name }}
+                <span v-if="previewCanvas.screenshots[previewIdx]">({{ previewCanvas.screenshots[previewIdx].width }}×{{ previewCanvas.screenshots[previewIdx].height }})</span>
+                — {{ Math.round(previewZoom * 100) }}% — {{ previewIdx + 1 }}/{{ previewCanvas.screenshots.length }}
+                <button class="replace-btn" style="margin-left: 8px; opacity: 1; color: #fff; border-color: #666;"
+                        @click.stop="triggerReplace(modaoCanvases.indexOf(previewCanvas))">+ 添加截图</button>
+              </div>
+            </div>
+          </div>
+          <!-- /Tab: 从墨刀导入 -->
         </div>
       </div>
 
@@ -668,13 +797,28 @@ export default {
       enableMultimodal: false,
 
       // 手动输入区 Tab
-      manualTab: 'input',
+      manualTab: 'modao',
 
       // AI文档提取
       extractFile: null,
       isExtractDragOver: false,
       isExtracting: false,
       extractedMarkdown: '',
+
+      // 墨刀导入
+      modaoUrl: '',
+      modaoToken: '',
+      modaoTitle: '',
+      _modaoHistoryId: null,   // 当前历史记录ID（更新用）
+      _modaoImportId: '',      // 导入批次ID（截图文件夹）
+      modaoCanvases: [],       // [{name, screenshots: [{url, width, height}], selected}]
+      modaoHistory: [],
+      previewCanvas: null,     // 当前预览的画布（lightbox）
+      previewIdx: 0,           // 当前预览的截图索引
+      previewZoom: 1,          // 预览缩放比例
+      replaceInputs: {},       // 添加截图的 file input refs
+      isImportingModao: false,
+      _importProgress: 0,          // 导入进度（0-100）
 
       // 需求澄清
       showClarificationPanel: false,  // 是否显示澄清面板
@@ -688,6 +832,10 @@ export default {
   },
 
   computed: {
+    versionModules() { return this.manualModules },
+    selectedCanvasCount() {
+      return this.modaoCanvases.filter(c => c.selected).length
+    },
     canGenerateManual() {
       return this.manualInput.title.trim() &&
              this.manualInput.description.trim() &&
@@ -701,6 +849,10 @@ export default {
   },
 
   mounted() {
+    // 加载已保存的墨刀 Cookie
+    const savedCookie = localStorage.getItem('modao_cookie')
+    if (savedCookie) this.modaoToken = savedCookie
+    this.loadModaoHistoryList()
     this.progressText = this.$t('requirementAnalysis.preparing')
     this.loadProjects()
     this.checkConfigStatus()
@@ -1060,6 +1212,237 @@ export default {
       this.extractedMarkdown = ''
     },
 
+    selectAllCanvases() {
+      const all = this.selectedCanvasCount === this.modaoCanvases.length
+      this.modaoCanvases.forEach(c => c.selected = !all)
+    },
+    toggleCanvasSelection(i) {
+      this.modaoCanvases[i].selected = !this.modaoCanvases[i].selected
+    },
+    closePreview() {
+      this.previewCanvas = null
+      this.previewIdx = 0
+      this.previewZoom = 1
+    },
+    onPreviewWheel(e) {
+      this.previewZoom = Math.max(0.2, Math.min(5, this.previewZoom + (e.deltaY > 0 ? -0.1 : 0.1)))
+    },
+    triggerReplace(i) {
+      this.replaceInputs[i]?.click()
+    },
+    clearScreenshots(i) {
+      this.modaoCanvases[i].screenshots = []
+      this.saveModaoHistory(true)
+    },
+    async onAddScreenshot(i, e) {
+      const file = e.target.files?.[0]
+      if (!file) return
+      // 用 import_id 定位文件夹，没有或为 upload 则生成新的
+      let dir = this._modaoImportId
+      if (!dir || dir === 'upload') {
+        dir = Date.now().toString(36)
+        this._modaoImportId = dir
+      }
+      const canvas = this.modaoCanvases[i]
+      const filename = Date.now() + '.png'
+      const relPath = `modao_screenshots/${dir}/${filename}`
+      const form = new FormData()
+      form.append('file', file)
+      form.append('path', relPath)
+      try {
+        await api.post('/requirement-analysis/testcase-generation/replace-modao-screenshot/', form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        canvas.screenshots.push({ url: '/media/' + relPath, width: 0, height: 0 })
+        canvas.imgBroken = false
+        this.saveModaoHistory(true)  // 静默持久化，不刷历史列表
+        ElMessage.success('已添加')
+      } catch (ex) {
+        ElMessage.error('添加失败')
+      }
+      e.target.value = ''
+    },
+    deleteSelectedCanvases() {
+      this.modaoCanvases = this.modaoCanvases.filter(c => !c.selected)
+    },
+    async saveModaoHistory(silent = false) {
+      if (!this.modaoUrl || !this.modaoCanvases.length) return
+      try {
+        const canvases = this.modaoCanvases.map(c => ({
+          name: c.name,
+          screenshots: c.screenshots,
+        }))
+        const payload = {
+          title: this.modaoTitle,
+          url: this.modaoUrl,
+          data: { canvases, import_id: this._modaoImportId },
+          project_id: this.manualInput.selectedProject || undefined,
+        }
+        if (this._modaoHistoryId) {
+          await api.put(`/requirement-analysis/wx/${this._modaoHistoryId}/`, payload)
+        } else {
+          const { data } = await api.post('/requirement-analysis/wx/', payload)
+          this._modaoHistoryId = data.id
+        }
+        if (!silent) this.loadModaoHistoryList()
+      } catch (e) { console.error('保存历史失败', e) }
+    },
+    async loadModaoHistory(i) {
+      const h = this.modaoHistory[i]
+      if (!h?.id) return
+      try {
+        const { data } = await api.get(`/requirement-analysis/wx/${h.id}/`)
+        this.modaoUrl = data.url
+        this.modaoTitle = data.title
+        this._modaoHistoryId = data.id
+        // 从截图URL恢复 import_id
+        const firstUrl = data.data?.canvases?.[0]?.screenshots?.[0]?.url
+                       || data.data?.canvases?.[0]?.screenshotUrl
+                       || ''
+        this._modaoImportId = firstUrl.match(/modao_screenshots\/([^/]+)\//)?.[1] || ''
+        this.modaoCanvases = (data.data?.canvases || []).map(c => ({
+          name: c.name,
+          screenshots: c.screenshots || (c.screenshot_url ? [{ url: c.screenshot_url, width: c.width, height: c.height }] : []),
+          selected: true,
+        }))
+      } catch (e) { ElMessage.error('加载历史失败') }
+    },
+    async deleteModaoHistory(i) {
+      const h = this.modaoHistory[i]
+      if (!h?.id) return
+      try {
+        await ElMessageBox.confirm(`确定删除「${h.title || h.url}」？`, '确认删除', { type: 'warning' })
+        await api.delete(`/requirement-analysis/wx/${h.id}/`)
+        this.loadModaoHistoryList()
+        ElMessage.success('已删除')
+      } catch (e) {
+        if (e !== 'cancel') ElMessage.error('删除失败')
+      }
+    },
+    async loadModaoHistoryList() {
+      try {
+        const { data } = await api.get('/requirement-analysis/wx/')
+        this.modaoHistory = data || []
+      } catch (e) { this.modaoHistory = [] }
+    },
+
+    async importFromModao() {
+      if (!this.modaoUrl || !this.modaoToken) return
+      this.isImportingModao = true
+      this._importProgress = 0
+      try {
+        if (this.modaoToken) {
+          localStorage.setItem('modao_cookie', this.modaoToken)
+        }
+        // 提交异步任务
+        const { data } = await api.post('/requirement-analysis/testcase-generation/import-from-modao/', {
+          url: this.modaoUrl,
+          auth_token: this.modaoToken,
+        }, { timeout: 30000 })
+        if (!data.success || !data.import_id) {
+          ElMessage.error(data.error || '提交失败')
+          this.isImportingModao = false
+          return
+        }
+        const importId = data.import_id
+
+        // 轮询进度
+        const poll = async () => {
+          try {
+            const { data: r } = await api.get(`/requirement-analysis/wx/${importId}/`)
+            this._importProgress = r.progress || 0
+            if (r.status === 'completed') {
+              // 加载结果
+              this.modaoCanvases = (r.data?.canvases || []).map(c => ({
+                name: c.name,
+                screenshots: (c.screenshot_url || c.screenshots)
+                  ? (c.screenshots || [{ url: c.screenshot_url, width: c.width, height: c.height }])
+                  : [],
+                selected: true,
+              }))
+              this.modaoTitle = r.title || ''
+              this._modaoHistoryId = r.id
+              this._modaoImportId = r.data?.import_id || ''
+              this.isImportingModao = false
+              ElMessage.success(`导入成功: ${this.modaoCanvases.length}个画布`)
+              this.loadModaoHistoryList()
+              return
+            }
+            if (r.status === 'failed') {
+              this.isImportingModao = false
+              const msg = r.error_message || '未知错误'
+              if (msg.includes('Cookie已失效')) {
+                localStorage.removeItem('modao_cookie')
+                this.modaoToken = ''
+                ElMessage.warning(msg)
+              } else {
+                ElMessage.error('导入失败: ' + msg)
+              }
+              return
+            }
+            // 继续轮询
+            setTimeout(poll, 2000)
+          } catch (e) {
+            this.isImportingModao = false
+            ElMessage.error('查询进度失败')
+          }
+        }
+        setTimeout(poll, 1000)
+      } catch (e) {
+        this.isImportingModao = false
+        const msg = e.response?.data?.error || e.message || ''
+        if (msg.includes('401') || msg.includes('403') || msg.includes('登录') || msg.includes('auth')) {
+          localStorage.removeItem('modao_cookie')
+          ElMessage.warning('Cookie 已失效，请重新获取')
+        } else {
+          ElMessage.error('导入失败: ' + msg)
+        }
+      }
+    },
+
+    async generateFromModao() {
+      if (this.selectedCanvasCount === 0) {
+        ElMessage.warning('请至少选择一个画布')
+        return
+      }
+      const selected = this.modaoCanvases.filter(c => c.selected)
+      this.isClarifying = true
+      this.showClarificationPanel = true
+      this.pendingGeneration = {
+        type: 'modao',
+        title: this.modaoTitle || '墨刀需求',
+        requirementText: `墨刀原型图「${this.modaoTitle}」，共 ${selected.length} 个画布`,
+        projectId: this.manualInput.selectedProject || undefined,
+        versionIds: this.manualInput.selectedVersionIds || [],
+        functionModuleId: this.manualInput.selectedModuleId || '',
+        outputMode: 'stream',
+        pageImages: selected.flatMap(c =>
+          (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
+        ),
+      }
+      try {
+        const payload = {
+          requirement_text: this.pendingGeneration.requirementText,
+          project_id: this.manualInput.selectedProject || undefined,
+          page_images: selected.flatMap(c =>
+            (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
+          ),
+        }
+        const { data } = await api.post('/requirement-analysis/testcase-generation/clarify/', payload, { timeout: 300000 })
+        this.clarificationQuestions = data.questions || []
+        this.clarificationTaskId = data.task_id
+        this.currentTaskId = data.task_id
+        if (this.clarificationQuestions.length === 0) {
+          this.skipClarification()
+        }
+      } catch (e) {
+        this.showClarificationPanel = false
+        ElMessage.error('澄清失败: ' + (e.response?.data?.error || e.message))
+      } finally {
+        this.isClarifying = false
+      }
+    },
+
     async extractDocument() {
       if (!this.extractFile) return
       this.isExtracting = true
@@ -1235,7 +1618,8 @@ export default {
           ctx.outputMode,
           ctx.versionIds,
           answers,
-          ctx.functionModuleId || ''
+          ctx.functionModuleId || '',
+          ctx.pageImages || null
         )
       }
 
@@ -1262,7 +1646,8 @@ export default {
           ctx.outputMode,
           ctx.versionIds,
           [],
-          ctx.functionModuleId || ''
+          ctx.functionModuleId || '',
+          ctx.pageImages || null
         )
       }
 
@@ -1448,7 +1833,7 @@ export default {
       await this.startMultimodalGeneration(answers)
     },
 
-    async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = [], clarificationAnswers = [], functionModuleId = '') {
+    async startGeneration(title, requirementText, projectId, outputMode = 'stream', versionIds = [], clarificationAnswers = [], functionModuleId = '', pageImages = null) {
       // 在开始生成前，强制刷新token确保生成过程中不会过期
       try {
         const userStore = useUserStore()
@@ -1495,6 +1880,11 @@ export default {
         // 如果提供了澄清回答，添加到请求中
         if (clarificationAnswers && clarificationAnswers.length > 0) {
           requestData.clarification_answers = clarificationAnswers
+        }
+
+        // 如果有截图（墨刀导入），添加到请求中
+        if (pageImages && pageImages.length > 0) {
+          requestData.page_images = pageImages
         }
 
         // 如果选择了功能模块，添加到请求中
@@ -2725,6 +3115,48 @@ export default {
   cursor: not-allowed;
 }
 
+.replace-btn {
+  background: none;
+  border: 1px solid #dcdfe6;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 4px;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+.replace-btn:hover { opacity: 1; border-color: #409eff; }
+
+.modao-lightbox {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+}
+.preview-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+  cursor: pointer;
+  z-index: 10000;
+  transition: background 0.2s;
+}
+.preview-nav:hover { background: rgba(255,255,255,0.3); }
+.preview-prev { left: 20px; }
+.preview-next { right: 20px; }
+
 .divider {
   text-align: center;
   margin: 40px 0;
@@ -3468,6 +3900,18 @@ export default {
     max-width: 300px;
     justify-content: center;
   }
+}
+
+/* 墨刀历史导入卡片 */
+.history-pill {
+  padding: 4px 10px; font-size: 12px; background: #f0f2f5; border-radius: 4px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  transition: background .2s;
+  &:hover { background: #e4e7ed; }
+  &.active { background: #ecf5ff; border: 1px solid #409eff; }
+  .history-pill-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-pill-meta { font-size: 10px; color: #909399; }
+  .history-pill-del { color: #c0c4cc; margin-left: 2px; &:hover { color: #f56c6c; } }
 }
 </style>
 
