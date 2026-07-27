@@ -11,6 +11,7 @@ export default {
     realtimeStreamDesc: '内容逐字显示，体验流畅，适合大需求文档',
     completeOutput: '📄 完整输出',
     completeOutputDesc: '完成后一次性展示，适合简单需求',
+    enableMultimodal: '启用图片识别（上传图片时自动分析视觉内容）',
 
     // Manual Input
     aiExtractTitle: 'AI文档提取',

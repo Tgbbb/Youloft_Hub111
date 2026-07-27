@@ -2084,7 +2084,11 @@ class AIModelService:
             if chrome_path:
                 launch_args['executable_path'] = chrome_path
             browser = await p.chromium.launch(**launch_args)
-            context = await browser.new_context(device_scale_factor=2)
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1200},
+                device_scale_factor=3,
+                locale='zh-CN',
+            )
             page = await context.new_page()
 
             # 注入 Cookie（先设 cookie 再导航，避免预访问导致重定向）
@@ -2126,9 +2130,24 @@ class AIModelService:
                 logger.warning(f'[Modao] 等待画布列表超时，当前URL: {page.url}')
                 await page.wait_for_timeout(5000)
 
-            canvas_items = await page.query_selector_all('li.rn-content-item')
+            all_items = await page.query_selector_all('li.rn-content-item')
+            logger.info(f'[Modao] 发现 {len(all_items)} 个侧边栏项，正在过滤非画布...')
+
+            # 过滤：只保留真正的页面画布(target-type=6)，排除图层/热区(target-type=2)
+            canvas_items = []
+            for item in all_items:
+                target_type = await item.evaluate(
+                    'el => el.querySelector("[data-interactive-target-type]")?.getAttribute("data-interactive-target-type") || ""'
+                )
+                if target_type == '6':
+                    canvas_items.append(item)
+                else:
+                    name_el = await item.query_selector('.editable-span')
+                    name = (await name_el.inner_text()).strip() if name_el else '(空)'
+                    logger.info(f'[Modao] 跳过非画布项: {name} (target-type={target_type})')
+
             canvas_count = len(canvas_items)
-            logger.info(f'[Modao] 发现 {canvas_count} 个画布')
+            logger.info(f'[Modao] 过滤后 {canvas_count} 个画布')
 
             if canvas_count == 0:
                 await browser.close()
@@ -2146,86 +2165,93 @@ class AIModelService:
                     await item.click()
                     await page.wait_for_timeout(1500)
 
-                    # 放大视口确保画布完整渲染
-                    await page.set_viewport_size({'width': 2560, 'height': 2560})
-                    await page.wait_for_timeout(500)
+                    # 隐藏墨刀 UI（标尺、工具栏、弹窗、注释面板；不隐藏左侧页面树，否则后续点击失效）
+                    await page.evaluate('''() => {
+                        document.querySelectorAll('#fixed-area, .fixed_area, [class*="StyledSignUpPrompt"]')
+                            .forEach(el => { el.style.display = 'none'; });
+                        document.querySelectorAll('.ruler, .rulerH, .rulerV, #mb-ruler, [class*="Ruler"]')
+                            .forEach(el => { el.style.display = 'none'; });
+                        document.querySelectorAll('[class*="ToolBar"], [class*="toolbar-left"], [class*="toolbar"]')
+                            .forEach(el => { el.style.display = 'none'; });
+                        document.querySelectorAll('[class*="comment"], [class*="annotation"], [class*="note-panel"], [class*="right-panel"]')
+                            .forEach(el => { el.style.display = 'none'; });
+                        document.querySelectorAll('[class*="thumbnail"], [class*="status-bar"], [class*="bottom-bar"]')
+                            .forEach(el => { el.style.display = 'none'; });
+                    }''')
+                    await page.wait_for_timeout(1000)
 
-                    # 计算内容包围盒（找 widget 最多的容器，排除侧边栏和注释栏）
+                    # 计算可见 widget 包围盒（保持 zoom scale，annotation 自然被挤出视口）
                     bounds = await page.evaluate('''() => {
-                        // 找包含 widget 最多的容器作为画布范围
-                        let best = null, bestCount = 0;
-                        document.querySelectorAll('[class*="canvas"], [class*="Canvas"], #canvas, #mb-artboard').forEach(el => {
-                            const c = el.querySelectorAll('.widget').length;
-                            if (c > bestCount) { bestCount = c; best = el; }
-                        });
-                        const scope = (bestCount > 0 && best) ? best : document;
                         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                         let count = 0;
-                        scope.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
+                        const vw = window.innerWidth;
+                        document.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
                             const b = w.getBoundingClientRect();
-                            if (b.width > 0 && b.height > 0) {
-                                count++;
-                                minX = Math.min(minX, b.left); minY = Math.min(minY, b.top);
-                                maxX = Math.max(maxX, b.right); maxY = Math.max(maxY, b.bottom);
-                            }
+                            if (b.width <= 0 || b.height <= 0) return;
+                            if (b.left > vw * 0.85) return; // 跳过右侧面板元素
+                            count++;
+                            minX = Math.min(minX, b.left);
+                            minY = Math.min(minY, b.top);
+                            maxX = Math.max(maxX, b.right);
+                            maxY = Math.max(maxY, b.bottom);
                         });
                         if (count === 0) return null;
-                        return {
-                            x: Math.max(0, minX),
-                            y: Math.max(0, minY),
-                            w: maxX - minX,
-                            h: maxY - minY
-                        };
+                        return {x: minX, y: minY, w: maxX - minX, h: maxY - minY, count};
                     }''')
 
                     # 截图
-                    screenshot_bytes = None
                     if bounds:
-                        # 少量 padding 防裁边
                         pad = 10
-                        screenshot_bytes = await page.screenshot(clip={
+                        clip_region = {
                             'x': max(0, bounds['x'] - pad),
                             'y': max(0, bounds['y'] - pad),
-                            'width': bounds['w'] + pad * 2,
-                            'height': bounds['h'] + pad * 2
-                        }, type='png')
-                        # PIL 像素裁剪：从四边裁掉纯白/纯灰背景
-                        try:
-                            from PIL import Image
-                            import io
-                            img = Image.open(io.BytesIO(screenshot_bytes))
-                            gray = img.convert('L')
-                            arr = gray.load() if hasattr(gray, 'load') else None
-                            if arr:
-                                w, h = img.size
-                                # 从四边往内找第一个非接近纯白的像素（亮度<250）
-                                def is_bg(x, y): return arr[x, y] >= 250
-                                top = 0
-                                while top < h and all(is_bg(x, top) for x in range(w)): top += 1
-                                bottom = h - 1
-                                while bottom > top and all(is_bg(x, bottom) for x in range(w)): bottom -= 1
-                                left = 0
-                                while left < w and all(is_bg(left, y) for y in range(top, bottom + 1)): left += 1
-                                right = w - 1
-                                while right > left and all(is_bg(right, y) for y in range(top, bottom + 1)): right -= 1
-                                # 裁剪 + 少量余量
-                                crop_pad = 5
-                                crop = (max(0, left - crop_pad), max(0, top - crop_pad),
-                                        min(w, right + 1 + crop_pad), min(h, bottom + 1 + crop_pad))
-                                if crop[0] > 0 or crop[1] > 0 or crop[2] < w or crop[3] < h:
-                                    img = img.crop(crop)
-                                    logger.info(f'[Modao] 像素裁剪: {w}×{h} → {crop[2]-crop[0]}×{crop[3]-crop[1]}')
-                            # 转 JPEG 压缩（quality=85，大幅减小体积，VLM 无感知）
-                            if img.mode in ('RGBA', 'P'):
-                                img = img.convert('RGB')
-                            buf = io.BytesIO()
-                            img.save(buf, format='JPEG', quality=85)
-                            screenshot_bytes = buf.getvalue()
-                            logger.info(f'[Modao] JPEG 压缩: {len(screenshot_bytes)/1024:.0f}KB')
-                        except Exception:
-                            pass  # PIL 不可用则保留原图
+                            'width': min(bounds['w'] + pad * 2, 8000),
+                            'height': min(bounds['h'] + pad * 2, 8000),
+                        }
+                        screenshot_bytes = await page.screenshot(clip=clip_region, type='png')
                     else:
                         screenshot_bytes = await page.screenshot(type='png', full_page=True)
+
+                    # PIL 智能背景裁剪 + JPEG 压缩
+                    try:
+                        from PIL import Image
+                        import io
+                        img = Image.open(io.BytesIO(screenshot_bytes))
+                        gray = img.convert('L')
+                        arr = gray.load()
+                        pw, ph = img.size
+                        # 从四角采样实际背景色
+                        corners = []
+                        for cx, cy in [(5, 5), (pw - 6, 5), (5, ph - 6), (pw - 6, ph - 6)]:
+                            sample = [arr[cx + dx, cy + dy] for dx in (-2, 0, 2) for dy in (-2, 0, 2)]
+                            sample.sort()
+                            corners.append(sample[len(sample) // 2])
+                        bg_level = sum(corners) // len(corners)
+                        threshold = min(bg_level + 10, 252)
+
+                        def is_bg(x, y): return arr[x, y] >= threshold
+                        top = 0
+                        while top < ph and all(is_bg(x, top) for x in range(pw)): top += 1
+                        bottom = ph - 1
+                        while bottom > top and all(is_bg(x, bottom) for x in range(pw)): bottom -= 1
+                        left = 0
+                        while left < pw and all(is_bg(left, y) for y in range(top, bottom + 1)): left += 1
+                        right = pw - 1
+                        while right > left and all(is_bg(right, y) for y in range(top, bottom + 1)): right -= 1
+                        crop_pad = 5
+                        crop = (max(0, left - crop_pad), max(0, top - crop_pad),
+                                min(pw, right + 1 + crop_pad), min(ph, bottom + 1 + crop_pad))
+                        if crop[0] > 0 or crop[1] > 0 or crop[2] < pw or crop[3] < ph:
+                            img = img.crop(crop)
+                            logger.info(f'[Modao] 背景裁剪: {pw}×{ph} → {crop[2]-crop[0]}×{crop[3]-crop[1]}')
+                        if img.mode in ('RGBA', 'P'):
+                            img = img.convert('RGB')
+                        buf = io.BytesIO()
+                        img.save(buf, format='JPEG', quality=85)
+                        screenshot_bytes = buf.getvalue()
+                        logger.info(f'[Modao] JPEG 压缩: {len(screenshot_bytes) / 1024:.0f}KB')
+                    except Exception:
+                        pass  # PIL 不可用则保留原图
 
                     # 保存到文件（JPEG）
                     filename = f'{i:02d}.jpg'

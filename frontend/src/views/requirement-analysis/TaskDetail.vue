@@ -791,7 +791,8 @@ export default {
           expected_result: testCase.expected || '',
           priority: this.mapPriority(testCase.priority),
           test_type: 'functional',
-          status: 'draft'
+          status: 'draft',
+          project: this.task?.project,
         }
 
         await api.post('/testcases/', caseData)

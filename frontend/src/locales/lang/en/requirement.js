@@ -11,6 +11,7 @@ export default {
     realtimeStreamDesc: 'Display character by character, smooth experience, suitable for large requirement documents',
     completeOutput: '📄 Complete Output',
     completeOutputDesc: 'Display all at once after completion, suitable for simple requirements',
+    enableMultimodal: 'Enable image recognition (auto-analyze visual content in images)',
 
     // Manual Input
     manualInputTitle: '✍️ Manual Input',

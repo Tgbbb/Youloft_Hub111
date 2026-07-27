@@ -1,696 +1,266 @@
 <template>
-  <div class="requirement-analysis">
-    <div class="page-header">
-      <h1>{{ $t('requirementAnalysis.title') }}</h1>
-      <p>{{ $t('requirementAnalysis.subtitle') }}</p>
-    </div>
+  <div class="ef-root" data-ark-theme="endfield" data-ark-depth="maximal">
+    <div class="ef-grid" aria-hidden="true"></div>
+    <div class="ef-grid__diag" aria-hidden="true"></div>
 
-    <!-- 配置引导弹出窗口 -->
-    <div v-if="showConfigGuide && !checkingConfig" class="modal-overlay" @click.self="showConfigGuide = false" :key="modalKey">
-      <div class="guide-config-modal">
-      <div class="guide-header">
-        <svg class="guide-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-          <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z" fill="#f59e0b"/>
-          <path d="M464 336a48 48 0 1 0 96 0 48 48 0 1 0-96 0zm72 112h-48c-4.4 0-8 3.6-8 8v272c0 4.4 3.6 8 8 8h48c4.4 0 8-3.6 8-8V456c0-4.4-3.6-8-8-8z" fill="#f59e0b"/>
-        </svg>
-        <div class="guide-title">
+    <!-- ======== Config Guide Modal ======== -->
+    <div v-if="showConfigGuide && !checkingConfig" class="ef-modal" @click.self="showConfigGuide = false" :key="modalKey">
+      <div class="ef-modal__box">
+        <header class="ef-modal__bar">
+          <span class="ef-modal__idx">00</span>
+          <span>系统配置</span>
+          <button class="ef-modal__x" @click="showConfigGuide = false">×</button>
+        </header>
+        <div class="ef-modal__body">
           <h2>{{ $t('configGuide.title') }}</h2>
-          <p>{{ $t('configGuide.subtitle') }}</p>
-        </div>
-      </div>
-
-      <div class="config-groups">
-        <!-- 模型配置行 -->
-        <div class="config-group">
-          <div class="group-label">{{ $t('configGuide.modelConfig') }}</div>
-          <div class="config-items-row">
-            <div class="config-item-inline" :class="getConfigItemClass('writer_model')">
-              <span class="status-symbol" v-html="getStatusSymbol('writer_model')"></span>
-              <span class="config-label">{{ $t('configGuide.caseWriter') }}</span>
-              <span class="config-name" v-if="configStatus.writer_model.name">{{ configStatus.writer_model.name }}</span>
-              <span class="status-text" v-if="!configStatus.writer_model.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.writer_model.enabled">{{ $t('configGuide.disabled') }}</span>
-            </div>
-
-            <div class="config-item-inline" :class="getConfigItemClass('reviewer_model')">
-              <span class="status-symbol" v-html="getStatusSymbol('reviewer_model')"></span>
-              <span class="config-label">{{ $t('configGuide.caseReviewer') }}</span>
-              <span class="config-name" v-if="configStatus.reviewer_model.name">{{ configStatus.reviewer_model.name }}</span>
-              <span class="status-text" v-if="!configStatus.reviewer_model.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.reviewer_model.enabled">{{ $t('configGuide.disabled') }}</span>
+          <p class="ef-modal__desc">{{ $t('configGuide.subtitle') }}</p>
+          <div class="ef-guide-list">
+            <div v-for="g in [
+              {key:'writer_model',label:$t('configGuide.modelConfig'),sub:$t('configGuide.caseWriter'),v:configStatus.writer_model},
+              {key:'reviewer_model',label:$t('configGuide.modelConfig'),sub:$t('configGuide.caseReviewer'),v:configStatus.reviewer_model},
+              {key:'writer_prompt',label:$t('configGuide.promptConfig'),sub:$t('configGuide.caseWriter'),v:configStatus.writer_prompt},
+              {key:'reviewer_prompt',label:$t('configGuide.promptConfig'),sub:$t('configGuide.caseReviewer'),v:configStatus.reviewer_prompt},
+              {key:'generation_config',label:$t('configGuide.generationConfig'),sub:$t('configGuide.generationSettings'),v:configStatus.generation_config}
+            ]" :key="g.key" class="ef-guide-item">
+              <span class="ef-guide-item__label">{{ g.label }} / {{ g.sub }}</span>
+              <span class="ef-guide-item__val" :class="g.v?.configured ? (g.v?.enabled ? 'is-ok' : 'is-warn') : 'is-fail'">
+                <i class="ef-guide-item__dot"></i>{{ g.v?.name || $t('configGuide.unconfigured') }}
+              </span>
             </div>
           </div>
-        </div>
-
-        <!-- 提示词配置行 -->
-        <div class="config-group">
-          <div class="group-label">{{ $t('configGuide.promptConfig') }}</div>
-          <div class="config-items-row">
-            <div class="config-item-inline" :class="getConfigItemClass('writer_prompt')">
-              <span class="status-symbol" v-html="getStatusSymbol('writer_prompt')"></span>
-              <span class="config-label">{{ $t('configGuide.caseWriter') }}</span>
-              <span class="config-name" v-if="configStatus.writer_prompt.name">{{ configStatus.writer_prompt.name }}</span>
-              <span class="status-text" v-if="!configStatus.writer_prompt.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.writer_prompt.enabled">{{ $t('configGuide.disabled') }}</span>
-            </div>
-
-            <div class="config-item-inline" :class="getConfigItemClass('reviewer_prompt')">
-              <span class="status-symbol" v-html="getStatusSymbol('reviewer_prompt')"></span>
-              <span class="config-label">{{ $t('configGuide.caseReviewer') }}</span>
-              <span class="config-name" v-if="configStatus.reviewer_prompt.name">{{ configStatus.reviewer_prompt.name }}</span>
-              <span class="status-text" v-if="!configStatus.reviewer_prompt.configured">{{ $t('configGuide.unconfigured') }}</span>
-              <span class="status-text warning" v-else-if="!configStatus.reviewer_prompt.enabled">{{ $t('configGuide.disabled') }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 生成行为配置行 -->
-        <div class="config-group">
-          <div class="group-label">{{ $t('configGuide.generationConfig') }}</div>
-          <div class="config-items-row">
-            <div class="config-item-inline" :class="getConfigItemClass('generation_config')">
-              <span class="status-symbol" v-html="getStatusSymbol('generation_config')"></span>
-              <span class="config-label">{{ $t('configGuide.generationSettings') }}</span>
-              <span class="config-name" v-if="configStatus.generation_config && configStatus.generation_config.name">{{ configStatus.generation_config.name }}</span>
-              <span class="status-text" v-if="!configStatus.generation_config || !configStatus.generation_config.configured">{{ $t('configGuide.unconfigured') }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-        <div class="guide-actions">
-          <button class="generate-manual-btn" @click="goToConfig">
-            {{ $t('configGuide.goToConfig') }}
-          </button>
-          <div class="skip-action" @click="showConfigGuide = false">
-            {{ $t('configGuide.configureLater') }}
+          <div class="ef-actions">
+            <button class="ef-btn ef-btn--signal" @click="goToConfig">{{ $t('configGuide.goToConfig') }}</button>
+            <button class="ef-btn ef-btn--text" @click="showConfigGuide = false">{{ $t('configGuide.configureLater') }}</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 输出模式选择器 - 全局设置 -->
-    <div class="output-mode-section" v-if="!isGenerating && !showResults">
-      <div class="output-mode-card">
-        <h3>{{ $t('requirementAnalysis.outputModeTitle') }}</h3>
-        <p class="mode-section-desc">{{ $t('requirementAnalysis.outputModeDesc') }}</p>
-        <div class="output-mode-selector">
-          <label class="mode-option" :class="{ active: globalOutputMode === 'stream' }">
-            <input type="radio" v-model="globalOutputMode" value="stream">
-            <div class="mode-content">
-              <div class="mode-title">{{ $t('requirementAnalysis.realtimeStream') }}</div>
-              <div class="mode-desc">{{ $t('requirementAnalysis.realtimeStreamDesc') }}</div>
-            </div>
-          </label>
-          <label class="mode-option" :class="{ active: globalOutputMode === 'complete' }">
-            <input type="radio" v-model="globalOutputMode" value="complete">
-            <div class="mode-content">
-              <div class="mode-title">{{ $t('requirementAnalysis.completeOutput') }}</div>
-              <div class="mode-desc">{{ $t('requirementAnalysis.completeOutputDesc') }}</div>
-            </div>
-          </label>
+    <!-- ======== Stage ======== -->
+    <div class="ef-stage">
+      <!-- ---- Output Mode (pre-generation) ---- -->
+      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults">
+        
+        <div class="ef-section__body">
+          <p class="ef-section__label">输出模式</p>
+          <div class="ef-mode-row">
+            <label class="ef-mode" :class="{ 'is-on': globalOutputMode === 'stream' }">
+              <input type="radio" v-model="globalOutputMode" value="stream" hidden>
+              <span class="ef-mode__letter">A</span>
+              <span class="ef-mode__title">{{ $t('requirementAnalysis.realtimeStream') }}</span>
+              <span class="ef-mode__desc">{{ $t('requirementAnalysis.realtimeStreamDesc') }}</span>
+            </label>
+            <label class="ef-mode" :class="{ 'is-on': globalOutputMode === 'complete' }">
+              <input type="radio" v-model="globalOutputMode" value="complete" hidden>
+              <span class="ef-mode__letter">B</span>
+              <span class="ef-mode__title">{{ $t('requirementAnalysis.completeOutput') }}</span>
+              <span class="ef-mode__desc">{{ $t('requirementAnalysis.completeOutputDesc') }}</span>
+            </label>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="main-content">
-      <!-- 手动输入需求描述区域 -->
-      <div class="manual-input-section" v-if="!isGenerating && !showResults && !showClarificationPanel">
-        <div class="manual-input-card">
-          <div class="tab-bar">
-            <button class="tab-btn" :class="{ active: manualTab === 'modao' }" @click="manualTab = 'modao'">
-              🔗 从墨刀导入
-            </button>
-            <button class="tab-btn" :class="{ active: manualTab === 'input' }" @click="manualTab = 'input'">
-              ✏️ 手动输入
-            </button>
+      <!-- ---- Input Zone ---- -->
+      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults && !showClarificationPanel">
+        
+        <div class="ef-section__body">
+          <p class="ef-section__label">输入来源</p>
+          <div class="ef-tabs">
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'modao' }" @click="manualTab = 'modao'">墨刀</button>
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'input' }" @click="manualTab = 'input'">手动</button>
           </div>
 
-          <!-- Tab: 手动输入 -->
-          <div v-if="manualTab === 'input'">
-          <div class="input-form">
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.requirementTitle') }} <span class="required">*</span></label>
-              <input
-                v-model="manualInput.title"
-                type="text"
-                class="form-input"
-                :placeholder="$t('requirementAnalysis.titlePlaceholder')">
+          <!-- Modao -->
+          <div v-if="manualTab === 'modao'" class="ef-tab-body">
+            <div v-if="modaoHistory.length > 0" class="ef-history">
+              <span class="ef-history__label">历史</span>
+              <span v-for="(h, i) in modaoHistory" :key="i" class="ef-history-pill">
+  <button class="ef-pill" @click="loadModaoHistory(i)">{{ h.title || 'Import ' + (i+1) }}</button>
+  <button class="ef-pill__del" @click.stop="deleteModaoHistory(i)" title="删除">×</button>
+</span>
             </div>
-
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.requirementDescription') }} <span class="required">*</span></label>
-              <textarea
-                v-model="manualInput.description"
-                class="form-textarea"
-                rows="8"
-                :placeholder="$t('requirementAnalysis.descriptionPlaceholder')"></textarea>
-              <div class="char-count">{{ manualInput.description.length }}/2000</div>
+            <div class="ef-fields">
+              <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label><select v-model="manualInput.selectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
             </div>
-
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
-              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
-                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
-                <option v-for="project in projects" :key="project.id" :value="project.id">
-                  {{ project.name }}
-                </option>
-              </select>
+            <div class="ef-fields">
+              <div class="ef-field ef-field--wide"><label>墨刀链接</label><input v-model="modaoUrl" class="ef-input" placeholder="https://modao.cc/proto/..." /></div>
+              <div class="ef-field"><label>Cookie 密钥</label><input v-model="modaoToken" class="ef-input" type="password" placeholder="_imock_session=..." /></div>
             </div>
-
-            <div class="form-group" v-if="manualInput.selectedProject">
-              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
-                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
-                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
-                </option>
-              </select>
-              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
+            <div class="ef-actions">
+              <button class="ef-btn ef-btn--signal" @click="importFromModao" :disabled="isImportingModao || !modaoUrl || !modaoToken">{{ isImportingModao ? `导入中 ${_importProgress}%` : '从墨刀导入' }}</button>
+              <button v-if="modaoCanvases.length > 0" class="ef-btn ef-btn--dark" @click="generateFromModao" :disabled="isGenerating || selectedCanvasCount === 0">生成 ({{ selectedCanvasCount }})</button>
             </div>
-
-            <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
-              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
-              <div style="display: flex; gap: 6px;">
-                <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
-                  <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
-                  <option v-for="mod in manualModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
-                </select>
-                <button class="quick-add-btn" @click="quickAddModule('manual')" :disabled="!manualInput.selectedVersionIds || manualInput.selectedVersionIds.length === 0" type="button">+</button>
-              </div>
-            </div>
-
-            <button
-              class="generate-manual-btn"
-              @click="generateFromManualInput"
-              :disabled="!canGenerateManual || isGenerating">
-              <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
-              <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
-            </button>
-          </div>
-          </div>
-          <!-- /Tab: 手动输入 -->
-
-          <!-- Tab: AI文档提取 -->
-          <div v-if="manualTab === 'extract'" class="extract-tab">
-            <!-- 第一步：选项目（用于带知识背景） -->
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
-              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
-                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
-                <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
-              </select>
-            </div>
-
-            <div class="upload-area"
-                 @dragover.prevent
-                 @drop="handleExtractDrop"
-                 :class="{ 'drag-over': isExtractDragOver }"
-                 @dragenter="isExtractDragOver = true"
-                 @dragleave="isExtractDragOver = false">
-              <div v-if="!extractFile" class="upload-placeholder">
-                <i class="upload-icon">📁</i>
-                <p>{{ $t('requirementAnalysis.dragDropText') }}</p>
-                <p class="upload-hint">{{ $t('requirementAnalysis.supportedFormats') }}</p>
-                <input type="file" ref="extractFileInput" @change="handleExtractFileSelect" accept=".pdf,.doc,.docx,.txt,.md" style="display: none;">
-                <button class="select-file-btn" @click="$refs.extractFileInput.click()">{{ $t('requirementAnalysis.selectFile') }}</button>
-              </div>
-              <div v-else class="file-selected">
-                <div class="file-info">
-                  <i class="file-icon">📄</i>
-                  <div class="file-details">
-                    <p class="file-name">{{ extractFile.name }}</p>
-                    <p class="file-size">{{ formatFileSize(extractFile.size) }}</p>
-                  </div>
-                  <button class="remove-file" @click="removeExtractFile">❌</button>
-                </div>
-              </div>
-            </div>
-
-            <button class="generate-btn" @click="extractDocument" :disabled="!extractFile || isExtracting" style="margin-top: 12px;">
-              <span v-if="isExtracting">🤖 {{ $t('requirementAnalysis.extracting') }}</span>
-              <span v-else>🤖 {{ $t('requirementAnalysis.extractDocument') }}</span>
-            </button>
-
-            <div v-if="extractedMarkdown" class="extracted-content" style="margin-top: 16px;">
-              <label>{{ $t('requirementAnalysis.extractedContent') }}</label>
-              <textarea
-                v-model="extractedMarkdown"
-                class="form-textarea"
-                rows="15"
-                :placeholder="$t('requirementAnalysis.extractedContentPlaceholder')"></textarea>
-            </div>
-
-            <!-- 生成前关联设置 -->
-            <div v-if="extractedMarkdown" style="margin-top: 12px;">
-              <div class="form-group">
-                <label>{{ $t('requirementAnalysis.associatedProject') }}（{{ $t('requirementAnalysis.forGeneration') }}）</label>
-                <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
-                  <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
-                  <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
-                </select>
-              </div>
-              <div class="form-group" v-if="manualInput.selectedProject">
-                <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-                <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
-                  <option v-for="version in projectVersions" :key="version.id" :value="version.id">{{ version.name }}</option>
-                </select>
-              </div>
-              <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
-                <label>{{ $t('requirementAnalysis.functionModule') }}</label>
-                <div style="display: flex; gap: 6px;">
-                  <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
-                    <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
-                    <option v-for="mod in manualModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
-                  </select>
-                  <button class="quick-add-btn" @click="quickAddModule('manual')" :disabled="!manualInput.selectedVersionIds || manualInput.selectedVersionIds.length === 0" type="button">+</button>
-                </div>
-              </div>
-            </div>
-
-            <button
-              class="generate-manual-btn"
-              @click="generateFromExtracted"
-              :disabled="!extractedMarkdown || isGenerating"
-              style="margin-top: 12px;">
-              <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
-              <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
-            </button>
-          </div>
-          <!-- /Tab: AI文档提取 -->
-
-          <!-- Tab: 从墨刀导入 -->
-          <div v-if="manualTab === 'modao'" class="modao-tab">
-            <!-- 历史导入（最顶部，显眼位置） -->
-            <div style="margin-bottom: 14px; padding: 10px 12px; background: #fafbfc; border: 1px solid #e4e7ed; border-radius: 6px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                <span style="font-size: 13px; font-weight: 600; color: #303133;">📋 历史导入</span>
-                <span style="font-size: 11px; color: #c0c4cc;">点选恢复 | × 删除</span>
-              </div>
-              <div v-if="modaoHistory.length > 0" style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <span v-for="(h, i) in modaoHistory" :key="i"
-                  class="history-pill"
-                  :class="{ active: h.url === modaoUrl }"
-                  @click="loadModaoHistory(i)">
-                  <span class="history-pill-name">{{ h.title || h.url?.substring(0, 35) }}</span>
-                  <span class="history-pill-meta">{{ h.canvas_count || 0 }}画布</span>
-                  <span @click.stop="deleteModaoHistory(i)" class="history-pill-del">×</span>
-                </span>
-              </div>
-              <div v-else style="font-size: 12px; color: #c0c4cc;">暂无历史记录，导入需求后自动保存</div>
-            </div>
-
-            <div class="form-group">
-              <label>关联项目</label>
-              <select v-model="manualInput.selectedProject" class="form-select" @change="onManualProjectChange">
-                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
-                <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
-              </select>
-            </div>
-
-            <div class="form-group" v-if="manualInput.selectedProject">
-              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-              <select v-model="manualInput.selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')">
-                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
-                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
-                </option>
-              </select>
-              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
-            </div>
-
-            <div class="form-group" v-if="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0">
-              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
-              <select v-model="manualInput.selectedModuleId" class="form-select" style="flex: 1;">
-                <option value="">{{ $t('testcase.selectModule') }}</option>
-                <option v-for="m in versionModules" :key="m.id" :value="m.id">
-                  {{ m.name }}
-                </option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label>墨刀页面 URL</label>
-              <input v-model="modaoUrl" type="text" class="form-input" placeholder="https://modao.cc/proto/xxx/sharing?view_mode=read_only">
-            </div>
-
-            <div class="form-group">
-              <label>Cookie</label>
-              <input v-model="modaoToken" type="password" class="form-input" placeholder="F12 → Network → 点任意请求 → Request Headers → 复制 Cookie 整行">
-              <div class="select-hint">需包含 _imock_session（HttpOnly），F12 → Network → 请求头 → Cookie 整行复制</div>
-            </div>
-
-            <button class="select-file-btn" @click="importFromModao" :disabled="!modaoUrl || !modaoToken || isImportingModao" style="width:100%; margin-top: 8px;">
-              <span v-if="isImportingModao">⏳ 导入中 {{ _importProgress }}%...</span>
-              <span v-else>🔗 从墨刀导入需求</span>
-            </button>
-
-            <!-- 画布列表 -->
-            <div v-if="modaoCanvases.length > 0" style="margin-top: 12px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label style="font-weight: 600; color: #2c3e50; font-size: 13px;">
-                  画布列表 ({{ selectedCanvasCount }}/{{ modaoCanvases.length }})
-                </label>
-                <div>
-                  <button class="select-file-btn" style="font-size: 11px; padding: 2px 8px; margin-right: 4px;"
-                    @click="selectAllCanvases">{{ selectedCanvasCount === modaoCanvases.length ? '取消全选' : '全选' }}</button>
-                  <button class="select-file-btn" style="font-size: 11px; padding: 2px 8px; color: #f56c6c;"
-                    @click="deleteSelectedCanvases" :disabled="selectedCanvasCount === 0">删除选中</button>
-                </div>
-              </div>
-              <div style="max-height: 300px; overflow-y: auto; border: 1px solid #e4e7ed; border-radius: 4px;">
-                <div v-for="(c, i) in modaoCanvases" :key="i"
-                     style="display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #f2f3f5;"
-                     :style="{ background: c.selected ? '#ecf5ff' : '#fff' }">
-                  <input type="checkbox" v-model="c.selected" style="margin-right: 8px;">
-                  <template v-if="c.screenshots.length > 0">
-                    <img v-for="(s, si) in c.screenshots" :key="si" :src="s.url"
-                         style="width: 40px; height: auto; border-radius: 2px; border: 1px solid #ddd; margin-right: 3px;"
-                         @click.stop="previewCanvas = c; previewIdx = si"
-                         @error="s.url = ''">
-                  </template>
-                  <span v-else style="font-size: 11px; color: #c0c4cc; margin-right: 6px;">🖼️</span>
-                  <span style="flex:1; font-size: 13px; margin-left: 4px;">{{ c.name }}</span>
-                  <button class="replace-btn" title="替换截图" @click.stop="triggerReplace(i)">+</button>
-                  <button v-if="c.screenshots.length > 0" class="replace-btn" title="清空截图" @click.stop="clearScreenshots(i)" style="margin-left: 2px;">✕</button>
-                  <input type="file" accept="image/png,image/jpeg" style="display:none"
-                         :ref="el => { if (el) replaceInputs[i] = el }"
-                         @change="e => onAddScreenshot(i, e)">
-                </div>
-              </div>
-            </div>
-
-            <!-- 生成按钮 -->
-            <div v-if="modaoCanvases.length > 0" style="margin-top: 10px;">
-              <button class="generate-btn" @click="generateFromModao" :disabled="isGenerating || selectedCanvasCount === 0" style="width:100%;">
-                <span v-if="isGenerating">🤖 生成中...</span>
-                <span v-else>🤖 生成用例 ({{ selectedCanvasCount }}画布)（澄清→初版→评审→终版）</span>
+            <!-- Canvases -->
+            <div v-if="modaoCanvases.length > 0" class="ef-canvas-bar">
+              <button class="ef-btn ef-btn--text" @click="selectAllCanvases">
+                {{ selectedCanvasCount === modaoCanvases.length ? '取消全选' : '全选' }} ({{ selectedCanvasCount }}/{{ modaoCanvases.length }})
               </button>
             </div>
-
-            <!-- 截图预览 lightbox -->
-            <div v-if="previewCanvas" class="modao-lightbox" @click="closePreview" @wheel.prevent="onPreviewWheel">
-              <button v-if="previewCanvas.screenshots.length > 1"
-                      class="preview-nav preview-prev" @click.stop="previewIdx = (previewIdx - 1 + previewCanvas.screenshots.length) % previewCanvas.screenshots.length">◀</button>
-              <img v-if="previewCanvas.screenshots[previewIdx]"
-                   :src="previewCanvas.screenshots[previewIdx].url"
-                   :style="{ maxWidth: '90vw', maxHeight: '90vh', transform: 'scale(' + previewZoom + ')', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }"
-                   @click.stop>
-              <button v-if="previewCanvas.screenshots.length > 1"
-                      class="preview-nav preview-next" @click.stop="previewIdx = (previewIdx + 1) % previewCanvas.screenshots.length">▶</button>
-              <div style="color: #fff; margin-top: 10px; text-align: center;">
-                {{ previewCanvas.name }}
-                <span v-if="previewCanvas.screenshots[previewIdx]">({{ previewCanvas.screenshots[previewIdx].width }}×{{ previewCanvas.screenshots[previewIdx].height }})</span>
-                — {{ Math.round(previewZoom * 100) }}% — {{ previewIdx + 1 }}/{{ previewCanvas.screenshots.length }}
-                <button class="replace-btn" style="margin-left: 8px; opacity: 1; color: #fff; border-color: #666;"
-                        @click.stop="triggerReplace(modaoCanvases.indexOf(previewCanvas))">+ 添加截图</button>
-              </div>
-            </div>
-          </div>
-          <!-- /Tab: 从墨刀导入 -->
-        </div>
-      </div>
-
-      <!-- 分隔线 -->
-      <div class="divider" v-if="!isGenerating && !showResults && !showClarificationPanel">
-        <span>{{ $t('requirementAnalysis.dividerOr') }}</span>
-      </div>
-
-      <!-- 文档上传区域 -->
-      <div class="upload-section" v-if="!isGenerating && !showResults && !showClarificationPanel">
-        <div class="upload-card">
-          <h2>{{ $t('requirementAnalysis.uploadTitle') }}</h2>
-          <div class="upload-area"
-               @dragover.prevent
-               @drop="handleDrop"
-               :class="{ 'drag-over': isDragOver }"
-               @dragenter="isDragOver = true"
-               @dragleave="isDragOver = false">
-            <div v-if="!selectedFile" class="upload-placeholder">
-              <i class="upload-icon">📁</i>
-              <p>{{ $t('requirementAnalysis.dragDropText') }}</p>
-              <p class="upload-hint">{{ $t('requirementAnalysis.supportedFormats') }}</p>
-              <input
-                type="file"
-                ref="fileInput"
-                @change="handleFileSelect"
-                accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
-                multiple
-                style="display: none;">
-              <input
-                type="file"
-                ref="folderInput"
-                @change="handleFolderSelect"
-                webkitdirectory
-                style="display: none;">
-              <div class="upload-btns">
-                <button class="select-file-btn" @click="$refs.fileInput.click()">
-                  {{ $t('requirementAnalysis.selectFile') }}
-                </button>
-                <button class="select-file-btn" @click="$refs.folderInput.click()">
-                  📂 {{ $t('requirementAnalysis.selectFolder') }}
-                </button>
-              </div>
-            </div>
-
-            <div v-else class="file-selected">
-              <div class="file-info" @click="selectedFiles.length > 1 && (showFileList = !showFileList)" :class="{ 'clickable': selectedFiles.length > 1 }">
-                <i class="file-icon">📄</i>
-                <div class="file-details">
-                  <p class="file-name">{{ selectedFile.name }}</p>
-                  <p class="file-size">
-                    {{ formatFileSize(selectedFile.size) }}
-                    <span v-if="selectedFiles.length > 1" class="multi-hint">
-                      · 共 {{ selectedFiles.length }} 个文件
-                      <span class="expand-arrow">{{ showFileList ? '▾' : '▸' }}</span>
-                    </span>
-                  </p>
+            <div v-if="modaoCanvases.length > 0" class="ef-canvases">
+              <div v-for="(c, i) in modaoCanvases" :key="i" class="ef-canvas" :class="{ 'is-on': c.selected }" @click="c.selected = !c.selected">
+                <span class="ef-canvas__check" v-if="c.selected">✓</span>
+                <span class="ef-canvas__n">{{ String(i + 1).padStart(2, '0') }}</span>
+                <div class="ef-canvas__thumbs" v-if="c.screenshots && c.screenshots.length">
+                  <img v-for="(s, si) in c.screenshots" :key="si" :src="s.url" style="width:40px;height:40px;object-fit:cover;flex-shrink:0;border:1px solid #e8e6e0" @click.stop="previewCanvas = c; previewIdx = si" />
                 </div>
-                <button class="remove-file" @click.stop="removeFile">❌</button>
+                <div v-else class="ef-canvas__noimg" @click.stop="previewCanvas = c; previewIdx = 0">无截图</div>
+                <span class="ef-canvas__name">{{ c.name }}</span>
               </div>
-              <!-- 展开的文件列表 -->
-              <div v-if="showFileList && selectedFiles.length > 1" class="file-list-expanded">
-                <div v-for="(f, i) in selectedFiles" :key="i" class="file-list-item" :class="{ 'file-list-item-active': f === selectedFile }" @click="selectedFile = f">
-                  <span class="fli-name">{{ f.webkitRelativePath || f.name }}</span>
-                  <span class="fli-size">{{ formatFileSize(f.size) }}</span>
-                </div>
+            </div>
+            <!-- Lightbox -->
+            <div v-if="previewCanvas" class="ef-lightbox" @click.self="closePreview">
+              <div class="ef-lightbox__nav" v-if="previewCanvas.screenshots?.length > 1"><button v-for="(s, si) in previewCanvas.screenshots" :key="si" class="ef-lightbox__dot" :class="{ 'is-on': si === previewIdx }" @click.stop="previewIdx = si">{{ si + 1 }}</button></div>
+              <div class="ef-lightbox__stage">
+                <img v-if="previewCanvas.screenshots?.[previewIdx]?.url" :src="previewCanvas.screenshots[previewIdx].url" style="display:block;max-width:90vw;max-height:86vh;width:auto;height:auto;object-fit:contain" :style="{ transform: `scale(${previewZoom})` }" @wheel.stop.prevent="onPreviewWheel" />
               </div>
+              <button class="ef-lightbox__close" @click="closePreview">×</button>
             </div>
           </div>
 
-          <div v-if="selectedFile" class="document-info">
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.documentTitle') }}</label>
-              <input
-                v-model="documentTitle"
-                type="text"
-                class="form-input"
-                :placeholder="$t('requirementAnalysis.documentPlaceholder')">
+          <!-- Manual -->
+          <div v-if="manualTab === 'input'" class="ef-tab-body">
+            <div class="ef-fields">
+              <div class="ef-field ef-field--wide"><label>Title</label><input v-model="manualInput.title" class="ef-input" :placeholder="$t('requirementAnalysis.titlePlaceholder')" /></div>
             </div>
-
-            <div class="form-group">
-              <label>{{ $t('requirementAnalysis.associatedProject') }}</label>
-              <select v-model="selectedProject" class="form-select" @change="onDocProjectChange">
-                <option value="">{{ $t('requirementAnalysis.selectProject') }}</option>
-                <option v-for="project in projects" :key="project.id" :value="project.id">
-                  {{ project.name }}
-                </option>
-              </select>
+            <div class="ef-fields">
+              <div class="ef-field ef-field--wide"><label>Description</label><textarea v-model="manualInput.description" class="ef-input ef-input--area" rows="6" :placeholder="$t('requirementAnalysis.descriptionPlaceholder')"></textarea></div>
             </div>
-
-            <div class="form-group" v-if="selectedProject">
-              <label>{{ $t('requirementAnalysis.associatedVersions') }}</label>
-              <select v-model="selectedVersionIds" class="form-select" multiple size="4" @change="loadVersionModules(selectedVersionIds, 'doc')">
-                <option v-for="version in projectVersions" :key="version.id" :value="version.id">
-                  {{ version.name }}{{ version.is_baseline ? ' (' + $t('testcase.baseline') + ')' : '' }}
-                </option>
-              </select>
-              <div class="select-hint">{{ $t('requirementAnalysis.multiSelectTip') }}</div>
+            <div class="ef-fields">
+              <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label><select v-model="manualInput.selectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
             </div>
-
-            <div class="form-group" v-if="selectedVersionIds && selectedVersionIds.length > 0">
-              <label>{{ $t('requirementAnalysis.functionModule') }}</label>
-              <div style="display: flex; gap: 6px;">
-                <select v-model="docSelectedModuleId" class="form-select" style="flex: 1;">
-                  <option value="">{{ $t('requirementAnalysis.noModule') }}</option>
-                  <option v-for="mod in docModules" :key="mod.id" :value="mod.id">{{ mod.name }}</option>
-                </select>
-                <button class="quick-add-btn" @click="quickAddModule('doc')" :disabled="!selectedVersionIds || selectedVersionIds.length === 0" type="button">+</button>
-              </div>
+            <div class="ef-actions">
+              <button class="ef-btn ef-btn--signal" @click="generateFromManualInput" :disabled="!canGenerateManual || isGenerating">{{ isGenerating ? $t('requirementAnalysis.generating') : $t('requirementAnalysis.generateButton') }}</button>
             </div>
+          </div>
 
-            <!-- 多模态模式选择 -->
-            <div v-if="isMultimodalFile" class="multimodal-toggle">
-              <label class="multimodal-checkbox">
-                <input
-                  type="checkbox"
-                  v-model="enableMultimodal"
-                  :disabled="isGenerating">
-                <span class="multimodal-label">
-                  <strong>多模态生成模式</strong>
-                  <span class="multimodal-hint">将文档截图或直接上传的图片（流程图、原型图、UI设计稿）发送给视觉模型分析，生成更精准的测试用例</span>
-                </span>
-              </label>
-              <div v-if="enableMultimodal" class="multimodal-info">
-                <span class="info-badge">⚠ 需先配置硅基流动的视觉模型（如 Qwen2-VL），并勾选「支持多模态」后设为 writer 角色</span>
-              </div>
+          <!-- Extract (hidden tab, functional) -->
+          <div v-if="manualTab === 'extract'" class="ef-tab-body">
+            <div class="ef-fields">
+              <div class="ef-field"><label>Project</label><select v-model="manualInput.selectedProject" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
             </div>
-
-            <button
-              class="generate-btn"
-              @click="generateFromDocument"
-              :disabled="!documentTitle || isGenerating">
-              <span v-if="isGenerating">{{ $t('requirementAnalysis.generating') }}</span>
-              <span v-else>{{ $t('requirementAnalysis.generateButton') }}</span>
-            </button>
+            <div class="ef-dropzone" @drop.prevent="handleExtractDrop" @dragover.prevent="isExtractDragOver = true" @dragleave.prevent="isExtractDragOver = false" :class="{ 'is-over': isExtractDragOver }">
+              <div v-if="!extractFile"><span class="ef-dropzone__icon">PDF</span><p>拖拽文件到此处</p><input type="file" ref="extractFileInput" @change="handleExtractFileSelect" accept=".pdf,.doc,.docx,.txt,.md" hidden><button class="ef-btn" @click="$refs.extractFileInput.click()">选择文件</button></div>
+              <div v-else class="ef-dropzone__file"><span>{{ extractFile.name }}</span><span class="ef-dropzone__size">{{ formatFileSize(extractFile.size) }}</span><button class="ef-btn ef-btn--text" @click="removeExtractFile">移除</button></div>
+            </div>
+            <div class="ef-actions"><button class="ef-btn ef-btn--signal" @click="extractDocument" :disabled="!extractFile || isExtracting">{{ isExtracting ? '提取中...' : '提取' }}</button></div>
+            <textarea v-if="extractedMarkdown" v-model="extractedMarkdown" class="ef-input ef-input--area" rows="10" style="margin-top:16px"></textarea>
+            <div class="ef-actions" v-if="extractedMarkdown"><button class="ef-btn ef-btn--signal" @click="generateFromExtracted" :disabled="!extractedMarkdown || isGenerating">生成</button></div>
           </div>
         </div>
       </div>
 
-      <!-- 需求澄清面板 -->
-      <div v-if="showClarificationPanel" class="clarification-section">
-        <div class="clarification-card">
-          <h2>{{ $t('requirementAnalysis.clarificationTitle') }}</h2>
-          <p class="clarification-subtitle">{{ $t('requirementAnalysis.clarificationSubtitle') }}</p>
 
-          <div v-if="isClarifying" class="clarifying-loading">
-            <span class="loading-spinner">⏳</span>
-            <span>{{ $t('requirementAnalysis.clarifying') }}</span>
-          </div>
-
-          <div v-else-if="clarificationQuestions.length === 0" class="clarification-empty">
-            <p>✅ {{ $t('requirementAnalysis.clarificationNoQuestions') }}</p>
-          </div>
-
-          <div v-else class="clarification-questions">
-            <div
-              v-for="q in clarificationQuestions"
-              :key="q.id"
-              class="clarification-question-item">
-              <div class="question-text">
-                <span class="question-number">{{ $t('requirementAnalysis.clarificationQuestionLabel', { id: q.id }) }}</span>
-                {{ q.question }}
+      <!-- ---- Document Upload ---- -->
+      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults && !showClarificationPanel">
+        <div class="ef-section__body">
+          <p class="ef-section__label">文档上传</p>
+          <div class="ef-dropzone"
+            @drop.prevent="handleDrop" @dragover.prevent="isDragOver = true"
+            @dragleave.prevent="isDragOver = false" :class="{ 'is-over': isDragOver }">
+            <div v-if="!selectedFile">
+              <span class="ef-dropzone__icon">文档</span>
+              <p>拖拽 PDF、Word、TXT 或图片到此处</p>
+              <div class="ef-dropzone__btns">
+                <input type="file" ref="fileInput" @change="handleFileSelect" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" hidden>
+                <input type="file" ref="folderInput" @change="handleFileSelect" webkitdirectory hidden>
+                <button class="ef-btn" @click="$refs.fileInput.click()">文件</button>
+                <button class="ef-btn" @click="$refs.folderInput.click()">文件夹</button>
               </div>
-              <textarea
-                v-model="clarificationAnswers[q.id]"
-                class="question-answer-input"
-                :placeholder="$t('requirementAnalysis.clarificationAnswerPlaceholder')"
-                rows="2"></textarea>
+            </div>
+            <div v-else class="ef-dropzone__file">
+              <span>{{ selectedFile.name }}</span>
+              <span class="ef-dropzone__size">{{ formatFileSize(selectedFile.size) }}</span>
+              <span class="ef-dropzone__more" v-if="selectedFiles.length > 1">+{{ selectedFiles.length - 1 }}</span>
+              <button class="ef-btn ef-btn--text" @click="removeFile">移除</button>
             </div>
           </div>
-
-          <div class="clarification-actions" v-if="!isClarifying">
-            <button class="skip-clarify-btn" @click="skipClarification">
-              {{ $t('requirementAnalysis.clarificationSkip') }}
-            </button>
-            <button class="confirm-clarify-btn" @click="confirmWithClarification">
-              {{ $t('requirementAnalysis.clarificationConfirm') }}
-            </button>
+          <div v-if="selectedFile" class="ef-fields" style="margin-top:20px">
+            <div class="ef-field"><label>标题</label><input v-model="documentTitle" class="ef-input" /></div>
+            <div class="ef-field"><label>项目</label><select v-model="selectedProject" class="ef-select" @change="onDocProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+            <div class="ef-field" v-show="selectedProject"><label>版本</label><select v-model="selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(selectedVersionIds, 'doc')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+            <div class="ef-field" v-show="selectedVersionIds && selectedVersionIds.length > 0"><label>模块</label><select v-model="docSelectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in docModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
+          </div>
+          <div class="ef-actions" v-if="selectedFile">
+            <label class="ef-check" v-if="isMultimodalFile"><input type="checkbox" v-model="enableMultimodal"><span>{{ $t('requirementAnalysis.enableMultimodal') }}</span></label>
+            <button class="ef-btn ef-btn--signal" @click="generateFromDocument" :disabled="isGenerating">{{ isGenerating ? $t('requirementAnalysis.generating') : $t('requirementAnalysis.generateButton') }}</button>
           </div>
         </div>
       </div>
 
-      <!-- 生成进度和结果 -->
-      <div v-if="isGenerating || showResults" class="generation-progress">
-        <div class="progress-card">
-          <h3>
-            {{ $t('requirementAnalysis.aiGeneratingTitle') }}
-            <span class="current-mode-badge">
-              ({{ globalOutputMode === 'stream' ? $t('requirementAnalysis.realtimeStream') : $t('requirementAnalysis.completeOutput') }})
-            </span>
-          </h3>
-          <div class="progress-info">
-            <div class="progress-item">
-              <span class="label">{{ $t('requirementAnalysis.taskId') }}</span>
-              <span class="value">{{ currentTaskId || $t('requirementAnalysis.preparing') }}</span>
-            </div>
-            <div class="progress-item">
-              <span class="label">{{ $t('requirementAnalysis.currentStatus') }}</span>
-              <span class="value">{{ showResults ? $t('requirementAnalysis.generationComplete') : progressText }}</span>
+      <!-- ---- Clarification ---- -->
+      <div class="ef-section ef-section--clarify" v-if="showClarificationPanel">
+        <div class="ef-section__body">
+          <p class="ef-section__label">需求澄清</p>
+          <div v-if="isClarifying" class="ef-wait"><span class="ef-wait__dot"></span>分析中...</div>
+          <div v-else-if="clarificationQuestions.length === 0" class="ef-wait">✓ 未发现歧义</div>
+          <div v-else class="ef-questions">
+            <div v-for="q in clarificationQuestions" :key="q.id" class="ef-q">
+              <div class="ef-q__head">
+                <span class="ef-q__n">Q{{ String(q.id).padStart(2,'0') }}</span>
+                <span class="ef-q__text">{{ q.question }}</span>
+              </div>
+              <textarea v-model="clarificationAnswers[q.id]" class="ef-input ef-input--area" rows="3" placeholder="请输入您的回答..."></textarea>
             </div>
           </div>
-
-          <!-- 流式内容实时显示区域 -->
-          <div v-if="streamedContent" class="stream-content-display">
-            <div class="stream-header">
-              <span class="stream-title">{{ $t('requirementAnalysis.realtimeGeneratedContent') }}</span>
-              <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: streamedContent.length }) }}</span>
-            </div>
-            <div class="stream-content" v-html="formatMarkdown(streamedContent)"></div>
+          <div class="ef-actions" v-if="!isClarifying">
+            <button class="ef-btn ef-btn--signal" @click="confirmWithClarification">确认并生成</button>
+            <button class="ef-btn" @click="skipClarification">跳过，直接生成</button>
           </div>
-
-          <!-- 评审内容显示区域 -->
-          <div v-if="streamedReviewContent" class="stream-content-display" style="margin-top: 15px;">
-            <div class="stream-header">
-              <span class="stream-title">{{ $t('requirementAnalysis.aiReviewComments') }}</span>
-              <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: streamedReviewContent.length }) }}</span>
-            </div>
-            <div class="stream-content" v-html="formatMarkdown(streamedReviewContent)"></div>
-          </div>
-
-          <!-- 最终版用例显示区域 -->
-          <div v-if="finalTestCases" class="stream-content-display" style="margin-top: 15px;">
-            <div class="stream-header">
-              <span class="stream-title">
-                {{ $t('requirementAnalysis.finalVersionTestCases') }}
-                <span v-if="isGenerating" class="streaming-indicator">{{ $t('requirementAnalysis.generating') }}</span>
-              </span>
-              <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: finalTestCases.length }) }}</span>
-            </div>
-            <div class="stream-content final-testcases" v-html="formatMarkdown(finalTestCases)"></div>
-          </div>
-
-          <div class="progress-steps">
-            <div class="step" :class="{ active: currentStep >= 1 }">
-              <span class="step-number">1</span>
-              <span class="step-text">{{ $t('requirementAnalysis.stepAnalysis') }}</span>
-            </div>
-            <div class="step" :class="{ active: currentStep >= 2 }">
-              <span class="step-number">2</span>
-              <span class="step-text">{{ $t('requirementAnalysis.stepWriting') }}</span>
-            </div>
-            <div v-if="showReviewStep" class="step" :class="{ active: currentStep >= 3 }">
-              <span class="step-number">3</span>
-              <span class="step-text">{{ $t('requirementAnalysis.stepReview') }}</span>
-            </div>
-            <div class="step" :class="{ active: currentStep >= (showReviewStep ? 4 : 3) }">
-              <span class="step-number">{{ showReviewStep ? 4 : 3 }}</span>
-              <span class="step-text">{{ $t('requirementAnalysis.stepComplete') }}</span>
-            </div>
-          </div>
-
-          <!-- 任务完成后的操作按钮 -->
-          <div v-if="showResults" class="completion-actions">
-            <button class="download-btn" @click="downloadTestCases">
-              <span>📥 {{ $t('requirementAnalysis.downloadExcel') }}</span>
-            </button>
-            <button class="save-btn" @click="saveToTestCaseRecords">
-              <span>💾 {{ $t('requirementAnalysis.saveToRecords') }}</span>
-            </button>
-            <button class="new-generation-btn" @click="resetGeneration">
-              <span>📝 {{ $t('requirementAnalysis.newGeneration') }}</span>
-            </button>
-          </div>
-          <button v-else class="cancel-generation-btn" @click="cancelGeneration">
-            {{ $t('requirementAnalysis.cancelGeneration') }}
-          </button>
         </div>
       </div>
 
-      <!-- 旧的生成结果区域已废弃，保留用于兼容 -->
-      <!-- 现在使用流式显示区域 + 最终版用例区域 -->
-      <div v-if="false && showResults && generationResult" class="generation-result">
-        <div class="result-header">
-          <h2>{{ $t('requirementAnalysis.generationComplete') }}</h2>
-          <div class="result-summary">
-            <span class="summary-item">
-              {{ $t('requirementAnalysis.summaryTaskId', { taskId: generationResult.task_id }) }}
-            </span>
-            <span class="summary-item">
-              {{ $t('requirementAnalysis.summaryGenerationTime', { time: formatDateTime(generationResult.completed_at) }) }}
-            </span>
+      <!-- ---- Generation / Results ---- -->
+      <div class="ef-section ef-section--results" v-if="isGenerating || showResults">
+        <div class="ef-section__body">
+          <p class="ef-section__label">{{ isGenerating ? '生成中' : '生成结果' }}
+            <span class="ef-section__badge is-live" v-if="isGenerating">{{ currentStep }}/4</span>
+          </p>
+          <!-- Steps -->
+          <div class="ef-pipeline" v-if="isGenerating">
+            <span class="ef-pipe" :class="{ 'is-on': currentStep >= 1, 'is-past': currentStep > 1 }">分析</span>
+            <span class="ef-pipe__line"></span>
+            <span class="ef-pipe" :class="{ 'is-on': currentStep >= 2, 'is-past': currentStep > 2 }">编写</span>
+            <span class="ef-pipe__line"></span>
+            <span class="ef-pipe" :class="{ 'is-on': currentStep >= 3, 'is-past': currentStep > 3 }">评审</span>
+            <span class="ef-pipe__line"></span>
+            <span class="ef-pipe" :class="{ 'is-on': currentStep >= 4, 'is-past': currentStep > 4 }">完成</span>
+          </div>
+          <!-- Content -->
+          <div v-if="streamedContent" class="ef-prose">
+            <p class="ef-prose__label">测试用例</p>
+            <div class="ef-prose__body" v-html="formatMarkdown(streamedContent)"></div>
+          </div>
+          <div v-if="streamedReviewContent" class="ef-prose ef-prose--review">
+            <p class="ef-prose__label">评审</p>
+            <div class="ef-prose__body" v-html="formatMarkdown(streamedReviewContent)"></div>
+          </div>
+          <div v-if="finalTestCases" class="ef-prose ef-prose--final">
+            <p class="ef-prose__label">最终</p>
+            <div class="ef-prose__body" v-html="formatMarkdown(finalTestCases)"></div>
+          </div>
+          <div class="ef-actions" v-if="showResults">
+            <button class="ef-btn ef-btn--signal" @click="downloadTestCases('xlsx')">下载 XLSX</button>
+            <button class="ef-btn ef-btn--dark" @click="saveToTestCaseRecords" :disabled="!generationResult?.task_id">保存到记录</button>
+            <button class="ef-btn" @click="resetGeneration">新建</button>
+          </div>
+          <div class="ef-actions" v-else>
+            <button class="ef-btn ef-btn--text" @click="cancelGeneration">取消</button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- ======== Bottom Dock ======== -->
+    <footer class="ef-dock">
+      <span>系统 / 在线</span><span class="ef-dock__div"></span>
+      <span v-if="currentTaskId">任务 {{ currentTaskId?.substring(0,8) }}</span>
+      <span v-else>无活跃任务</span>
+      <span class="ef-dock__dot" :class="{ 'is-live': !!currentTaskId }"></span>
+    </footer>
   </div>
 </template>
 
@@ -1272,11 +842,14 @@ export default {
           name: c.name,
           screenshots: c.screenshots,
         }))
+        const pId = this.manualInput.selectedProject || this.selectedProject || null
+        const vIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
         const payload = {
           title: this.modaoTitle,
           url: this.modaoUrl,
-          data: { canvases, import_id: this._modaoImportId },
-          project_id: this.manualInput.selectedProject || undefined,
+          data: { canvases, import_id: this._modaoImportId, project_id: pId, version_ids: vIds },
+          project_id: pId,
+          version_ids: vIds,
         }
         if (this._modaoHistoryId) {
           await api.put(`/requirement-analysis/wx/${this._modaoHistoryId}/`, payload)
@@ -1288,6 +861,7 @@ export default {
       } catch (e) { console.error('保存历史失败', e) }
     },
     async loadModaoHistory(i) {
+      this.manualTab = 'modao'
       const h = this.modaoHistory[i]
       if (!h?.id) return
       try {
@@ -1300,6 +874,15 @@ export default {
                        || data.data?.canvases?.[0]?.screenshotUrl
                        || ''
         this._modaoImportId = firstUrl.match(/modao_screenshots\/([^/]+)\//)?.[1] || ''
+        // 恢复项目/版本/模块选择
+        if (data.data?.project_id) {
+          this.manualInput.selectedProject = data.data.project_id
+          this.loadProjectVersions(data.data.project_id)
+        }
+        if (data.data?.version_ids?.length) {
+          this.manualInput.selectedVersionIds = data.data.version_ids
+          this.loadVersionModules(data.data.version_ids, 'manual')
+        }
         this.modaoCanvases = (data.data?.canvases || []).map(c => ({
           name: c.name,
           screenshots: c.screenshots || (c.screenshot_url ? [{ url: c.screenshot_url, width: c.width, height: c.height }] : []),
@@ -1408,22 +991,28 @@ export default {
       const selected = this.modaoCanvases.filter(c => c.selected)
       this.isClarifying = true
       this.showClarificationPanel = true
+      const projectId = this.manualInput.selectedProject || this.selectedProject || null
+      const versionIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
       this.pendingGeneration = {
         type: 'modao',
         title: this.modaoTitle || '墨刀需求',
         requirementText: `墨刀原型图「${this.modaoTitle}」，共 ${selected.length} 个画布`,
-        projectId: this.manualInput.selectedProject || undefined,
-        versionIds: this.manualInput.selectedVersionIds || [],
+        projectId: projectId,
+        versionIds: versionIds,
         functionModuleId: this.manualInput.selectedModuleId || '',
         outputMode: 'stream',
         pageImages: selected.flatMap(c =>
           (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
         ),
       }
+      // 更新历史记录中的项目/版本选择
+      this.saveModaoHistory(true)
       try {
         const payload = {
           requirement_text: this.pendingGeneration.requirementText,
-          project_id: this.manualInput.selectedProject || undefined,
+          project_id: projectId,
+          version_ids: versionIds,
+          function_module_id: this.manualInput.selectedModuleId || undefined,
           page_images: selected.flatMap(c =>
             (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
           ),
@@ -1869,7 +1458,7 @@ export default {
 
         // 如果选择了项目，添加到请求中
         if (projectId) {
-          requestData.project = projectId
+          requestData.project_id = projectId
         }
 
         // 如果选择了版本，添加到请求中
@@ -2350,20 +1939,36 @@ export default {
     formatMarkdown(content) {
       if (!content) return '';
 
-      // 先去除"新增"标记，在markdown转换之前处理
-      // 这样可以避免markdown转换后无法匹配的问题
       let html = content
-          .replace(/\*\*新增\*\*-/g, '')  // **新增**-xxx -> xxx (保留xxx的原有格式)
-          .replace(/新增-/g, '');  // 新增-xxx -> xxx (保留xxx的原有格式)
+          .replace(/\*\*新增\*\*-/g, '')
+          .replace(/新增-/g, '');
 
-      // 转义HTML特殊字符
-      html = html
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
+      // Step 1: Handle code blocks first (preserve their content)
+      const codeBlocks = [];
+      html = html.replace(/```([\s\S]+?)```/g, (_, code) => {
+        codeBlocks.push(`<pre><code>${this.escapeHtml(code.trim())}</code></pre>`);
+        return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+      });
 
-      // 转换Markdown语法
-      // 标题 #
+      // Step 2: Escape HTML in remaining content
+      html = this.escapeHtml(html);
+
+      // Step 3: Markdown tables
+      html = html.replace(/((?:^\|.+\|\s*$\n?)+)/gm, (tableBlock) => {
+        const lines = tableBlock.trim().split('\n').filter(l => l.includes('|'));
+        if (lines.length < 2) return tableBlock;
+        let result = '<table>';
+        lines.forEach((line, i) => {
+          if (i === 1 && /^\|[\s\-:|]+\|$/.test(line)) return; // skip separator
+          const tag = i === 0 ? 'th' : 'td';
+          const cells = line.split('|').filter(c => c.trim() !== '');
+          result += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+        });
+        result += '</table>';
+        return result;
+      });
+
+      // Step 4: Headings
       html = html.replace(/^#{6}\s+(.+)$/gm, '<h6>$1</h6>');
       html = html.replace(/^#{5}\s+(.+)$/gm, '<h5>$1</h5>');
       html = html.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>');
@@ -2371,24 +1976,37 @@ export default {
       html = html.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
       html = html.replace(/^#{1}\s+(.+)$/gm, '<h1>$1</h1>');
 
-      // 粗体 **text** 或 __text__
+      // Step 5: Bold, italic
       html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
       html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-
-      // 斜体 *text* 或 _text_
       html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
       html = html.replace(/_(.+?)_/g, '<em>$1</em>');
 
-      // 代码块 ```code```
-      html = html.replace(/```([\s\S]+?)```/g, '<pre><code>$1</code></pre>');
-
-      // 行内代码 `code`
+      // Step 6: Inline code
       html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-      // 换行符转换为<br>
+      // Step 7: Unordered lists
+      html = html.replace(/((?:^[\-\*]\s+.+$\n?)+)/gm, (match) => {
+        const items = match.trim().split('\n').map(l => `<li>${l.replace(/^[\-\*]\s+/, '')}</li>`).join('');
+        return `<ul>${items}</ul>`;
+      });
+
+      // Step 8: Ordered lists
+      html = html.replace(/((?:^\d+\.\s+.+$\n?)+)/gm, (match) => {
+        const items = match.trim().split('\n').map(l => `<li>${l.replace(/^\d+\.\s+/, '')}</li>`).join('');
+        return `<ol>${items}</ol>`;
+      });
+
+      // Step 9: Line breaks
       html = html.replace(/\n/g, '<br>');
 
+      // Step 10: Restore code blocks
+      html = html.replace(/%%CODEBLOCK_(\d+)%%/g, (_, i) => codeBlocks[parseInt(i)]);
+
       return html;
+    },
+    escapeHtml(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     },
 
     // 将HTML的<br>标签转换为换行符（用于Excel导出）
@@ -2613,1306 +2231,354 @@ export default {
 </script>
 
 <style scoped>
-.requirement-analysis {
-  padding: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
-  background: #f5f7fa;
-  min-height: 100vh;
-}
+/* =============================================
+   Endfield Maximal — Unboxed
+   ============================================= */
+.ef-root {
+  --ef-ink: #191919;
+  --ef-paper: #f2f2f0;
+  --ef-signal: #fffa00;
+  --ef-state: #00ffa2;
 
-.page-header {
-  text-align: center;
-  margin-bottom: 28px;
-}
-
-.page-header h1 {
-  font-size: 1.5rem;
-  color: #1a1a2e;
-  margin-bottom: 6px;
-  font-weight: 600;
-}
-
-.page-header p {
-  color: #a0aec0;
-  font-size: .92rem;
-}
-
-/* 输出模式设置区域 */
-.output-mode-section {
-  margin-bottom: 24px;
-}
-
-.output-mode-card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px 24px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.04);
-}
-
-.output-mode-card h3 {
-  font-size: 1rem;
-  color: #1a1a2e;
-  margin: 0 0 4px 0;
-  font-weight: 600;
-}
-
-.mode-section-desc {
-  color: #a0aec0;
-  font-size: .84rem;
-  margin: 0 0 14px 0;
-}
-
-/* 配置引导弹出窗口 */
-.modal-overlay {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  width: 100vw !important;
-  height: 100vh !important;
-  background: rgba(15, 23, 42, 0.6) !important;
-  backdrop-filter: blur(4px);
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  z-index: 9999 !important;
-  padding: 20px;
-  margin: 0 !important;
-  opacity: 1 !important;
-}
-
-.guide-config-modal {
-  background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%) !important;
-  border-radius: 24px;
-  padding: 36px;
-  max-width: 850px;
-  width: 100%;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  min-height: calc(100vh - 52px);
+  background: #eeedeb;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   position: relative;
-  flex-shrink: 0;
-  margin: auto;
-  opacity: 1 !important;
+  overflow-x: hidden;
 }
 
-.guide-config-modal::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
-  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-  border-radius: 24px 24px 0 0;
+/* Dual grid: rect + diagonal guide lines */
+.ef-grid {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(0,0,0,.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.035) 1px, transparent 1px);
+  background-size: 80px 80px;
+}
+.ef-grid__diag {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .25;
+  background:
+    repeating-linear-gradient(55deg, transparent, transparent 159px, rgba(0,0,0,.03) 159px, rgba(0,0,0,.03) 160px);
 }
 
-.guide-header {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 28px;
-}
-
-.guide-icon {
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  filter: drop-shadow(0 4px 8px rgba(245, 158, 11, 0.2));
-}
-
-.guide-title h2 {
-  font-size: 1.6rem;
-  color: #1a202c;
-  margin: 0 0 6px 0;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.guide-title p {
-  color: #64748b;
-  font-size: 0.95rem;
-  margin: 0;
-  font-weight: 400;
-}
-
-.config-groups {
-  margin-bottom: 24px;
-}
-
-.config-group {
-  margin-bottom: 20px;
-}
-
-.group-label {
-  font-size: 0.85rem;
-  color: #94a3b8;
-  margin-bottom: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.config-items-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-}
-
-.config-item-inline {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  border-radius: 12px;
-  border: 2px solid transparent;
-  position: relative;
+/* ======== Stage ======== */
+.ef-stage {
+  position: relative; z-index: 5;
+  max-width: 1040px; margin: 0 auto;
+  padding: 0 28px 100px;
   overflow: hidden;
-  font-weight: 500;
 }
 
-.config-item-inline::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  border-radius: 12px 0 0 12px;
+/* ======== Identity strip ======== */
+.ef-identity {
+  display: flex; align-items: flex-start; gap: 20px;
+  padding: 40px 0 36px;
+  &__wedge {
+    width: 16px; height: 68px; background: var(--ef-signal); flex-shrink: 0; margin-top: 4px;
+    clip-path: polygon(0 0, 100% 0, 100% 70%, 55% 100%, 0 100%);
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .18em; color: #777; margin: 0 0 6px; font-weight: 600;
+  }
+  &__title {
+    font-size: 2.6rem; font-weight: 900; color: var(--ef-ink); margin: 0;
+    line-height: .88; letter-spacing: -.04em;
+  }
+  &__right {
+    margin-left: auto; text-align: right; display: flex; flex-direction: column;
+    align-items: flex-end; gap: 8px; padding-top: 8px;
+  }
+  &__code {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .1em; color: #999;
+  }
+  &__status {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .12em; font-weight: 600;
+    padding: 4px 12px; border: 1px solid #d0d0c8; color: #999;
+    &.is-live { border-color: var(--ef-signal); color: #8a7a00; }
+    &.is-done { border-color: var(--ef-state); color: #007a4d; }
+  }
 }
 
-.config-item-inline.optional {
-  opacity: 0.75;
-}
-
-/* 根据状态设置背景色和样式 */
-.config-item-inline.status-enabled {
-  background: linear-gradient(135deg, rgba(236, 253, 245, 0.9) 0%, rgba(220, 252, 231, 0.6) 100%);
-  border-color: rgba(34, 197, 94, 0.2);
-  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.1);
-}
-
-.config-item-inline.status-enabled::before {
-  background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%);
-}
-
-.config-item-inline.status-disabled {
-  background: linear-gradient(135deg, rgba(254, 249, 195, 0.9) 0%, rgba(254, 240, 138, 0.6) 100%);
-  border-color: rgba(234, 179, 8, 0.2);
-  box-shadow: 0 4px 12px rgba(234, 179, 8, 0.1);
-}
-
-.config-item-inline.status-disabled::before {
-  background: linear-gradient(180deg, #eab308 0%, #ca8a04 100%);
-}
-
-.config-item-inline.status-unconfigured {
-  background: linear-gradient(135deg, rgba(254, 242, 242, 0.9) 0%, rgba(254, 226, 226, 0.6) 100%);
-  border-color: rgba(239, 68, 68, 0.2);
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.1);
-}
-
-.config-item-inline.status-unconfigured::before {
-  background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
-}
-
-.status-symbol {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  font-size: 20px;
-}
-
-.config-label {
-  font-size: 0.95rem;
-  color: #334155;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.config-name {
-  font-size: 0.85rem;
-  color: #64748b;
-  margin-left: 4px;
-  font-weight: 500;
-}
-
-.status-text {
-  margin-left: auto;
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  background: #ef4444;
-  color: white;
-  white-space: nowrap;
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.2);
-}
-
-.status-text.warning {
-  background: #eab308;
-  box-shadow: 0 2px 6px rgba(234, 179, 8, 0.2);
-}
-
-.guide-actions {
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
-  gap: 12px;
-  margin-top: 30px;
-  width: 100%;
-}
-
-.guide-actions button {
-  flex: none !important;
-  width: 240px !important;
-  height: 50px !important;
-  padding: 0 24px !important;
-  border-radius: 12px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  text-align: center;
-  white-space: nowrap;
-  opacity: 1 !important;
-  cursor: pointer;
-  box-sizing: border-box !important;
-}
-
-.guide-actions .generate-manual-btn {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-  color: white !important;
-  border: 2px solid transparent !important;
-  box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
-}
-
-.guide-actions .skip-action {
-  font-size: 0.85rem;
-  color: #94a3b8;
-  cursor: pointer;
-  text-decoration: none;
-  padding: 4px 8px;
-  transition: color 0.3s;
-}
-
-.guide-actions .skip-action:hover {
-  color: #64748b;
-  text-decoration: underline;
-}
-
-
-/* Tab 栏 */
-.tab-bar {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 20px;
-  border-bottom: 2px solid #e8e8e8;
-}
-.tab-bar .tab-btn {
-  padding: 10px 20px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 0.95rem;
-  color: #666;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: all 0.2s;
-}
-.tab-bar .tab-btn.active {
-  color: #3498db;
-  border-bottom-color: #3498db;
-  font-weight: 500;
-}
-.tab-bar .tab-btn:hover {
-  color: #3498db;
-}
-
-.manual-input-card, .upload-card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.04);
-  margin-bottom: 24px;
-}
-
-.manual-input-card h2, .upload-card h2 {
-  color: #1a1a2e;
-  margin: 0 0 16px 0;
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-
-.form-group {
-  margin-bottom: 16px;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: .82rem;
-  font-weight: 600;
-  color: #4a5568;
-}
-
-/* 输出模式选择器 */
-.output-mode-selector {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  align-items: stretch;
-}
-
-.mode-option {
+/* ======== Section ======== */
+.ef-section {
   position: relative;
-  cursor: pointer;
-  display: flex;
-}
+  padding: 28px 0;
+  margin-bottom: 1px;
+  &::before { display: none; }
+  &--clarify { padding-left: 16px; &::before { display: block; content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--ef-signal); } }
+  &--results { padding-left: 16px; overflow: hidden; &::before { display: block; content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--ef-signal); } }
+  &--alt { padding-left: 20px; }
 
-.mode-option input[type="radio"] {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
+  &__num {
+    position: absolute; left: 8px; top: 24px;
+    font-size: 36px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #d8d6d0; line-height: 1; letter-spacing: -.04em;
+  }
+  &__label {
+    font-size: 15px; font-weight: 800; color: var(--ef-ink); margin: 0 0 20px;
+    padding-left: 14px; border-left: 3px solid var(--ef-signal);
+    letter-spacing: .02em;
+  }
+  &__badge {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    padding: 1px 8px; border: 1px solid #d8d6d0; color: #999; margin-left: 8px; vertical-align: middle;
+    &.is-live { border-color: var(--ef-signal); color: #8a7a00; animation: ef-blink 1.2s ease-in-out infinite; }
+  }
+  &__body { position: relative; min-width: 0; overflow: hidden; }
 }
+@keyframes ef-blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
-.mode-content {
-  border: 2px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 16px;
-  transition: all 0.3s ease;
-  background: white;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.mode-option:hover .mode-content {
-  border-color: #3b82f6;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
-}
-
-.mode-option.active .mode-content {
-  border-color: #3b82f6;
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.2);
-}
-
-.mode-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: #1e293b;
-  margin-bottom: 6px;
-}
-
-.mode-desc {
-  font-size: 0.85rem;
-  color: #64748b;
-  line-height: 1.4;
-}
-
-.mode-option.active .mode-title {
-  color: #2563eb;
-}
-
-.mode-option.active .mode-desc {
-  color: #475569;
-}
-
-.form-input, .form-select, .form-textarea {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: .9rem;
-  transition: border-color .15s, box-shadow .15s;
-  color: #1a1a2e;
-  background: #fff;
-}
-
-.form-input:focus, .form-select:focus, .form-textarea:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102,126,234,.12);
-}
-
-.form-textarea {
-  resize: vertical;
-  font-family: inherit;
-  line-height: 1.7;
-}
-
-.char-count {
-  text-align: right;
-  font-size: 0.85rem;
-  color: #666;
-  margin-top: 5px;
-}
-
-.select-hint {
-  font-size: 0.8rem;
-  color: #999;
-  margin-top: 4px;
-}
-
-.quick-add-btn {
-  width: 36px;
-  height: 36px;
-  border: 1px solid #3498db;
-  background: #fff;
-  color: #3498db;
-  border-radius: 6px;
-  font-size: 1.2rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-.quick-add-btn:hover {
-  background: #3498db;
-  color: #fff;
-}
-.quick-add-btn:disabled {
-  border-color: #ddd;
-  color: #ccc;
-  cursor: not-allowed;
-}
-
-.required {
-  color: #e74c3c;
-}
-
-.generate-manual-btn, .generate-btn {
-  background: #667eea;
-  color: #fff;
-  border: none;
-  padding: 12px 24px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: .95rem;
-  font-weight: 500;
+/* ======== Mode cards ======== */
+.ef-mode-row { display: flex; gap: 12px; }
+.ef-mode {
+  flex: 1; display: flex; align-items: center; gap: 14px;
+  padding: 16px 18px; background: #fff; cursor: pointer;
+  border: 1px solid transparent; border-bottom: 2px solid #e0ded8;
   transition: all .15s;
-  width: 100%;
-  margin-top: 8px;
-}
-
-.generate-manual-btn:hover:not(:disabled), .generate-btn:hover:not(:disabled) {
-  background: #5a6fd6;
-}
-
-.generate-manual-btn:disabled, .generate-btn:disabled {
-  background: #e2e8f0;
-  color: #a0aec0;
-  cursor: not-allowed;
-}
-
-.replace-btn {
-  background: none;
-  border: 1px solid #dcdfe6;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 1px 4px;
-  opacity: 0.5;
-  transition: opacity 0.2s;
-}
-.replace-btn:hover { opacity: 1; border-color: #409eff; }
-
-.modao-lightbox {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  cursor: pointer;
-}
-.preview-nav {
-  position: fixed;
-  top: 50%;
-  transform: translateY(-50%);
-  background: rgba(255,255,255,0.15);
-  color: #fff;
-  border: none;
-  border-radius: 50%;
-  width: 44px;
-  height: 44px;
-  font-size: 18px;
-  cursor: pointer;
-  z-index: 10000;
-  transition: background 0.2s;
-}
-.preview-nav:hover { background: rgba(255,255,255,0.3); }
-.preview-prev { left: 20px; }
-.preview-next { right: 20px; }
-
-.divider {
-  text-align: center;
-  margin: 40px 0;
-  position: relative;
-}
-
-.divider::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: #ddd;
-}
-
-.divider span {
-  background: white;
-  padding: 0 20px;
-  color: #666;
-  font-size: 1rem;
-}
-
-.upload-area {
-  border: 2px dashed #ddd;
-  border-radius: 8px;
-  padding: 40px;
-  text-align: center;
-  transition: border-color 0.3s ease;
-  margin-bottom: 20px;
-}
-
-.upload-area.drag-over {
-  border-color: #3498db;
-  background: #f8f9fa;
-}
-
-.upload-placeholder {
-  color: #666;
-}
-
-.upload-icon {
-  font-size: 3rem;
-  margin-bottom: 15px;
-  display: block;
-}
-
-.upload-hint {
-  color: #999;
-  font-size: 0.9rem;
-  margin-top: 5px;
-}
-
-.upload-btns {
-  display: flex;
-  gap: 10px;
-  margin-top: 15px;
-}
-
-.select-file-btn {
-  background: #3498db;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.select-file-btn:hover {
-  background: #2980b9;
-}
-
-.file-selected {
-  padding: 20px;
-  background: #f8f9fa;
-  border-radius: 6px;
-}
-
-.file-info {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.file-info.clickable {
-  cursor: pointer;
-}
-
-.expand-arrow {
-  font-size: 11px;
-  margin-left: 2px;
-}
-
-/* 展开的文件列表 */
-
-.file-list-expanded {
-  margin-top: 12px;
-  border-top: 1px solid #e0e0e0;
-  padding-top: 10px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.file-list-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: background 0.1s;
-}
-
-.file-list-item:hover {
-  background: #eef2ff;
-}
-
-.file-list-item-active {
-  background: #e0e7ff;
-  font-weight: 500;
-}
-
-.fli-name {
-  color: #333;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  margin-right: 12px;
-}
-
-.fli-size {
-  color: #999;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.file-icon {
-  font-size: 2rem;
-}
-
-.file-details {
-  flex: 1;
-}
-
-.file-name {
-  font-weight: 600;
-  margin: 0;
-}
-
-.file-size {
-  color: #666;
-  font-size: 0.9rem;
-  margin: 5px 0 0 0;
-}
-
-.remove-file {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1.2rem;
-}
-
-.generation-progress {
-  margin: 40px 0;
-}
-
-.progress-card {
-  background: white;
-  border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e1e8ed;
-  text-align: center;
-}
-
-.progress-card h3 {
-  color: #2c3e50;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.current-mode-badge {
-  display: inline-block;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 0.85rem;
-  font-weight: 500;
-  margin-left: 8px;
-  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-}
-
-.progress-info {
-  display: flex;
-  justify-content: center;
-  gap: 30px;
-  margin-bottom: 30px;
-  flex-wrap: wrap;
-}
-
-.progress-item {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.progress-item .label {
-  font-size: 0.9rem;
-  color: #666;
-}
-
-.progress-item .value {
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-/* 流式内容显示区域 */
-.stream-content-display {
-  margin: 20px 0;
-  border: 2px solid #e1e8ed;
-  border-radius: 8px;
-  overflow: hidden;
-  background: #f8f9fa;
-}
-
-.stream-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  background: #e9ecef;
-  border-bottom: 1px solid #dee2e6;
-}
-
-.stream-title {
-  font-weight: 600;
-  color: #495057;
-  font-size: 0.95rem;
-}
-
-.stream-status {
-  font-size: 0.85rem;
-  color: #6c757d;
-  background: white;
-  padding: 4px 10px;
-  border-radius: 12px;
-  border: 1px solid #dee2e6;
-}
-
-.stream-content {
-  max-height: 400px;
-  overflow-y: auto;
-  padding: 16px;
-  text-align: left;
-  background: white;
-  font-size: 0.9rem;
-  line-height: 1.6;
-  color: #2c3e50;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
-.stream-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.stream-content::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
-}
-
-.stream-content::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
-}
-
-.stream-content::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
-}
-
-/* 最终版用例特殊样式 */
-.stream-content.final-testcases {
-  background: #f0f7ff;
-  border-left: 4px solid #2196F3;
-}
-
-.stream-content.final-testcases::before {
-  content: '📋 最终版本';
-  display: block;
-  font-weight: 600;
-  color: #2196F3;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 2px solid #e3f2fd;
-}
-
-/* 流式输出指示器 */
-.streaming-indicator {
-  font-size: 0.85em;
-  margin-left: 8px;
-  color: #4CAF50;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
+  &:hover { background: #fafaf8; }
+  &.is-on { background: #fffef5; border-color: var(--ef-signal); border-bottom-color: var(--ef-ink); }
+  &__letter {
+    width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
+    background: #f2f2f0; color: #bbb; flex-shrink: 0;
   }
-  50% {
-    opacity: 0.5;
+  .is-on &__letter { background: var(--ef-ink); color: var(--ef-signal); }
+  &__title { font-size: 15px; font-weight: 700; color: #222; }
+  &__desc { font-size: 13px; color: #777; margin-left: auto; text-align: right; }
+}
+
+/* ======== Tabs ======== */
+.ef-tabs { display: flex; gap: 0; margin-bottom: 20px; }
+.ef-tab {
+  all: unset; cursor: pointer;
+  padding: 8px 22px; font-size: 12px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  color: #aaa; border-bottom: 2px solid transparent;
+  transition: all .12s;
+  &:hover { color: #666; }
+  &.is-on { color: var(--ef-ink); border-bottom-color: var(--ef-signal); font-weight: 700; }
+}
+.ef-tab-body { display: flex; flex-direction: column; gap: 16px; }
+
+/* ======== Fields ======== */
+.ef-fields { display: flex; gap: 14px; flex-wrap: wrap; }
+.ef-field {
+  display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 160px;
+  &--wide { flex: 2; min-width: 260px; }
+  label {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em; color: #555; font-weight: 700;
+  }
+}
+.ef-input {
+  padding: 10px 14px; border: 1px solid #ccc; font-size: 13px; color: #333;
+  width: 100%; box-sizing: border-box; font-family: inherit; background: #fff;
+  &:focus { outline: none; border-color: var(--ef-signal); box-shadow: 0 0 0 1px rgba(255,250,0,.15); }
+  &--area { resize: vertical; line-height: 1.6; }
+}
+.ef-select {
+  padding: 10px 32px 10px 14px; border: 1px solid #ccc; font-size: 13px; color: #333;
+  width: 100%; box-sizing: border-box; background: #fff; cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+  &:focus { outline: none; border-color: var(--ef-signal); box-shadow: 0 0 0 1px rgba(255,250,0,.15); }
+}
+
+/* ======== Actions ======== */
+.ef-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 4px; }
+
+/* ======== Buttons ======== */
+.ef-btn {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 24px; font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: #555; background: #fff; border: 1px solid #ccc;
+  transition: all .12s;
+  &:hover:not(:disabled) { background: #f2f2f0; border-color: #999; }
+  &:disabled { opacity: .3; cursor: not-allowed; }
+  &--signal { background: var(--ef-signal); color: var(--ef-ink); border-color: var(--ef-signal); font-weight: 700; &:hover:not(:disabled) { background: #e6e100; border-color: #e6e100; } }
+  &--dark { background: var(--ef-ink); color: var(--ef-paper); border-color: var(--ef-ink); font-weight: 700; &:hover:not(:disabled) { background: #333; } }
+  &--text { background: none; border-color: transparent; color: #999; font-weight: 500; &:hover:not(:disabled) { color: #555; background: none; } }
+}
+
+/* ======== OR Divider ======== */
+.ef-or {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 0;
+  &__line { flex: 1; height: 1px; background: #d4d2cc; }
+  &__text { font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .12em; color: #bbb; }
+}
+
+/* ======== Dropzone ======== */
+.ef-dropzone {
+  border: 2px dashed #d4d2cc; padding: 36px 24px; text-align: center; background: #fafaf8;
+  transition: all .15s;
+  &.is-over { border-color: var(--ef-signal); background: #fffef5; }
+  &__icon { display: block; font-size: 32px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: #d8d6d0; letter-spacing: .12em; margin-bottom: 8px; }
+  p { color: #aaa; font-size: 13px; margin: 0 0 16px; }
+  &__btns { display: flex; gap: 8px; justify-content: center; }
+  &__file { display: flex; align-items: center; gap: 12px; justify-content: center; flex-wrap: wrap; font-weight: 600; color: #333; font-size: 14px; }
+  &__size { font-weight: 400; color: #999; font-size: 12px; }
+  &__more { font-size: 11px; color: #999; }
+}
+
+/* ======== History ======== */
+.ef-history { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; &__label { font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; color: #bbb; } }
+.ef-history-pill { display: inline-flex; align-items: center; }
+.ef-pill {
+  all: unset; cursor: pointer; padding: 3px 14px; font-size: 11px; color: #888; background: #fff; border: 1px solid #e0ded8;
+  font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em;
+  &:hover { border-color: #999; color: #444; }
+  &__del {
+    all: unset; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #ccc; margin-left: 2px;
+    &:hover { color: #e04040; }
   }
 }
 
-.stream-content h1,
-.stream-content h2,
-.stream-content h3,
-.stream-content h4,
-.stream-content h5,
-.stream-content h6 {
-  margin-top: 1em;
-  margin-bottom: 0.5em;
-  color: #2c3e50;
-  font-weight: 600;
+/* ======== Canvas bar ======== */
+.ef-canvas-bar { display: flex; align-items: center; margin-bottom: 10px; }
+
+/* ======== Canvases ======== */
+.ef-canvases { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.ef-canvas {
+  cursor: pointer; display: block; max-width: 260px;
+  padding: 12px; background: #fff; border: 1px solid #e4e2dc;
+  transition: all .12s; position: relative;
+  &:hover { border-color: #aaa; }
+  &.is-on { border-color: var(--ef-ink); background: #fffef5; }
+  &__check { position: absolute; top: 0; right: 0; width: 22px; height: 22px; background: #191919; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; line-height: 1; z-index: 3; }
+  &__n { position: absolute; top: 8px; right: 10px; font-size: 22px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: #e8e6e0; line-height: 1; }
+  .is-on &__n { display: none; }
+  &__thumbs { display: flex; gap: 4px; margin-bottom: 8px; min-height: 40px; flex-wrap: wrap; }
+  &__name { font-size: 12px; color: #555; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 }
 
-.stream-content code {
-  background: #f1f3f5;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Courier New', monospace;
-  font-size: 0.85em;
+/* ======== Lightbox ======== */
+.ef-lightbox {
+  position: fixed; inset: 0; z-index: 9999; background: rgba(6,6,6,.93);
+  display: flex; align-items: center; justify-content: center;
+  &__stage { max-width: 90vw; max-height: 86vh; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  &__img { display: block; max-width: 90vw; max-height: 86vh; width: auto; height: auto; object-fit: contain; transition: transform .15s; }
+  &__close { position: absolute; top: 20px; right: 24px; all: unset; cursor: pointer; font-size: 32px; color: rgba(255,255,255,.45); &:hover { color: #fff; } }
+  &__nav { position: absolute; bottom: 24px; display: flex; gap: 6px; }
+  &__dot {
+    all: unset; cursor: pointer; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; color: rgba(255,255,255,.35); border: 1px solid rgba(255,255,255,.15);
+    &.is-on { color: var(--ef-ink); background: var(--ef-signal); border-color: var(--ef-signal); }
+  }
 }
 
-.stream-content pre {
-  background: #f1f3f5;
-  padding: 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 10px 0;
+/* ======== Clarification ======== */
+.ef-wait { display: flex; align-items: center; gap: 10px; padding: 24px 0; font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; color: #999; &__dot { width: 7px; height: 7px; background: var(--ef-signal); animation: ef-blink 1s infinite; } }
+.ef-questions { display: flex; flex-direction: column; gap: 14px; }
+.ef-q {
+  display: flex; flex-direction: column; gap: 10px;
+  &__head { display: flex; gap: 10px; align-items: flex-start; }
+  &__n { font-size: 12px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: #bbb; min-width: 28px; padding-top: 2px; }
+  &__text { flex: 1; font-size: 14px; color: #333; line-height: 1.5; font-weight: 500; }
+  textarea { width: 100%; }
+}
+.ef-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #666; cursor: pointer; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; input { accent-color: var(--ef-signal); } }
+
+/* ======== Pipeline ======== */
+.ef-pipeline {
+  display: flex; align-items: center; gap: 0; margin-bottom: 24px;
+  background: #fff; padding: 10px 16px; border: 1px solid #e4e4de;
+}
+.ef-pipe {
+  font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; font-weight: 600;
+  padding: 6px 14px; color: #ccc;
+  &.is-on { color: var(--ef-ink); background: #fefde8; }
+  &.is-past { color: #00a86b; }
+  &__line { width: 28px; height: 1px; background: #d8d6d0; .is-past + & { background: #00a86b; } }
 }
 
-.stream-content pre code {
-  background: none;
-  padding: 0;
+/* ======== Prose / Stream content ======== */
+.ef-prose {
+  background: #fff; border: 1px solid #e4e4de;
+  padding: 20px 24px; margin-bottom: 16px;
+  min-width: 0; max-width: 100%; overflow: hidden; box-sizing: border-box;
+  &__label {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .12em; color: #444; font-weight: 700;
+    margin: 0 0 14px; padding-bottom: 10px; border-bottom: 2px solid #e8e6e0;
+  }
+  &__body {
+    font-size: 14px; line-height: 1.8; color: #333;
+    overflow: hidden;
+    :deep(h1), :deep(h2), :deep(h3) { font-size: 1.15em; color: #191919; margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+    :deep(h4), :deep(h5), :deep(h6) { font-size: 1em; color: #444; margin: 16px 0 6px; }
+    :deep(code) { background: #f2f2f0; padding: 1px 6px; font-family: "IBM Plex Mono", monospace; font-size: .9em; color: #555; word-break: break-all; }
+    :deep(pre) { background: #fafaf8; padding: 16px; border-left: 3px solid var(--ef-signal); overflow-x: auto; margin: 12px 0; white-space: pre-wrap; word-break: break-all; }
+    :deep(table) { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 14px 0; }
+    :deep(th) { background: #f4f4f0; padding: 8px 10px; text-align: left; font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; border-bottom: 2px solid var(--ef-ink); color: #444; word-break: break-word; }
+    :deep(td) { padding: 8px 10px; border-bottom: 1px solid #e8e6e0; word-break: break-word; }
+    :deep(tr:hover td) { background: #fafaf8; }
+    :deep(ul), :deep(ol) { padding-left: 20px; margin: 10px 0; }
+    :deep(li) { margin-bottom: 6px; }
+    :deep(p) { margin: 10px 0; }
+    :deep(blockquote) { margin: 14px 0; padding: 10px 16px; border-left: 3px solid #ddd; background: #fafaf8; color: #666; }
+  }
+  &--review {
+    border-left: 3px solid #e6a23c;
+    .ef-prose__label { color: #b8860b; border-bottom-color: rgba(230,162,60,.3); }
+  }
+  &--final {
+    border-left: 3px solid #00a86b;
+    .ef-prose__label { color: #00a86b; border-bottom-color: rgba(0,168,107,.3); }
+  }
 }
 
-.progress-steps {
-  display: flex;
-  justify-content: center;
-  gap: 20px;
-  margin-bottom: 30px;
-  flex-wrap: wrap;
+/* ======== Modal ======== */
+.ef-modal {
+  position: fixed; inset: 0; z-index: 9999; background: rgba(4,4,4,.78);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  &__box { background: #fff; width: 100%; max-width: 680px; max-height: 85vh; overflow-y: auto; }
+  &__bar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--ef-ink); color: #fff; }
+  &__idx { font-size: 22px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: rgba(255,255,255,.18); }
+  &__x { all: unset; cursor: pointer; font-size: 22px; color: rgba(255,255,255,.40); margin-left: auto; &:hover { color: #fff; } }
+  &__body { padding: 24px; h2 { font-size: 1.1rem; color: #191919; margin: 0 0 4px; } }
+  &__desc { font-size: 13px; color: #999; margin: 0 0 20px; }
+}
+.ef-guide-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+.ef-guide-item {
+  display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1px solid #e8e6e0;
+  &__label { font-size: 12px; color: #888; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; }
+  &__val { font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 6px; }
+  &__dot { width: 5px; height: 5px; display: inline-block; }
+  .is-ok { color: #00a86b; .ef-guide-item__dot { background: var(--ef-state); } }
+  .is-warn { color: #b8860b; .ef-guide-item__dot { background: var(--ef-signal); } }
+  .is-fail { color: #c03939; .ef-guide-item__dot { background: #e04040; } }
 }
 
-.step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  opacity: 0.4;
-  transition: opacity 0.3s ease;
+/* ======== Dock ======== */
+.ef-dock {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+  height: 30px; background: var(--ef-ink);
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif; font-size: 10px;
+  text-transform: uppercase; letter-spacing: .12em; color: rgba(255,255,255,.28);
+  &__div { width: 1px; height: 12px; background: rgba(255,255,255,.10); }
+  &__dot { width: 6px; height: 6px; background: rgba(255,255,255,.12); &.is-live { background: var(--ef-state); } }
 }
 
-.step.active {
-  opacity: 1;
-}
-
-.step-number {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #ddd;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  color: white;
-}
-
-.step.active .step-number {
-  background: #3498db;
-}
-
-.step-text {
-  font-size: 0.9rem;
-  color: #666;
-}
-
-.cancel-generation-btn {
-  background: #e74c3c;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-/* ========== 需求澄清面板 ========== */
-.clarification-section {
-  margin: 20px 0;
-}
-
-.clarification-card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  border: 1px solid #e8e8e8;
-}
-
-.clarification-card h2 {
-  font-size: 1.3rem;
-  color: #2c3e50;
-  margin: 0 0 10px 0;
-}
-
-.clarification-subtitle {
-  color: #666;
-  font-size: 0.95rem;
-  margin: 0 0 24px 0;
-  line-height: 1.6;
-}
-
-.clarifying-loading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 40px;
-  justify-content: center;
-  font-size: 1.1rem;
-  color: #666;
-}
-
-.loading-spinner {
-  font-size: 1.5rem;
-  animation: spin 2s linear infinite;
-}
-
-.clarification-empty {
-  padding: 30px;
-  text-align: center;
-  font-size: 1.05rem;
-  color: #27ae60;
-}
-
-.clarification-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.clarification-question-item {
-  background: #f8f9fa;
-  border-radius: 8px;
-  padding: 16px 20px;
-  border-left: 4px solid #3498db;
-}
-
-.question-text {
-  font-size: 0.95rem;
-  color: #2c3e50;
-  margin-bottom: 10px;
-  line-height: 1.6;
-}
-
-.question-number {
-  display: inline-block;
-  background: #3498db;
-  color: #fff;
-  border-radius: 50%;
-  width: 24px;
-  height: 24px;
-  line-height: 24px;
-  text-align: center;
-  font-size: 0.8rem;
-  font-weight: bold;
-  margin-right: 8px;
-  vertical-align: middle;
-}
-
-.question-answer-input {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 0.9rem;
-  resize: vertical;
-  font-family: inherit;
-  transition: border-color 0.2s;
-}
-
-.question-answer-input:focus {
-  outline: none;
-  border-color: #3498db;
-  box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
-}
-
-.clarification-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-}
-
-.skip-clarify-btn {
-  padding: 10px 20px;
-  background: #fff;
-  color: #666;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: all 0.2s;
-}
-
-.skip-clarify-btn:hover {
-  background: #f5f5f5;
-  border-color: #ccc;
-}
-
-.confirm-clarify-btn {
-  padding: 10px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.confirm-clarify-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
-
-/* ========== 需求澄清面板结束 ========== */
-
-.completion-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  flex-wrap: wrap;
-}
-
-.completion-actions button {
-  flex: 1;
-  min-width: 150px;
-  padding: 12px 20px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.3s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.completion-actions .download-btn {
-  background: #28a745;
-  color: white;
-  font-size: 1rem;
-}
-
-.completion-actions .download-btn:hover {
-  background: #218838;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(40, 167, 69, 0.3);
-}
-
-.completion-actions .save-btn {
-  background: #007bff;
-  color: white;
-  font-size: 1rem;
-}
-
-.completion-actions .save-btn:hover {
-  background: #0056b3;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
-}
-
-.completion-actions .new-generation-btn {
-  background: #6c757d;
-  color: white;
-  font-size: 1rem;
-}
-
-.completion-actions .new-generation-btn:hover {
-  background: #5a6268;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(108, 117, 125, 0.3);
-}
-
-.generation-result {
-  margin: 40px 0;
-}
-
-.result-header {
-  background: white;
-  border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e1e8ed;
-  margin-bottom: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 20px;
-}
-
-.result-header h2 {
-  color: #27ae60;
-  margin: 0;
-}
-
-.result-summary {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-
-.summary-item {
-  color: #666;
-  font-size: 0.9rem;
-}
-
-.new-generation-btn {
-  background: #3498db;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.generated-testcases-section, .review-feedback-section, .final-testcases-section {
-  background: white;
-  border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e1e8ed;
-  margin-bottom: 20px;
-}
-
-.generated-testcases-section h3, .review-feedback-section h3, .final-testcases-section h3 {
-  color: #2c3e50;
-  margin-bottom: 20px;
-}
-
-.testcase-content, .review-content {
-  background: #f8f9fa;
-  border-radius: 6px;
-  padding: 20px;
-  border-left: 4px solid #3498db;
-}
-
-.testcase-content pre, .review-content pre {
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  margin: 0;
-  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-  font-size: 0.9rem;
-  line-height: 1.6;
-}
-
+/* ======== Responsive ======== */
+@media (max-width: 1024px) { .ef-stage { padding: 0 16px 80px; } .ef-mode-row { flex-direction: column; } .ef-section { padding-left: 48px; &__num { font-size: 28px; left: 4px; } } }
 @media (max-width: 768px) {
-  .result-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .progress-info, .result-summary {
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .progress-steps {
-    gap: 10px;
-  }
+  .ef-stage { padding: 0 12px 80px; }
+  .ef-identity { flex-wrap: wrap; &__right { width: 100%; flex-direction: row; justify-content: space-between; } &__title { font-size: 1.5rem; } &__wedge { height: 40px; width: 10px; } }
+  .ef-section { padding-left: 36px; &__num { font-size: 22px; left: 2px; top: 26px; } }
+  .ef-fields { flex-direction: column; }
+  .ef-field { min-width: 0; &--wide { min-width: 0; } }
+  .ef-pipeline { flex-wrap: wrap; gap: 4px; }
 }
-
-.actions-section {
-  display: flex;
-  gap: 20px;
-  justify-content: center;
-  margin-top: 30px;
-  flex-wrap: wrap;
-}
-
-.download-btn, .save-btn {
-  padding: 12px 24px;
-  border: none;
-  border-radius: 6px;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: all 0.3s ease;
-}
-
-.download-btn {
-  background-color: #1abc9c;
-  color: white;
-}
-
-.download-btn:hover {
-  background-color: #16a085;
-}
-
-.save-btn {
-  background-color: #3498db;
-  color: white;
-}
-
-.save-btn:hover {
-  background-color: #2980b9;
-}
-
-@media (max-width: 768px) {
-  .actions-section {
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .download-btn, .save-btn {
-    width: 100%;
-    max-width: 300px;
-    justify-content: center;
-  }
-}
-
-/* 墨刀历史导入卡片 */
-.history-pill {
-  padding: 4px 10px; font-size: 12px; background: #f0f2f5; border-radius: 4px;
-  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-  transition: background .2s;
-  &:hover { background: #e4e7ed; }
-  &.active { background: #ecf5ff; border: 1px solid #409eff; }
-  .history-pill-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .history-pill-meta { font-size: 10px; color: #909399; }
-  .history-pill-del { color: #c0c4cc; margin-left: 2px; &:hover { color: #f56c6c; } }
-}
+@media (prefers-reduced-motion: reduce) { .ef-blink { animation: none; } }
 </style>
 
 <style>
@@ -3972,7 +2638,7 @@ export default {
   width: 240px !important;
   height: 50px !important;
   padding: 0 24px !important;
-  border-radius: 12px;
+  border-radius: 0;
   font-size: 0.95rem;
   font-weight: 600;
   display: inline-flex !important;

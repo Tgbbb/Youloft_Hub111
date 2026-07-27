@@ -131,6 +131,7 @@ export default {
     // Title
     title: 'TestHub 测试平台',
     subtitle: '一站式智能化测试解决方案',
+    statusOnline: '系统在线',
 
     // Cards
     aiCaseGeneration: 'AI用例生成',

@@ -30,9 +30,6 @@ import UiExecutionList from '@/views/ui-automation/executions/ExecutionList.vue'
 import UiReportList from '@/views/ui-automation/reports/ReportList.vue'
 import UiScheduledTasks from '@/views/ui-automation/scheduled-tasks/ScheduledTasks.vue'
 import UiNotificationLogs from '@/views/ui-automation/notification/NotificationLogs.vue'
-import UiAITesting from '@/views/ui-automation/ai/AITesting.vue'
-import UiAICaseList from '@/views/ui-automation/ai/AICaseList.vue'
-import UiAIExecutionRecords from '@/views/ui-automation/ai/AIExecutionRecords.vue'
 
 /** @type {import('vue-router').RouteRecordRaw[]} */
 const routes = [
@@ -45,6 +42,10 @@ const routes = [
         name: 'Home',
         component: Home,
         meta: { requiresAuth: true }
+    },
+    {
+        path: '/midscene',
+        redirect: '/ai-intelligent-mode/midscene'
     },
     {
         path: '/login',
@@ -319,23 +320,13 @@ const routes = [
         children: [
             {
                 path: '',
-                redirect: 'testing'
+                redirect: 'midscene'
             },
-            {
-                path: 'testing',
-                name: 'AITesting',
-                component: UiAITesting
-            },
-            {
-                path: 'cases',
-                name: 'AICaseList',
-                component: UiAICaseList
-            },
-            {
-                path: 'execution-records',
-                name: 'AIExecutionRecords',
-                component: UiAIExecutionRecords
-            },
+            // 旧路由兼容（已废弃功能，重定向到 Midscene）
+            { path: 'testing', redirect: 'midscene' },
+            { path: 'cases', redirect: 'midscene' },
+            { path: 'execution-records', redirect: 'midscene' },
+            { path: ':pathMatch(.*)*', redirect: 'midscene' },
             // Midscene 移动端 AI 自动化
             {
                 path: 'midscene',

@@ -1697,7 +1697,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             url=url,
             status='pending',
             progress=0,
-            project_id=request.data.get('project_id') or None,
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
             created_by=request.user if request.user.is_authenticated else None,
         )
 
@@ -1769,6 +1769,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 'project': project if project_id else None,
                 'knowledge_base': knowledge_base,
                 'version_ids': request.data.get('version_ids', []),
+                'function_module_id': request.data.get('function_module_id') or None,
                 'created_by': request.user if request.user.is_authenticated else None,
             }
             # 确保 created_by 不为 None
@@ -2400,9 +2401,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 'output_mode': output_mode,
             }
 
-            if request.data.get('project'):
+            project_id = request.data.get('project_id') or request.data.get('project')
+            if project_id:
                 try:
-                    task_data['project'] = int(request.data['project'])
+                    task_data['project'] = int(project_id)
                 except (ValueError, TypeError):
                     pass
                 # 抓取知识背景快照
@@ -2791,15 +2793,17 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             }
 
             # 如果请求中包含项目ID，添加到任务数据中，并抓取知识背景快照
-            if 'project' in validated_data and validated_data['project']:
-                task_data['project'] = validated_data['project']
+            project_id = request.data.get('project_id') or request.data.get('project')
+            logger.info(f"[generate] request.data keys={list(request.data.keys())}, project_id={project_id}")
+            if project_id:
                 try:
+                    task_data['project'] = int(project_id)
                     from apps.projects.models import Project
-                    project = Project.objects.get(id=validated_data['project'])
+                    project = Project.objects.get(id=int(project_id))
                     if project.knowledge_base:
                         task_data['knowledge_base'] = project.knowledge_base
                         logger.info(f"[generate] 已获取项目「{project.name}」知识背景 {len(project.knowledge_base)} 字符")
-                except Project.DoesNotExist:
+                except (Project.DoesNotExist, ValueError, TypeError):
                     pass
 
             # 如果请求中包含版本ID列表，添加到任务数据中
@@ -3872,9 +3876,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 from django.db import models
 
                 # 优先使用任务关联的项目
+                logger.info(f"[batch_adopt] task.project_id={task.project_id}, task.project={task.project.name if task.project else None}")
                 if task.project:
                     project = task.project
-                    logger.info(f"使用任务关联的项目: {project.name}")
+                    logger.info(f"[batch_adopt] 采纳到项目: {project.name} (ID:{project.id})")
                 else:
                     # 回退到项目选择逻辑
                     user = task.created_by
@@ -3970,9 +3975,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 from django.db import models
 
                 # 优先使用任务关联的项目
+                logger.info(f"[batch_adopt] task.project_id={task.project_id}, task.project={task.project.name if task.project else None}")
                 if task.project:
                     project = task.project
-                    logger.info(f"使用任务关联的项目: {project.name}")
+                    logger.info(f"[batch_adopt] 采纳到项目: {project.name} (ID:{project.id})")
                 else:
                     # 回退到项目选择逻辑
                     user = task.created_by
@@ -4779,7 +4785,7 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
             title=request.data.get('title', ''),
             url=request.data.get('url', ''),
             data=request.data.get('data', {}),
-            project_id=request.data.get('project_id') or None,
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
             created_by=request.user if request.user.is_authenticated else None,
         )
         return Response({'id': m.id, 'message': '已保存'}, status=201)

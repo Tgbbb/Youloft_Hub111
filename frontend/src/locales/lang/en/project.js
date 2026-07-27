@@ -131,6 +131,7 @@ export default {
     // Title
     title: 'TestHub Testing Platform',
     subtitle: 'All-in-One Intelligent Testing Solution',
+    statusOnline: 'SYSTEM ONLINE',
 
     // Cards
     aiCaseGeneration: 'AI Case Generation',

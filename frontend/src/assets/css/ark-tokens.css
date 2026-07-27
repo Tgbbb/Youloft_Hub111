@@ -1,0 +1,39 @@
+/* =============================================
+   Ark UI — Endfield Theme Tokens
+   Depth: moderate (2)
+   ============================================= */
+
+[data-ark-theme="endfield"] {
+  /* ---- Palette ---- */
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-neutral-100: #f8f8f6;
+  --ark-neutral-200: #e8e8e4;
+  --ark-neutral-300: #c4c4be;
+  --ark-neutral-500: #7a7a72;
+  --ark-neutral-700: #3d3d38;
+  --ark-neutral-800: #2a2a26;
+  --ark-neutral-900: #191919;
+
+  /* ---- Typography ---- */
+  --ark-font-cjk: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ark-font-tech: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --ark-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+
+  /* ---- Geometry ---- */
+  --ark-radius-sm: 2px;
+  --ark-radius-md: 4px;
+  --ark-radius-lg: 0px;
+  --ark-rule: 1px solid var(--ark-neutral-300);
+
+  /* ---- Cards ---- */
+  --ark-card-bg: #ffffff;
+  --ark-card-shadow: 0 1px 0 var(--ark-neutral-300);
+  --ark-card-hover-shadow: 0 0 0 1px var(--ark-ink), 0 4px 0 rgba(0,0,0,.06);
+
+  /* ---- Shell ---- */
+  --ark-topbar-h: 56px;
+  --ark-bottom-dock-h: 36px;
+}

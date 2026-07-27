@@ -1,49 +1,49 @@
 <template>
-  <div class="page-container">
+  <div class="tcl-root">
     <!-- 顶栏 -->
-    <div class="top-bar">
-      <div class="top-left">
-        <h1 class="page-title">{{ $t('testcase.title') }}</h1>
-        <span v-if="total > 0 && hasAnyFilter()" class="result-count">{{ total }} 条结果</span>
+    <div class="tcl-top">
+      <div class="tcl-top__left">
+        <h1 class="tcl-top__title">{{ $t('testcase.title') }}</h1>
+        <span v-if="total > 0 && hasAnyFilter()" class="tcl-top__count">{{ total }} 条结果</span>
       </div>
-      <div class="top-actions">
-        <button class="act-btn" v-if="selectedTestCases.length > 0" @click="batchDeleteTestCases" :disabled="isDeleting">
+      <div class="tcl-top__actions">
+        <button class="tcl-btn" v-if="selectedTestCases.length > 0" @click="batchDeleteTestCases" :disabled="isDeleting">
           🗑 {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
         </button>
-        <button class="act-btn" @click="exportToExcel">📥 {{ $t('testcase.exportExcel') }}</button>
-        <button class="act-btn" @click="downloadImportTemplate">📋 模板</button>
-        <button class="act-btn" @click="openImportDialog">📤 {{ $t('testcase.importCases') }}</button>
-        <button class="act-btn" @click="goToImportRecords">📂 记录</button>
-        <button class="act-btn primary" @click="$router.push('/ai-generation/testcases/create')">＋ {{ $t('testcase.newCase') }}</button>
+        <button class="tcl-btn" @click="exportToExcel">📥 {{ $t('testcase.exportExcel') }}</button>
+        <button class="tcl-btn" @click="downloadImportTemplate">📋 模板</button>
+        <button class="tcl-btn" @click="openImportDialog">📤 {{ $t('testcase.importCases') }}</button>
+        <button class="tcl-btn" @click="goToImportRecords">📂 记录</button>
+        <button class="tcl-btn--primary" @click="$router.push('/ai-generation/testcases/create')">＋ {{ $t('testcase.newCase') }}</button>
       </div>
     </div>
 
     <!-- 筛选命令区 -->
-    <div class="filter-command">
-      <div class="filter-row">
-        <div class="filter-group">
-          <label class="filter-label">项目</label>
-          <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleProjectFilterChange" class="filter-select">
+    <div class="tcl-filter">
+      <div class="tcl-filter__row">
+        <div class="tcl-filter__group">
+          <label class="tcl-filter__label">项目</label>
+          <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleProjectFilterChange" class="tcl-filter__select">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
         </div>
-        <span class="cascade-arrow">→</span>
-        <div class="filter-group">
-          <label class="filter-label">版本</label>
-          <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleVersionFilterChange" :disabled="!projectFilter" class="filter-select">
+        <span class="tcl-filter__arrow">→</span>
+        <div class="tcl-filter__group">
+          <label class="tcl-filter__label">版本</label>
+          <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleVersionFilterChange" :disabled="!projectFilter" class="tcl-filter__select">
             <el-option v-for="v in versions" :key="v.id" :label="v.name + (v.is_baseline ? ' 基线' : '')" :value="v.id" />
           </el-select>
         </div>
-        <span class="cascade-arrow">→</span>
-        <div class="filter-group">
-          <label class="filter-label">模块</label>
-          <el-select v-model="moduleFilter" :placeholder="$t('testcase.moduleFilter')" clearable filterable @change="handleFilter" :disabled="!versionFilter" class="filter-select">
+        <span class="tcl-filter__arrow">→</span>
+        <div class="tcl-filter__group">
+          <label class="tcl-filter__label">模块</label>
+          <el-select v-model="moduleFilter" :placeholder="$t('testcase.moduleFilter')" clearable filterable @change="handleFilter" :disabled="!versionFilter" class="tcl-filter__select">
             <el-option v-for="m in filterModules" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
         </div>
-        <div class="filter-divider"></div>
-        <div class="filter-group">
-          <label class="filter-label">优先级</label>
+        <div class="tcl-filter__div"></div>
+        <div class="tcl-filter__group">
+          <label class="tcl-filter__label">优先级</label>
           <el-select v-model="priorityFilter" :placeholder="$t('testcase.priorityFilter')" clearable @change="handleFilter" class="filter-select short">
             <el-option :label="$t('testcase.low')" value="low" />
             <el-option :label="$t('testcase.medium')" value="medium" />
@@ -52,29 +52,29 @@
           </el-select>
         </div>
         <div class="filter-group search-group">
-          <label class="filter-label">搜索</label>
-          <el-input v-model="searchText" :placeholder="$t('testcase.searchPlaceholder')" clearable @input="handleSearch" class="filter-search">
+          <label class="tcl-filter__label">搜索</label>
+          <el-input v-model="searchText" :placeholder="$t('testcase.searchPlaceholder')" clearable @input="handleSearch" class="tcl-filter__search">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
         </div>
       </div>
 
       <!-- 活跃筛选标签 -->
-      <div v-if="activeFilters.length > 0" class="active-filters">
-        <span class="af-label">当前筛选：</span>
-        <span v-for="f in activeFilters" :key="f.key" class="af-chip" @click="removeFilter(f.key)">
+      <div v-if="activeFilters.length > 0" class="tcl-chips">
+        <span class="tcl-chip__label">当前筛选：</span>
+        <span v-for="f in activeFilters" :key="f.key" class="tcl-chip" @click="removeFilter(f.key)">
           {{ f.label }} ✕
         </span>
-        <span class="af-clear" @click="clearAllFilters">清除全部</span>
+        <span class="tcl-chip__clear" @click="clearAllFilters">清除全部</span>
       </div>
     </div>
 
     <!-- 表格区 -->
-    <div class="table-card">
-      <div v-if="!hasAnyFilter() && !loading" class="empty-filter-hint">
-        <div class="empty-icon">🔍</div>
-        <div class="empty-title">筛选条件后查看用例</div>
-        <div class="empty-desc">选择 <strong>项目</strong> → <strong>版本</strong> → <strong>模块</strong> 快速定位目标用例</div>
+    <div class="tcl-table-card">
+      <div v-if="!hasAnyFilter() && !loading" class="tcl-empty">
+        <div class="tcl-empty__icon">🔍</div>
+        <div class="tcl-empty__title">筛选条件后查看用例</div>
+        <div class="tcl-empty__desc">选择 <strong>项目</strong> → <strong>版本</strong> → <strong>模块</strong> 快速定位目标用例</div>
       </div>
 
       <el-table v-else :data="testcases" v-loading="loading" style="width: 100%" @selection-change="handleSelectionChange" stripe>
@@ -82,25 +82,25 @@
         <el-table-column type="index" :label="'#'" width="60" :index="getSerialNumber" />
         <el-table-column prop="title" :label="$t('testcase.caseTitle')" min-width="280" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="case-link" @click="goToTestCase(row.id)">{{ row.title }}</span>
+            <span class="tcl-link" @click="goToTestCase(row.id)">{{ row.title }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="priority" :label="$t('testcase.priority')" width="90" align="center">
           <template #default="{ row }">
-            <span class="pri-dot" :class="row.priority">{{ getPriorityText(row.priority) }}</span>
+            <span class="tcl-pri" :class="row.priority">{{ getPriorityText(row.priority) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="function_module" :label="$t('testcase.moduleName')" width="130">
           <template #default="{ row }">
-            <span v-if="row.function_module" class="mod-tag">{{ row.function_module.name }}</span>
-            <span v-else class="cell-muted">—</span>
+            <span v-if="row.function_module" class="tcl-mod">{{ row.function_module.name }}</span>
+            <span v-else class="tcl-muted">—</span>
           </template>
         </el-table-column>
         <el-table-column :label="$t('testcase.execution')" width="130" align="center">
           <template #default="{ row }">
-            <span v-if="row.execution_status === 'passed'" class="exec-badge pass">✓ 通过</span>
-            <span v-else-if="row.execution_status === 'failed'" class="exec-badge fail">✕ 不通过</span>
-            <span v-else class="cell-muted">—</span>
+            <span v-if="row.execution_status === 'passed'" class="tcl-exec pass">✓ 通过</span>
+            <span v-else-if="row.execution_status === 'failed'" class="tcl-exec fail">✕ 不通过</span>
+            <span v-else class="tcl-muted">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="author.username" :label="$t('testcase.author')" width="100" />
@@ -111,7 +111,7 @@
           <template #default="{ row }">
             <button class="row-btn pass" @click="executeCase(row, 'passed')" :disabled="row._executing">✓</button>
             <button class="row-btn fail" @click="executeCase(row, 'failed')" :disabled="row._executing">✕</button>
-            <button class="row-btn" @click="editTestCase(row)">编辑</button>
+            <button class="tcl-row-btn" @click="editTestCase(row)">编辑</button>
             <button class="row-btn danger" @click="deleteTestCase(row)">删除</button>
           </template>
         </el-table-column>
@@ -429,167 +429,25 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-/* ===== 页面 ===== */
-.page-container {
-  padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
-  min-height: 100vh;
-  background: #f5f7fa;
-}
-
-/* ===== 顶栏 ===== */
-.top-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-.top-left { display: flex; align-items: baseline; gap: 16px; }
-.page-title { margin: 0; font-size: 1.4rem; font-weight: 600; color: #1a1a2e; }
-.result-count { font-size: .88rem; color: #a0aec0; }
-
-.top-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.act-btn {
-  padding: 7px 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  color: #4a5568;
-  font-size: .82rem;
-  cursor: pointer;
-  transition: all .15s;
-  white-space: nowrap;
-  &:hover { border-color: #667eea; color: #667eea; }
-  &:disabled { opacity: .4; cursor: not-allowed; }
-  &.primary { background: #667eea; color: #fff; border-color: #667eea; font-weight: 500; }
-  &.primary:hover { background: #5a6fd6; }
-}
-
-/* ===== 筛选命令区 ===== */
-.filter-command {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px 24px;
-  margin-bottom: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.04);
-}
-.filter-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.filter-group { display: flex; flex-direction: column; gap: 4px; }
-.filter-label {
-  font-size: .72rem;
-  font-weight: 600;
-  color: #a0aec0;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-}
-.filter-select { width: 160px; }
-.filter-select.short { width: 100px; }
-.filter-search { width: 200px; }
-.search-group { flex: 1; min-width: 180px; max-width: 280px; }
-.cascade-arrow { color: #cbd5e0; font-size: 1.1rem; padding-bottom: 8px; }
-.filter-divider { width: 1px; height: 36px; background: #e2e8f0; align-self: center; }
-
-/* 活跃筛选标签 */
-.active-filters { margin-top: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.af-label { font-size: .78rem; color: #a0aec0; }
-.af-chip {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 20px;
-  font-size: .78rem;
-  background: #edf2f7;
-  color: #4a5568;
-  cursor: pointer;
-  transition: all .15s;
-  &:hover { background: #667eea; color: #fff; }
-}
-.af-clear { font-size: .78rem; color: #e53e3e; cursor: pointer; margin-left: 4px; &:hover { text-decoration: underline; } }
-
-/* ===== 表格 ===== */
-.table-card {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.04);
-  overflow: hidden;
-}
-
-.empty-filter-hint {
-  text-align: center;
-  padding: 80px 40px;
-}
-.empty-icon { font-size: 3rem; margin-bottom: 16px; }
-.empty-title { font-size: 1.1rem; color: #1a1a2e; font-weight: 600; margin-bottom: 8px; }
-.empty-desc { font-size: .9rem; color: #a0aec0; line-height: 1.6; }
-
-.case-link { color: #1a1a2e; cursor: pointer; font-weight: 500; &:hover { color: #667eea; } }
-
-.pri-dot {
-  display: inline-block;
-  padding: 2px 10px; border-radius: 4px; font-size: .78rem; font-weight: 600;
-  &.low { color: #67c23a; background: #f0f9eb; }
-  &.medium { color: #e6a23c; background: #fdf6ec; }
-  &.high { color: #f56c6c; background: #fef0f0; }
-  &.critical { color: #fff; background: #f56c6c; }
-}
-
-.mod-tag {
-  display: inline-block;
-  padding: 2px 8px; border-radius: 4px; font-size: .77rem;
-  color: #059669; background: #ecfdf5;
-}
-.cell-muted { color: #cbd5e0; }
-
-.row-btn {
-  padding: 4px 10px; border: none; background: none; color: #667eea; font-size: .8rem; cursor: pointer;
-  &:hover { text-decoration: underline; }
-  &.danger { color: #e53e3e; }
-  &.pass { color: #48bb78; font-size: 1rem; }
-  &.pass:hover { color: #38a169; }
-  &.fail { color: #fc8181; font-size: 1rem; }
-  &.fail:hover { color: #e53e3e; }
-  &:disabled { opacity: .3; cursor: not-allowed; }
-}
-
-.exec-badge {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 20px;
-  font-size: .78rem;
-  font-weight: 600;
-  &.pass { background: #f0fff4; color: #22543d; }
-  &.fail { background: #fff5f5; color: #742a2a; }
-}
-
-/* ===== 分页 ===== */
-.pager-bar { display: flex; justify-content: center; padding: 20px 0; }
-
-/* ===== Element Plus 微调 ===== */
-:deep(.el-table) {
-  --el-table-header-bg-color: #f8f9fb;
-  font-size: .9rem;
-}
-:deep(.el-table th) {
-  color: #a0aec0;
-  font-weight: 600;
-  font-size: .78rem;
-  text-transform: uppercase;
-  letter-spacing: .3px;
-  border-bottom: 2px solid #e2e8f0;
-}
+.tcl-root { padding: 24px; max-width: 1400px; margin: 0 auto; min-height: calc(100vh - 52px); background: #f2f2f0; font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.tcl-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; &__left { display: flex; align-items: baseline; gap: 14px; } &__title { margin: 0; font-size: 1.5rem; font-weight: 800; color: #191919; letter-spacing: -.01em; } &__count { font-size: .85rem; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; } &__actions { display: flex; gap: 6px; flex-wrap: wrap; } }
+.tcl-btn { all: unset; cursor: pointer; padding: 7px 16px; font-size: 12px; font-weight: 600; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; color: #555; background: #fff; border: 1px solid #ccc; white-space: nowrap; transition: all .12s; &:hover:not(:disabled) { border-color: #999; color: #333; } &:disabled { opacity: .3; cursor: not-allowed; } &--primary { background: #fffa00; color: #191919; border-color: #fffa00; font-weight: 700; &:hover:not(:disabled) { background: #e6e100; } } }
+.tcl-filter { background: #fff; padding: 20px 24px; margin-bottom: 16px; border: 1px solid #e4e4de; &__row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; } &__group { display: flex; flex-direction: column; gap: 4px; } &__label { font-size: 10px; font-weight: 700; color: #999; text-transform: uppercase; letter-spacing: .08em; font-family: "Space Grotesk", system-ui, sans-serif; } &__select { width: 160px; :deep(.el-input__wrapper) { border-radius: 0 !important; box-shadow: 0 0 0 1px #d0cec8 inset !important; } } &__select--short { width: 100px; :deep(.el-input__wrapper) { border-radius: 0 !important; } } &__search { width: 200px; :deep(.el-input__wrapper) { border-radius: 0 !important; box-shadow: 0 0 0 1px #d0cec8 inset !important; } } &__arrow { color: #ccc; font-size: 1.1rem; padding-bottom: 8px; } &__div { width: 1px; height: 36px; background: #e4e4de; align-self: center; } &__search-group { flex: 1; min-width: 180px; max-width: 280px; } }
+.tcl-chips { margin-top: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tcl-chip { display: inline-block; padding: 3px 12px; font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; background: #f2f2f0; color: #555; cursor: pointer; border: 1px solid #e0ded8; &:hover { background: #191919; color: #fff; border-color: #191919; } &__label { font-size: 12px; color: #999; } &__clear { font-size: 12px; color: #c03939; cursor: pointer; margin-left: 4px; &:hover { text-decoration: underline; } } }
+.tcl-table-card { background: #fff; border: 1px solid #e4e4de; overflow: hidden; }
+.tcl-empty { text-align: center; padding: 80px 40px; &__icon { font-size: 3rem; margin-bottom: 16px; } &__title { font-size: 1.1rem; color: #191919; font-weight: 700; margin-bottom: 8px; } &__desc { font-size: .9rem; color: #999; line-height: 1.6; } }
+.tcl-link { color: #191919; cursor: pointer; font-weight: 600; &:hover { text-decoration: underline; } }
+.tcl-muted { color: #ccc; }
+.tcl-pri { display: inline-block; padding: 2px 10px; font-size: 11px; font-weight: 700; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; border: 1px solid; &.low { color: #1a8051; background: #e0f5e8; border-color: #88d4a0; } &.medium { color: #8a6d14; background: #fefae0; border-color: #e8d888; } &.high { color: #a04030; background: #fef0f0; border-color: #f0b0b0; } &.critical { color: #fff; background: #191919; border-color: #191919; } }
+.tcl-mod { display: inline-block; padding: 2px 8px; font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; color: #1a8051; background: #e0f5e8; }
+.tcl-exec { display: inline-block; padding: 3px 12px; font-size: 11px; font-weight: 600; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; &.pass { background: #e0f5e8; color: #1a8051; } &.fail { background: #fef0f0; color: #a04030; } }
+.tcl-row-btn { all: unset; cursor: pointer; padding: 2px 8px; font-size: 13px; color: #999; &:hover { color: #191919; } &--pass { &:hover { color: #00a86b; } } &--fail { &:hover { color: #e04040; } } &--danger { color: #ccc; &:hover { color: #e04040; } } &:disabled { opacity: .2; cursor: not-allowed; } }
+.pager-bar { display: flex; justify-content: center; padding: 24px 0; }
+:deep(.el-table) { font-size: .88rem; }
+:deep(.el-table th) { color: #999; font-weight: 700; font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #191919; background: #fafaf8; }
 :deep(.el-table .el-table__row) { cursor: pointer; }
-:deep(.el-table .el-table__row:hover) { background: #f7f8fb; }
-
-@media (max-width: 768px) {
-  .page-container { padding: 12px; }
-  .top-bar { flex-direction: column; gap: 12px; }
-  .cascade-arrow, .filter-divider { display: none; }
-  .filter-select, .filter-search { width: 100%; }
-  .filter-row { flex-direction: column; }
-}
+:deep(.el-table .el-table__row:hover) { background: #fafaf8; }
+:deep(.el-checkbox__input.is-checked .el-checkbox__inner) { background-color: #191919; border-color: #191919; }
+@media (max-width: 768px) { .tcl-root { padding: 12px; } .tcl-top { flex-direction: column; gap: 12px; } .tcl-filter__arrow, .tcl-filter__div { display: none; } .tcl-filter__select, .tcl-filter__search, .tcl-filter__search-group { width: 100%; } .tcl-filter__row { flex-direction: column; } }
 </style>

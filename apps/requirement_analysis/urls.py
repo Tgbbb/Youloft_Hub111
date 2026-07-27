@@ -11,6 +11,7 @@ from .views import (
     GenerationConfigViewSet,
     TestCaseGenerationTaskViewSet,
     ConfigStatusViewSet,
+    ModaoImportViewSet,
     upload_and_analyze,
     analyze_text
 )
@@ -27,6 +28,7 @@ router.register(r'prompts', PromptConfigViewSet, basename='promptconfig')
 router.register(r'generation-config', GenerationConfigViewSet, basename='generationconfig')
 router.register(r'testcase-generation', TestCaseGenerationTaskViewSet, basename='testcasegenerationtask')
 router.register(r'config', ConfigStatusViewSet, basename='configstatus')
+router.register(r'wx', ModaoImportViewSet, basename='modaoimport')
 
 app_name = 'requirement_analysis'
 
