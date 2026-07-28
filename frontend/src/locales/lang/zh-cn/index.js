@@ -61,7 +61,7 @@ export default {
   // 配置中心模块
   configuration: configurationModule,
 
-  // AI助手模块
+  // Agent 模块
   assistant: assistantModule,
 
   // 数据工厂模块

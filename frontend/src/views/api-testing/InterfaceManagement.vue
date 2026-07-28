@@ -1630,8 +1630,16 @@ const sendRequest = async () => {
   try {
     sending.value = true
 
-    // 发送请求前先自动保存当前的修改
-    // await saveRequest()
+    // 如果请求尚未保存（id为null），先自动保存再执行
+    if (!selectedRequest.value.id) {
+      await saveRequest()
+      // saveRequest 会更新 selectedRequest.value，成功后继续执行
+      if (!selectedRequest.value.id) {
+        ElMessage.error('保存失败，无法执行请求')
+        sending.value = false
+        return
+      }
+    }
 
     // 准备请求体数据
     let bodyData = {}
@@ -1895,10 +1903,24 @@ const formatResponse = () => {
   if (!response.value || !response.value.response_data) return
 
   try {
+    // 如果已经有解析好的 JSON，无需再格式化
     if (response.value.response_data.json) {
-      response.value.response_data.json = JSON.parse(JSON.stringify(response.value.response_data.json))
+      ElMessage.success('JSON 已格式化')
+      return
     }
-    ElMessage.success('格式化成功')
+    // 尝试将原始文本解析为 JSON 并格式化
+    const rawBody = response.value.response_data.body
+    if (rawBody && typeof rawBody === 'string') {
+      try {
+        const parsed = JSON.parse(rawBody)
+        response.value.response_data.json = parsed
+        ElMessage.success('格式化成功')
+      } catch {
+        ElMessage.warning('响应不是有效的 JSON，无需格式化')
+      }
+    } else {
+      ElMessage.warning('没有可格式化的内容')
+    }
   } catch (e) {
     ElMessage.error('格式化失败')
   }

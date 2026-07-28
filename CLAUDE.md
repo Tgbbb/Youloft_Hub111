@@ -73,6 +73,18 @@ The Django project uses a modular app structure under `apps/`:
 - **api_testing**: API testing module (HTTP/WebSocket, environments, scheduled tasks, Allure reports)
 - **ui_automation**: UI automation with Selenium/Playwright, element management, page objects, AI intelligent mode
 
+### Agent (AI 协作者)
+
+- `apps/assistant/agent.py`: TestHubAgent 类，封装 Qwen-Agent FnCallAgent。`_ctx = threading.local()` 存储 user/project_id，Tool 通过 `TestHubAgent.get_current_user()` 获取用户，无需 `kwargs.get('user')` 或 `User.objects.first()` 兜底
+- `apps/assistant/tools.py`: 18 个 Tool（@register_tool 注册），操作各模块数据
+- `apps/assistant/views.py`: SSE 流式 + 文件上传 + 非流式端点
+- `apps/assistant/models.py`: AgentConfig（LLM 配置）、AssistantSession、ChatMessage
+- Tool 通过 `TestHubAgent.get_current_user()` 获取用户（thread-local，agent 初始化时写入），不再用 `User.objects.first()` 兜底
+- Tool 字段名必须与 Django Model 一致，不要假设（TestCase 用 author 不是 created_by）
+- 千问用 `qwen_dashscope` 原生模式，DeepSeek 用 `oai` 兼容模式（nous 格式不适配）
+- 系统提示词必须包含 project_id
+- `.learnings/` 下有详细记录
+
 ### Frontend Structure (`frontend/src/`)
 
 - **views/**: Page components organized by feature module

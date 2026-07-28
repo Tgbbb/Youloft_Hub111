@@ -374,7 +374,69 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             r_step = replay_data['steps'][step_idx]
             if r_step.get('instruction', '').strip() == instruction.strip():
                 r_actions = r_step.get('actions', [])
-                # 播放动作序列
+                is_cond = instruction.startswith('如果') or instruction.startswith('若')
+                # 条件步骤：先截图再决定是否执行动作，避免异路径乱点
+                if is_cond:
+                    png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                    if r_actions:
+                        # 用前一步 after_hash 判断是否同路径
+                        prev_hash = replay_data['steps'][step_idx - 1].get('after_hash', '') if step_idx > 0 else ''
+                        if prev_hash and _is_same_page_by_hash(png, prev_hash):
+                            # 同路径，执行录制动作
+                            for a in r_actions:
+                                action_type = a.get('action', 'tap')
+                                if action_type in ('tap', 'click'):
+                                    x = int(a.get('x', 0) or (float(a.get('x_pct', 50)) / 100 * width))
+                                    y = int(a.get('y', 0) or (float(a.get('y_pct', 50)) / 100 * height))
+                                    if ios_dev: ios_dev.tap(x, y)
+                                    else: _adb(device_id, 'shell', 'input', 'tap', str(x), str(y))
+                                elif action_type == 'swipe':
+                                    swipe_a = dict(a)
+                                    if not swipe_a.get('x1'):
+                                        for pfx in ('x1','y1','x2','y2'):
+                                            v = float(swipe_a.get(pfx, 0) or swipe_a.get(f'{pfx}_pct', 0))
+                                            ref = width if pfx.startswith('x') else height
+                                            swipe_a[pfx] = int(v / 100.0 * ref) if v <= 100 else int(v / 10.0 / 100.0 * ref)
+                                    if ios_dev: ios_dev.execute_action(swipe_a)
+                                    else: adb_execute(device_id, swipe_a)
+                                time.sleep(a.get('wait_after', 2.0))
+                            replay_pass += 1
+                            screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                            results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                            'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)']})
+                            if record_mode:
+                                while len(recording) <= step_idx: recording.append(None)
+                                recording[step_idx] = dict(r_step)
+                            prev_png = png; step_idx += 1
+                            logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
+                        else:
+                            # 异路径，跳过不执行任何动作
+                            replay_pass += 1
+                            screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                            results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                            'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(异路径)']})
+                            prev_png = png; step_idx += 1
+                            logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(异路径)')
+                    # 无录制动作：截图比对判断是否同路径
+                    else:
+                        prev_hash = replay_data['steps'][step_idx - 1].get('after_hash', '') if step_idx > 0 else ''
+                        if prev_hash and _is_same_page_by_hash(png, prev_hash):
+                            # 同路径，条件也不满足，跳过
+                            replay_pass += 1
+                            screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                            results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                            'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(同路径)']})
+                            prev_png = png; step_idx += 1
+                            logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(同路径空录制)')
+                            continue
+                        # 异路径，可能条件满足 → 不 continue，落到 VLM 处理
+                        replay_fail += 1
+                        logger.info(f'[Runner] 条件步骤 {step_idx+1} 无录制动作且路径不同，降至VLM')
+                    # 有录制动作的分支已经 continue，这里只需要处理「无动作+同路径」的 continue
+                    # 「无动作+异路径」和「有动作」都已经在上面 continue 或 break 了，不会到这
+                    if r_actions:
+                        continue
+                # 播放动作序列(普通步骤)
                 for a in r_actions:
                     action_type = a.get('action', 'tap')
                     if action_type in ('tap', 'click'):
@@ -385,26 +447,40 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         else:
                             _adb(device_id, 'shell', 'input', 'tap', str(x), str(y))
                     elif action_type == 'swipe':
-                        if ios_dev: ios_dev.execute_action(a)
-                        else: adb_execute(device_id, a)
+                        # 兼容旧录制(无像素坐标)和新录制(有像素坐标)
+                        swipe_a = dict(a)
+                        if not swipe_a.get('x1'):
+                            for pfx in ('x1','y1','x2','y2'):
+                                v = float(swipe_a.get(pfx, 0) or swipe_a.get(f'{pfx}_pct', 0))
+                                ref = width if pfx.startswith('x') else height
+                                swipe_a[pfx] = int(v / 100.0 * ref) if v <= 100 else int(v / 10.0 / 100.0 * ref)
+                        if ios_dev: ios_dev.execute_action(swipe_a)
+                        else: adb_execute(device_id, swipe_a)
                     elif action_type == 'input':
                         if ios_dev: ios_dev.execute_action(a)
                         else: _adb(device_id, 'shell', 'input', 'text', a.get('text', ''))
                     elif action_type == 'back':
                         if ios_dev: ios_dev.execute_action(a)
                         else: _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
-                    time.sleep(a.get('wait_after', 2.0))
+                    # swipe 动画需要更长等待
+                    if action_type in ('swipe',):
+                        time.sleep(1.5)
+                    else:
+                        time.sleep(a.get('wait_after', 2.0))
 
                 if progress_callback:
                     progress_callback(step_idx+1, len(steps), {
                         'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
                         'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
                     })
-                # pHash 校验
+                # 普通步骤 pHash 校验（条件步骤已在前面处理）
+                # 下一步是条件步骤 → 不驗 after_hash（当前步执行后的页面受路径分叉影响）
+                next_cond = (step_idx + 1 < len(steps)
+                             and (steps[step_idx + 1]['instruction'].startswith('如果')
+                                  or steps[step_idx + 1]['instruction'].startswith('若')))
                 png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
-                expected_hash = r_step.get('after_hash', '')
+                expected_hash = r_step.get('after_hash', '') if not next_cond else ''
                 if not expected_hash or _is_same_page_by_hash(png, expected_hash):
-                    # 回放成功，跳过 VLM
                     replay_pass += 1
                     screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
                     last_action = r_actions[-1].get('action', 'tap') if r_actions else 'assert'
@@ -412,11 +488,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放'],
                                     'action': last_action})
                     if record_mode:
-                        while len(recording) <= step_idx:
-                            recording.append(None)
+                        while len(recording) <= step_idx: recording.append(None)
                         recording[step_idx] = dict(r_step)
-                    prev_png = png
-                    step_idx += 1
+                    prev_png = png; step_idx += 1
                     if progress_callback:
                         progress_callback(step_idx, len(steps), {
                             'type': 'step_done', 'step': step_idx, 'total': len(steps),
@@ -547,14 +621,24 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
                 # 录制: 保存动作参数（wait_after在执行后确定）
                 if record_mode and t not in ('assert', 'query', 'done'):
-                    step_actions.append({
+                    rec = {
                         'action': t,
                         'x_pct': action.get('x_pct', action.get('x', 0)),
                         'y_pct': action.get('y_pct', action.get('y', 0)),
                         'x': action.get('x', 0),
                         'y': action.get('y', 0),
                         'text': action.get('text', ''),
-                    })
+                    }
+                    if t == 'swipe':
+                        rec['x1_pct'] = action.get('x1_pct', 0)
+                        rec['y1_pct'] = action.get('y1_pct', 0)
+                        rec['x2_pct'] = action.get('x2_pct', 0)
+                        rec['y2_pct'] = action.get('y2_pct', 0)
+                        rec['x1'] = action.get('x1', 0)
+                        rec['y1'] = action.get('y1', 0)
+                        rec['x2'] = action.get('x2', 0)
+                        rec['y2'] = action.get('y2', 0)
+                    step_actions.append(rec)
                 prev_action = last_action
                 last_action = t
 
@@ -603,7 +687,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             logger.info(f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，继续等待VLM判断')
                             action['step_status'] = 'in_progress'
                 else:
-                    w = {'long_press':0.5,'back':0.5,'input':0.2,'swipe':0.3,
+                    w = {'long_press':0.5,'back':0.5,'input':0.2,'swipe':1.5,
                          'wait':0,'assert':0,'query':0,'done':0}.get(t,0.5)
                     if w: time.sleep(w)
 
@@ -644,7 +728,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 if step_actions:
                     for a in step_actions:
                         a['wait_after'] = {'tap':2,'click':2,'long_press':0.5,'back':0.5,
-                                           'input':0.2,'swipe':0.3,'wait':3}.get(a['action'], 0.5)
+                                           'input':0.2,'swipe':1.5,'wait':3}.get(a['action'], 0.5)
                 after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                 after_hash = str(_phash(after_png))
                 recording[step_idx] = {

@@ -112,7 +112,7 @@
               <el-menu-item index="/configuration/app-env"><el-icon><Cellphone /></el-icon><span>APP环境配置</span></el-menu-item>
               <el-menu-item index="/configuration/ai-mode"><el-icon><MagicStick /></el-icon><span>{{ $t('menu.aiModeConfig') }}</span></el-menu-item>
               <el-menu-item index="/configuration/scheduled-task"><el-icon><Timer /></el-icon><span>{{ $t('menu.scheduledTaskConfig') }}</span></el-menu-item>
-              <el-menu-item index="/configuration/dify"><el-icon><ChatDotRound /></el-icon><span>{{ $t('menu.difyConfig') }}</span></el-menu-item>
+              <el-menu-item index="/configuration/agent"><el-icon><ChatDotRound /></el-icon><span>{{ $t('menu.agentConfig') }}</span></el-menu-item>
             </template>
           </el-menu>
         </nav>
@@ -292,8 +292,7 @@ const breadcrumbTitle = computed(() => {
     '/configuration/ui-env': t('menu.uiEnvConfig'),
     '/configuration/ai-mode': t('menu.aiModeConfig'),
     '/configuration/scheduled-task': t('menu.scheduledTaskConfig'),
-    '/configuration/dify': t('menu.difyConfig'),
-    '/profile': t('nav.profile')
+    '/configuration/agent': t('menu.agentConfig'),    '/profile': t('nav.profile')
   }
   return routeMap[route.path] || route.meta.title || ''
 })

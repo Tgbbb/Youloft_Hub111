@@ -4,26 +4,95 @@ from apps.users.models import User
 
 
 class DifyConfig(models.Model):
-    """Dify API配置"""
+    """Dify API配置（已废弃，保留向后兼容）"""
     api_url = models.URLField(max_length=500, verbose_name='API URL', help_text='Dify API endpoint URL')
     api_key = models.CharField(max_length=500, verbose_name='API Key', help_text='Dify API密钥')
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
     created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
-    
+
     class Meta:
         db_table = 'dify_configs'
-        verbose_name = 'Dify配置'
-        verbose_name_plural = 'Dify配置'
+        verbose_name = 'Dify配置（已废弃）'
+        verbose_name_plural = 'Dify配置（已废弃）'
         ordering = ['-created_at']
-    
+
     def __str__(self):
         return f"Dify Config - {'Active' if self.is_active else 'Inactive'}"
-    
+
     @classmethod
     def get_active_config(cls):
-        """获取当前激活的配置"""
+        """获取当前激活的配置（已废弃，Agent 模式不再使用）"""
         return cls.objects.filter(is_active=True).first()
+
+
+class AgentConfig(models.Model):
+    """TestHub Agent 配置 — 替代 DifyConfig"""
+    PROVIDER_CHOICES = [
+        ('deepseek', 'DeepSeek'),
+        ('qwen', '通义千问'),
+        ('siliconflow', '硅基流动'),
+        ('openai', 'OpenAI'),
+        ('other', '其他'),
+    ]
+
+    name = models.CharField(max_length=200, verbose_name='配置名称')
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES, verbose_name='模型提供商')
+    model_name = models.CharField(max_length=200, default='qwen-plus', verbose_name='模型名称')
+    api_key = models.CharField(max_length=500, verbose_name='API Key')
+    base_url = models.URLField(max_length=500, blank=True, verbose_name='API Base URL',
+                                help_text='OpenAI兼容接口地址，留空使用默认')
+    max_tokens = models.IntegerField(default=8192, verbose_name='最大Token数')
+    temperature = models.FloatField(default=0.7, verbose_name='温度参数')
+    max_tool_calls = models.IntegerField(default=20, verbose_name='单轮最大工具调用次数',
+                                         help_text='Agent 单轮对话最多调用的工具次数，复杂任务可调大')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用',
+                                     help_text='启用后 Agent 将使用此配置')
+    system_prompt_extra = models.TextField(blank=True, verbose_name='额外系统提示词',
+                                            help_text='追加到 Agent 系统提示词末尾的自定义内容')
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'agent_configs'
+        verbose_name = 'Agent配置'
+        verbose_name_plural = 'Agent配置'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.get_provider_display()})"
+
+    @classmethod
+    def get_active_config(cls):
+        """获取当前激活的 Agent 配置"""
+        return cls.objects.filter(is_active=True).first()
+
+
+class AgentSkill(models.Model):
+    """Agent 可调用的技能包（类似 Claude Code Skills）"""
+    name = models.CharField(max_length=100, unique=True, verbose_name='技能标识',
+                            help_text='用于调用的唯一标识，如: swagger-import')
+    display_name = models.CharField(max_length=200, verbose_name='显示名称',
+                                     help_text='如: Swagger 文档导入')
+    description = models.CharField(max_length=500, verbose_name='简要描述',
+                                    help_text='在 Skill 列表中展示的一句话说明')
+    instructions = models.TextField(verbose_name='执行指令',
+                                     help_text='注入到 Agent 系统提示词的指令内容，告诉 Agent 如何完成这个任务')
+    tools = models.JSONField(default=list, blank=True, verbose_name='可用工具',
+                              help_text='该 Skill 可用的工具列表，空列表表示使用全部工具')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    order = models.IntegerField(default=0, verbose_name='排序')
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'agent_skills'
+        verbose_name = 'Agent 技能'
+        verbose_name_plural = 'Agent 技能'
+        ordering = ['order', '-created_at']
+
+    def __str__(self):
+        return f'{self.display_name} ({self.name})'
 
 
 class AssistantSession(models.Model):

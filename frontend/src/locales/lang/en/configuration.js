@@ -22,6 +22,29 @@ export default {
     locale: 'en-US'
   },
 
+  // Agent Configuration
+  agent: {
+    title: 'TestHub Agent Configuration',
+    description: 'Configure LLM to enable conversational AI test collaborator',
+    llmConfig: 'LLM Configuration',
+    provider: 'Model Provider',
+    modelName: 'Model Name',
+    apiKey: 'API Key',
+    baseUrl: 'API Base URL',
+    maxTokens: 'Max Tokens',
+    maxToolCalls: 'Max Tool Calls Per Round',
+    temperature: 'Temperature',
+    systemPrompt: 'Extra System Prompt',
+    testConnection: 'Test Connection',
+    messages: {
+      testSuccess: 'Connection successful!',
+      testFailed: 'Connection failed',
+      saveSuccess: 'Configuration saved!',
+      saveFailed: 'Save failed',
+      loadFailed: 'Failed to load configuration'
+    }
+  },
+
   // Dify Configuration
   dify: {
     title: 'AI Reviewer Configuration',

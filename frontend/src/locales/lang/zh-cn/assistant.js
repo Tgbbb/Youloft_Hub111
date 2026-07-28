@@ -13,25 +13,30 @@ export default {
   loggedOut: '已退出登录',
 
   // 欢迎页
-  title: 'AI 评测师',
-  subtitle: '我是您的专业测试助手，有什么可以帮您？',
+  title: 'TestHub Agent',
+  subtitle: '我是您的智能测试协作者，可以帮您管理接口测试、创建测试用例、执行测试...',
   inputPlaceholder: '输入您的问题，按回车发送...',
   chatInputPlaceholder: '输入消息...',
 
+  // 项目选择
+  selectProject: '选择项目',
+  noProject: '未选择项目',
+
   // 建议提示
   suggestions: {
-    apiTest: '接口测试用例',
-    apiTestQuestion: '如何设计登录接口的测试用例？',
-    performancePlan: '性能测试计划',
-    performancePlanQuestion: '帮我生成一份性能测试计划模板',
-    testTheory: '测试理论',
-    testTheoryQuestion: '解释一下边界值分析法',
-    automationDebug: '自动化调试',
-    automationDebugQuestion: 'Python Selenium 元素定位失败怎么办？'
+    viewApis: '查看接口',
+    viewApisQuestion: '帮我看看当前项目有哪些接口',
+    createTest: '创建接口测试',
+    createTestQuestion: '帮我给 /api/login 创建接口测试，包含异常场景的断言',
+    parseDoc: '解析文档',
+    parseDocQuestion: '帮我解析这个 Swagger 文档 https://api.example.com/swagger.json',
+    runTest: '执行测试',
+    runTestQuestion: '帮我执行一下用户模块的接口测试'
   },
 
   // 对话
   thinking: '思考中...',
+  toolCalling: '调用工具: {name}',
   aiDisclaimer: '内容由 AI 生成，请仔细甄别',
 
   // 消息提示

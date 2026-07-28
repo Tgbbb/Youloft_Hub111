@@ -292,6 +292,10 @@ const viewDetail = (history) => {
 
 const retryRequest = async (history) => {
   try {
+    if (!history.request?.id) {
+      ElMessage.error('请求不存在或已被删除，无法重试')
+      return
+    }
     const response = await api.post(`/api-testing/requests/${history.request.id}/execute/`, {
       environment_id: history.environment?.id
     })

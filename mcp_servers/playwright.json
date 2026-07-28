@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@playwright/mcp@latest"]
+}
