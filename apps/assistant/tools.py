@@ -400,6 +400,50 @@ class CreateApiTest(BaseTool):
             return json.dumps({'success': False, 'error': str(e)}, ensure_ascii=False)
 
 
+@register_tool('update_api_test')
+class UpdateApiTest(BaseTool):
+    """修改 API 接口测试的参数、断言等配置"""
+    description = '修改已有的API接口测试，支持更新请求参数、请求头、请求体、断言规则等'
+    parameters = [
+        {'name': 'request_id', 'type': 'integer', 'description': 'API请求ID', 'required': True},
+        {'name': 'name', 'type': 'string', 'description': '新的接口名称', 'required': False},
+        {'name': 'method', 'type': 'string', 'description': '请求方法: GET/POST/PUT/DELETE/PATCH', 'required': False},
+        {'name': 'url', 'type': 'string', 'description': '请求URL', 'required': False},
+        {'name': 'headers', 'type': 'object', 'description': '请求头，JSON对象', 'required': False},
+        {'name': 'params', 'type': 'object', 'description': 'URL查询参数，JSON对象', 'required': False},
+        {'name': 'body', 'type': 'object', 'description': '请求体，JSON对象', 'required': False},
+        {'name': 'assertions', 'type': 'array', 'description': '断言规则列表，替换全部断言', 'required': False},
+    ]
+
+    def call(self, params: Union[str, dict], **kwargs) -> str:
+        from apps.api_testing.models import ApiRequest
+
+        if isinstance(params, str):
+            params = json.loads(params)
+
+        try:
+            request_id = params.pop('request_id')
+            req = ApiRequest.objects.get(id=request_id)
+            changed = {}
+            for k, v in params.items():
+                if v is not None and hasattr(req, k):
+                    old = getattr(req, k)
+                    setattr(req, k, v)
+                    changed[k] = {'old': str(old)[:100], 'new': str(v)[:100]}
+            if changed:
+                req.save()
+            return json.dumps({
+                'success': True,
+                'id': req.id,
+                'name': req.name,
+                'changed_fields': list(changed.keys()),
+            }, ensure_ascii=False)
+        except ApiRequest.DoesNotExist:
+            return json.dumps({'success': False, 'error': '接口不存在'}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({'success': False, 'error': str(e)}, ensure_ascii=False)
+
+
 @register_tool('create_collection')
 class CreateCollection(BaseTool):
     """创建一个接口集合（类似文件夹，用于分组管理接口）"""
@@ -729,7 +773,7 @@ class SafeBash(BaseTool):
         try:
             result = subprocess.run(
                 cmd, shell=True, capture_output=True,
-                timeout=30, text=True, encoding='utf-8'
+                timeout=30, text=True, encoding='utf-8', errors='replace'
             )
             output = (result.stdout or '') + (result.stderr or '')
             # 截断过长的输出
@@ -788,11 +832,21 @@ class ExecuteApi(BaseTool):
             user = TestHubAgent.get_current_user()
             result = execute_api_request(api_request, environment, user)
 
+            # 格式化响应体：尝试 JSON 美化
+            raw_body = result.get('response_data', {}).get('body', '')
+            try:
+                import json as _json
+                body_str = _json.dumps(_json.loads(raw_body) if isinstance(raw_body, str) else raw_body,
+                                       ensure_ascii=False, indent=2)
+            except Exception:
+                body_str = str(raw_body) if raw_body else ''
+
             return json.dumps({
                 'status_code': result.get('status_code'),
-                'response_time': result.get('response_time'),
-                'response_body': str(result.get('response_data', {}).get('body', ''))[:500],
-                'assertions_passed': result.get('assertions_results'),
+                'response_time_ms': round(result.get('response_time', 0), 1),
+                'response_body': (body_str or '')[:400],
+                'body_truncated': len(body_str) > 400,
+                'assertions': result.get('assertions_results'),
                 'error': result.get('error_message', ''),
             }, ensure_ascii=False, default=str)
         except Exception as e:

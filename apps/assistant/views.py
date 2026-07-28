@@ -13,7 +13,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import AssistantSession, ChatMessage
+from .models import AssistantSession, ChatMessage, AgentFile
 from .serializers import (
     AssistantSessionSerializer,
     AssistantSessionCreateSerializer,
@@ -263,10 +263,14 @@ class ChatViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
     def upload_file(self, request):
-        """上传文件供 Agent 读取"""
+        """上传文件供 Agent 在会话中使用"""
         uploaded = request.FILES.get('file')
+        session_id = request.data.get('session_id')
+
         if not uploaded:
             return Response({'error': '请选择文件'}, status=status.HTTP_400_BAD_REQUEST)
+        if not session_id:
+            return Response({'error': '请提供 session_id'}, status=status.HTTP_400_BAD_REQUEST)
 
         # 安全校验
         allowed_types = [
@@ -276,7 +280,7 @@ class ChatViewSet(viewsets.ViewSet):
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'text/plain', 'text/csv', 'text/html',
             'application/json', 'application/x-yaml', 'text/yaml',
-            'application/octet-stream',  # YAML sometimes detected as this
+            'application/octet-stream',
         ]
         allowed_ext = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.html',
                        '.json', '.yaml', '.yml', '.md'}
@@ -288,11 +292,16 @@ class ChatViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 保存到 media/uploads/agent/
-        upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads', 'agent')
+        # 获取会话
+        try:
+            session = AssistantSession.objects.get(session_id=session_id, user=request.user)
+        except AssistantSession.DoesNotExist:
+            return Response({'error': '会话不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 保存到会话专属目录
+        upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads', 'agent', session_id)
         os.makedirs(upload_dir, exist_ok=True)
 
-        # 保留原始文件名但加随机前缀防冲突
         safe_name = f'{uuid.uuid4().hex[:8]}_{uploaded.name}'
         filepath = os.path.join(upload_dir, safe_name)
 
@@ -300,14 +309,88 @@ class ChatViewSet(viewsets.ViewSet):
             for chunk in uploaded.chunks():
                 f.write(chunk)
 
-        file_url = f'{settings.MEDIA_URL}uploads/agent/{safe_name}'
+        file_url = f'{settings.MEDIA_URL}uploads/agent/{session_id}/{safe_name}'
+
+        # 创建文件记录
+        agent_file = AgentFile.objects.create(
+            session=session,
+            source='upload',
+            file_name=uploaded.name,
+            file_path=filepath,
+            file_url=file_url,
+            file_size=uploaded.size,
+            content_type=uploaded.content_type or '',
+        )
 
         return Response({
+            'id': agent_file.id,
             'file_name': uploaded.name,
             'file_path': filepath,
             'file_url': file_url,
             'size': uploaded.size,
         })
+
+    @action(detail=False, methods=['get'])
+    def list_files(self, request):
+        """获取会话的文件列表"""
+        session_id = request.query_params.get('session_id')
+        if not session_id:
+            return Response({'error': '请提供 session_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            session = AssistantSession.objects.get(session_id=session_id, user=request.user)
+        except AssistantSession.DoesNotExist:
+            return Response({'error': '会话不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        files = session.files.all()
+        return Response({
+            'uploads': list(files.filter(source='upload').values(
+                'id', 'file_name', 'file_url', 'file_size', 'created_at')),
+            'outputs': list(files.filter(source='output').values(
+                'id', 'file_name', 'file_url', 'file_size', 'created_at')),
+        })
+
+    @action(detail=False, methods=['get'])
+    def download_file(self, request):
+        """下载 Agent 产出文件"""
+        file_id = request.query_params.get('id')
+        if not file_id:
+            return Response({'error': '请提供文件 id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            agent_file = AgentFile.objects.get(id=file_id, session__user=request.user)
+        except AgentFile.DoesNotExist:
+            return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not os.path.isfile(agent_file.file_path):
+            return Response({'error': '文件已丢失'}, status=status.HTTP_404_NOT_FOUND)
+
+        from django.http import FileResponse
+        response = FileResponse(
+            open(agent_file.file_path, 'rb'),
+            as_attachment=True,
+            filename=agent_file.file_name,
+        )
+        return response
+
+    @action(detail=False, methods=['post'])
+    def delete_file(self, request):
+        """删除会话文件（同步删除本地文件）"""
+        file_id = request.data.get('id')
+        if not file_id:
+            return Response({'error': '请提供文件 id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            agent_file = AgentFile.objects.get(id=file_id, session__user=request.user)
+        except AgentFile.DoesNotExist:
+            return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 删除本地文件
+        if os.path.isfile(agent_file.file_path):
+            os.remove(agent_file.file_path)
+
+        agent_file.delete()
+        return Response({'success': True, 'deleted': agent_file.file_name})
 
     @action(detail=False, methods=['post'])
     def test_agent(self, request):

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AssistantSession, AssistantMessage, DifyConfig, AgentConfig, ChatMessage, AgentSkill
+from .models import AssistantSession, AssistantMessage, DifyConfig, AgentConfig, ChatMessage, AgentSkill, AgentFile
 
 
 class DifyConfigSerializer(serializers.ModelSerializer):
@@ -59,3 +59,11 @@ class AgentSkillSerializer(serializers.ModelSerializer):
         model = AgentSkill
         fields = ['id', 'name', 'display_name', 'description', 'instructions',
                   'tools', 'is_active', 'order', 'created_at', 'updated_at']
+
+
+class AgentFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentFile
+        fields = ['id', 'session', 'source', 'file_name', 'file_url',
+                  'file_size', 'content_type', 'created_at']
+        read_only_fields = ['created_at']

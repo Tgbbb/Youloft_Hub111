@@ -195,6 +195,8 @@
                        size="small" class="header-project-select" @change="onProjectChange">
               <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
+            <el-button @click="showFilePanel = true; loadFiles()" size="small" :icon="Folder" circle
+                       style="margin-left: auto;" />
           </div>
         </div>
 
@@ -265,6 +267,37 @@
           </div>
           <div class="footer-tip">{{ $t('assistant.aiDisclaimer') }}</div>
         </div>
+
+        <!-- File Panel Dialog -->
+        <el-dialog v-model="showFilePanel" title="文件管理" width="480px" :close-on-click-modal="true">
+          <div v-if="sessionFiles.uploads.length + sessionFiles.outputs.length === 0" style="text-align:center;color:#bbb;padding:20px;">
+            暂无文件，上传文件或让 Agent 生成后即可在此管理
+          </div>
+          <template v-else>
+            <div v-if="sessionFiles.uploads.length > 0">
+              <h4 style="font-size:13px;color:#666;margin:0 0 8px;">📤 用户上传</h4>
+              <div v-for="f in sessionFiles.uploads" :key="f.id" class="file-item">
+                <el-icon><Document /></el-icon>
+                <span class="file-name">{{ f.file_name }}</span>
+                <span class="file-size">{{ formatSize(f.file_size) }}</span>
+                <span class="file-time">{{ formatDate(f.created_at) }}</span>
+                <el-button size="small" text type="danger" :icon="Delete" @click="deleteFile(f.id)" />
+              </div>
+            </div>
+            <div v-if="sessionFiles.outputs.length > 0" style="margin-top:16px;">
+              <h4 style="font-size:13px;color:#666;margin:0 0 8px;">📥 Agent 产出</h4>
+              <div v-for="f in sessionFiles.outputs" :key="f.id" class="file-item">
+                <el-icon><Document /></el-icon>
+                <span class="file-name">{{ f.file_name }}</span>
+                <span class="file-size">{{ formatSize(f.file_size) }}</span>
+                <span class="file-time">{{ formatDate(f.created_at) }}</span>
+                <el-button size="small" text type="primary" :icon="Download"
+                  @click="window.open(downloadUrl(f.id), '_blank')">下载</el-button>
+                <el-button size="small" text type="danger" :icon="Delete" @click="deleteFile(f.id)" />
+              </div>
+            </div>
+          </template>
+        </el-dialog>
       </div>
     </div>
   </div>
@@ -276,7 +309,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, ChatDotRound, User, Cpu, Promotion, Loading, UserFilled, ArrowDown, Folder, Link, Document, Close, MagicStick, UploadFilled, Connection, CircleCheck, CircleClose, Check } from '@element-plus/icons-vue'
+import { Plus, Delete, ChatDotRound, User, Cpu, Promotion, Loading, UserFilled, ArrowDown, Folder, Link, Document, Close, MagicStick, UploadFilled, Connection, CircleCheck, CircleClose, Check, Download } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import { getSkills, importSkill } from '@/api/assistant'
 import { marked } from 'marked'
@@ -309,6 +342,37 @@ const showMCPDialog = ref(false)
 const mcpServers = ref({ standalone: [], embedded: [] })
 const mcpForm = reactive({ name: '', command: '' })
 const addingMCP = ref(false)
+const showFilePanel = ref(false)
+const sessionFiles = ref({ uploads: [], outputs: [] })
+
+const loadFiles = async () => {
+  if (!currentSession.value?.session_id) return
+  try {
+    const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
+    const resp = await fetch(`${baseURL}/assistant/chat/list_files/?session_id=${currentSession.value.session_id}`, { headers: { 'Authorization': `Bearer ${token}` } })
+    sessionFiles.value = await resp.json()
+  } catch (e) { /* ignore */ }
+}
+const deleteFile = async (fileId) => {
+  try {
+    const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
+    const resp = await fetch(`${baseURL}/assistant/chat/delete_file/`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ id: fileId }) })
+    const data = await resp.json()
+    if (data.success) { ElMessage.success('已删除'); loadFiles() }
+    else { ElMessage.error(data.error || '删除失败') }
+  } catch (e) { ElMessage.error('删除失败') }
+}
+
+const formatSize = (bytes) => {
+  if (!bytes) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1048576).toFixed(1) + ' MB'
+}
+const downloadUrl = (url) => {
+  const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
+  return `${baseURL}/assistant/chat/download_file/?id=${url}&token=${token}`
+}
 
 const apiProjects = ref([])
 const selectedProjectId = ref(null)
@@ -320,6 +384,7 @@ const toolLabels = {
   get_api_detail: '正在获取接口详情...',
   search_testcases: '正在搜索测试用例...',
   create_api_test: '正在创建接口测试...',
+  update_api_test: '正在修改接口测试...',
   create_collection: '正在创建集合...',
   create_testcase: '正在创建测试用例...',
   execute_api: '正在执行接口请求...',
@@ -411,6 +476,7 @@ const switchToSession = async (session) => {
     messages.value = response.data
     chatItems.value = (response.data || []).map(msg => ({ type: 'message', role: msg.role, content: msg.content, created_at: msg.created_at }))
     scrollToBottom()
+    loadFiles()
   } catch (error) { console.error('Load messages failed:', error); ElMessage.error(t('assistant.messages.loadMessageFailed')) }
 }
 
@@ -433,6 +499,7 @@ const onFileChange = async (e) => {
   const file = e.target.files?.[0]
   if (!file) return
   const formData = new FormData(); formData.append('file', file)
+  if (currentSession.value?.session_id) formData.append('session_id', currentSession.value.session_id)
   try {
     const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
     const resp = await fetch(`${baseURL}/assistant/chat/upload_file/`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData })
@@ -698,11 +765,12 @@ $rule-dark: 1px solid rgba(255,255,255,.06);
     .ai-avatar { background: $bg-rail; :deep(.el-icon) { color: $accent; } }
     .message-bubble {
       max-width: 72%; padding: 10px 14px; font-size: 14px; line-height: 1.55;
+      overflow-x: auto;
       .message-content {
-        word-wrap: break-word;
+        word-wrap: break-word; word-break: break-word;
         :deep(table) {
-          border-collapse: collapse; margin: 8px 0; font-size: 13px; width: 100%;
-          th, td { border: 1px solid #e0e0dc; padding: 6px 10px; text-align: left; }
+          border-collapse: collapse; margin: 8px 0; font-size: 13px; max-width: 100%;
+          th, td { border: 1px solid #e0e0dc; padding: 6px 10px; text-align: left; word-break: break-all; }
           th { background: $bg-page; font-weight: 600; color: $text-primary; }
           td { color: $text-secondary; }
         }
@@ -767,5 +835,10 @@ $rule-dark: 1px solid rgba(255,255,255,.06);
   .mcp-add-form { margin-top: 4px; }
 }
 
+.file-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px;
+  .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-size { color: #999; font-size: 11px; }
+  .file-time { color: #bbb; font-size: 11px; }
+}
 @keyframes rotating { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

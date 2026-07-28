@@ -241,12 +241,21 @@ class TestHubAgent:
         }
 
     def _load_skills_prompt(self) -> str:
-        """从本地 skills/ 目录加载所有启用 Skill 的指令"""
+        """Skills 摘要：仅返回名字列表，节省 token。具体指令在调用时展开。"""
         try:
             from apps.assistant.skill_loader import build_skills_prompt
-            return build_skills_prompt()
+            return build_skills_prompt()  # 不传参 = 摘要模式
         except Exception as e:
             logger.warning(f'Failed to load skills: {e}')
+            return ''
+
+    @staticmethod
+    def _load_skills_instructions(skill_names: list) -> str:
+        """展开指定 Skill 的完整指令（/skill:name 触发时调用）"""
+        try:
+            from apps.assistant.skill_loader import build_skills_prompt
+            return build_skills_prompt(filter_names=skill_names)
+        except Exception:
             return ''
 
     def _build_system_prompt(self) -> str:
@@ -544,6 +553,15 @@ class TestHubAgent:
             messages.extend(history)
         messages.append({'role': 'user', 'content': message})
 
+        # 检测 /skill:name 调用，展开完整指令拼到用户消息前面
+        import re as _re2
+        skill_names = _re2.findall(r'/skill:(\S+)', message)
+        if skill_names:
+            skill_instructions = self._load_skills_instructions(skill_names)
+            if skill_instructions:
+                messages[-1]['content'] = skill_instructions + '\n\n---\n用户消息:\n' + messages[-1]['content']
+                logger.info(f'Skills expanded: {skill_names}')
+
         max_calls = self.max_tool_calls  # 从 AgentConfig 读取，默认 20
         warn_at = max(3, max_calls - 3)  # 倒数第 3 次开始提醒
 
@@ -619,7 +637,11 @@ class TestHubAgent:
                     if role in ('function', 'tool') and msg_dict.get('content'):
                         tool_name = msg_dict.get('name', '')
                         result_content = str(msg_dict.get('content', ''))[:800]
-                        logger.info(f'[Agent] RESULT: {tool_name} → {result_content[:100]}')
+                        # 去重：同一结果在流式块中反复出现
+                        result_key = f'{tool_name}:{hash(result_content)}'
+                        if result_key not in seen_calls:
+                            seen_calls.add(result_key)
+                            logger.debug(f'[Agent] RESULT: {tool_name} → {result_content[:100]}')
                         yield {
                             'type': 'tool_result',
                             'name': tool_name,

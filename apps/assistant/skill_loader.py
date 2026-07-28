@@ -258,26 +258,41 @@ def install_skill(file_path: str) -> Optional[Skill]:
     return None
 
 
-def build_skills_prompt() -> str:
-    """构建所有启用 Skill 的提示词文本，注入到 Agent system prompt"""
+def build_skills_prompt(filter_names: Optional[List[str]] = None) -> str:
+    """构建 Skill 提示词文本。
+
+    Args:
+        filter_names: None=仅列出摘要（~10 tokens/个），传入列表=展开指定 Skill 的完整指令
+
+    用法：
+    - Agent 初始化时：不传参，只注入简短列表
+    - 用户 /skill:xxx 触发时：传入 ['xxx']，展开完整指令注入到当前消息
+    """
     skills = get_enabled_skills()
     if not skills:
         return ''
 
-    lines = ['\n## 可用技能 (Skills)\n']
-    lines.append('用户可以通过 `/skill:name` 格式直接调用技能。收到此格式的消息后，请严格按对应技能的执行流程操作。用户提出相关需求时也请参考技能流程：\n')
+    # 摘要模式：只列名字，省 token
+    if filter_names is None:
+        names = ', '.join(f'`/skill:{s.name}`' for s in skills)
+        return f'\n## Skills\n{names}\n调用格式 `/skill:name`，收到后展开指令。\n'
 
+    # 展开模式：输出指定 Skill 的完整指令
+    lines = ['\n## Skill 指令（按需展开）\n']
     for s in skills:
+        if s.name not in filter_names:
+            continue
         lines.append(f'### {s.display_name} (`/skill:{s.name}`)')
         if s.description:
             lines.append(f'说明: {s.description}')
         if s.instructions:
-            # 限制长度避免上下文爆炸
             inst = s.instructions[:2000]
             lines.append('执行流程:')
             lines.append(inst)
         if s.mcp_config:
             lines.append('MCP 工具: 已配置（由系统自动加载）')
+        lines.append('')
+        lines.append('请严格按上述流程执行。')
         lines.append('')
 
     return '\n'.join(lines)
