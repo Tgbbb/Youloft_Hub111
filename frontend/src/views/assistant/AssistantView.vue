@@ -58,16 +58,18 @@
             <div class="logo-wedge"></div>
             <h1>TestHub <span class="logo-label">AGENT</span></h1>
             <p>{{ $t('assistant.subtitle') }}</p>
-            <el-select
-            v-model="selectedProjectId"
-            :placeholder="$t('assistant.selectProject')"
-            size="default"
-            class="welcome-select"
-            @change="onProjectChange"
-            style="margin-top: 12px;"
-          >
-            <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
+            <div class="welcome-project-select">
+              <span class="proj-dot"></span>
+              <el-select
+                v-model="selectedProjectId"
+                :placeholder="$t('assistant.selectProject')"
+                size="default"
+                class="welcome-select"
+                @change="onProjectChange"
+              >
+                <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+            </div>
           </div>
 
           <div class="center-input-wrapper">
@@ -188,7 +190,6 @@
       <div v-else class="chat-screen">
         <div class="chat-header">
           <div class="chat-header-left">
-            <span class="chat-title">{{ currentSession?.title || $t('assistant.newChat') }}</span>
             <span class="chat-time" v-if="currentSession">{{ formatDate(currentSession.updated_at) }}</span>
             <el-select v-model="selectedProjectId" :placeholder="$t('assistant.selectProject')"
                        size="small" class="header-project-select" @change="onProjectChange">
@@ -645,7 +646,12 @@ $rule-dark: 1px solid rgba(255,255,255,.06);
     .logo-label { font-size: 10px; color: $text-secondary; letter-spacing: 2px; vertical-align: super; text-transform: uppercase; }
     p { color: $text-secondary; font-size: 14px; margin: 8px 0 0; font-weight: 400; }
   }
-  .welcome-select { width: auto; min-width: 160px; }
+  .welcome-project-select {
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; padding: 6px 14px;
+    background: $bg-page; border: $rule;
+    .proj-dot { width: 6px; height: 6px; background: $accent; }
+    .welcome-select { width: 200px; }
+  }
   .center-input-wrapper {
     width: 100%; position: relative; margin-bottom: 24px;
     .center-input :deep(.el-textarea__inner) {
@@ -680,6 +686,7 @@ $rule-dark: 1px solid rgba(255,255,255,.06);
     .chat-header-left { display: flex; align-items: center; gap: 10px; }
     .chat-title { font-size: 14px; font-weight: 600; color: $text-primary; letter-spacing: -0.2px; }
     .chat-time { font-size: 11px; color: #bbb; }
+    .header-project-select { width: 180px; }
   }
   .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: $bg-page; }
   .message-row {

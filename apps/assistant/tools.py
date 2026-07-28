@@ -51,6 +51,8 @@ class GetProjectOverview(BaseTool):
             recent_executions = []
             for ap in api_projects:
                 api_count += ApiRequest.objects.filter(collection__project=ap).count()
+                # 也计入未分配集合的接口（collection 为 null）
+                api_count += ApiRequest.objects.filter(collection__isnull=True).count()
                 collection_count += ap.collections.count()
                 execs = TestExecution.objects.filter(
                     test_suite__project=ap
@@ -152,9 +154,13 @@ class SearchApis(BaseTool):
             api_projects = ApiProject.objects.filter(
                 name__icontains=main_project.name
             ) | ApiProject.objects.filter(owner=main_project.owner)
-            api_project_ids = api_projects.values_list('id', flat=True)[:5]
+            api_project_ids = list(api_projects.values_list('id', flat=True)[:5])
 
-            queryset = ApiRequest.objects.filter(collection__project_id__in=api_project_ids)
+            # 有集合的 + 无集合的（orphaned）
+            queryset = ApiRequest.objects.filter(
+                Q(collection__project_id__in=api_project_ids) |
+                Q(collection__isnull=True)
+            )
 
             if keyword:
                 queryset = queryset.filter(
