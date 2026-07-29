@@ -64,6 +64,7 @@ class TestHubAgent:
         'create_testcase',
         'execute_api',
         'parse_swagger',
+        'parse_yapi',
         'read_knowledge_base',      # 读取项目知识库
         'list_api_projects',        # 列出API测试项目
         'list_midscene_projects',   # 列出Midscene项目

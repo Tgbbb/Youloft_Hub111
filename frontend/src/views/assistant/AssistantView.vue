@@ -389,6 +389,7 @@ const toolLabels = {
   create_testcase: '正在创建测试用例...',
   execute_api: '正在执行接口请求...',
   parse_swagger: '正在解析 Swagger 文档...',
+  parse_yapi: '正在解析 YApi 文档...',
   read_knowledge_base: '正在读取知识库...',
   simple_doc_parser: '正在读取文件...',
   list_api_projects: '正在查找 API 项目...',

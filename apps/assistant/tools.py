@@ -1124,3 +1124,88 @@ class ParseSwagger(BaseTool):
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@register_tool('parse_yapi')
+class ParseYApi(BaseTool):
+    """解析 YApi 导出的 JSON 文档"""
+    description = '解析YApi导出的JSON文档（不是Swagger格式），提取接口列表。支持文件路径或直接传JSON内容'
+    parameters = [
+        {'name': 'file_path', 'type': 'string', 'description': 'YApi导出的JSON文件路径（绝对路径）', 'required': False},
+        {'name': 'content', 'type': 'string', 'description': 'YApi导出的JSON内容（直接传入）', 'required': False},
+    ]
+
+    def call(self, params: Union[str, dict], **kwargs) -> str:
+        if isinstance(params, str):
+            params = json.loads(params)
+
+        try:
+            data = None
+            if params.get('file_path'):
+                with open(params['file_path'], 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            elif params.get('content'):
+                data = json.loads(params['content'])
+            else:
+                return json.dumps({'error': '请提供 file_path 或 content'})
+
+            # YApi 导出格式兼容：
+            # 1. [{name:"v1", list:[{title, path, method, ...}]}]  — 项目导出（数组包裹版本）
+            # 2. {"errcode":0, "data":{"list":[...]}}                — 接口列表导出
+            # 3. 直接数组
+            items = []
+            if isinstance(data, list):
+                # 可能是版本数组 [{name, list}]
+                for group in data:
+                    if isinstance(group, dict) and 'list' in group:
+                        items.extend(group['list'])
+                    else:
+                        items.append(group)
+            elif isinstance(data, dict):
+                if 'data' in data:
+                    inner = data['data']
+                    if isinstance(inner, dict) and 'list' in inner:
+                        items = inner['list']
+                    elif isinstance(inner, list):
+                        items = inner
+                elif 'list' in data:
+                    items = data['list']
+
+            if not items:
+                return json.dumps({'error': '未识别的YApi格式，请确认是YApi导出的JSON'})
+
+            endpoints = []
+            for item in items[:20]:
+                path = item.get('path', '') or (item.get('query_path') or {}).get('path', '')
+                ep = {
+                    'title': item.get('title', ''),
+                    'path': path,
+                    'method': (item.get('method') or 'GET').upper(),
+                    'desc': (item.get('desc') or '')[:100],
+                }
+                # 查询参数
+                req_query = item.get('req_query', [])
+                if req_query:
+                    ep['params'] = [{'name': q.get('name',''), 'required': q.get('required')=='1',
+                                      'desc': q.get('desc','')} for q in req_query[:10]]
+                # 请求体: req_body_other (JSON) 或 req_body_form (表单)
+                body = item.get('req_body_other', '') or item.get('req_body_form', [])
+                if isinstance(body, str) and body:
+                    try: body = json.loads(body)
+                    except: pass
+                ep['req_body'] = str(body)[:200] if body else ''
+                # 响应体
+                res = item.get('res_body', '')
+                if isinstance(res, str) and res:
+                    try: res = json.loads(res)
+                    except: pass
+                ep['res_body'] = str(res)[:200] if res else ''
+                endpoints.append(ep)
+
+            return json.dumps({
+                'total': len(items),
+                'count': len(endpoints),
+                'endpoints': endpoints,
+            }, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({'error': str(e)}, ensure_ascii=False)
