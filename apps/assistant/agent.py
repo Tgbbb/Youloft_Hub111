@@ -60,6 +60,7 @@ class TestHubAgent:
         'get_api_detail',
         'search_testcases',
         'create_api_test',
+        'update_api_test',
         'create_collection',
         'create_testcase',
         'execute_api',
@@ -75,6 +76,8 @@ class TestHubAgent:
         'delete_testcase',          # 删除用例
         'update_knowledge_base',    # 更新知识库
         'bash',                     # 受限 shell 命令
+        'list_session_files',       # 列出会话文件
+        'read_session_file',        # 读取会话文件
     ]
 
     # System Prompt 模板
@@ -107,7 +110,7 @@ class TestHubAgent:
 - 创建接口集合（用于分组管理）
 - 执行接口请求并查看响应结果
 - 读取文档文件内容（支持 PDF/Word/Excel/TXT/HTML/CSV）
-- 解析 Swagger/OpenAPI 文档，自动提取接口列表
+- 解析 Swagger/OpenAPI 或 YApi 文档，自动提取接口列表。如果用户上传了 JSON/YAML 文件，直接调 parse_swagger/file_path 或 parse_yapi/file_path，不要用 simple_doc_parser
 - 搜索和创建测试用例
 - 查看和修改 Midscene（AI智能模式）用例（AI Prompt 每行一个步骤，换行分隔，不使用 → 箭头）
 

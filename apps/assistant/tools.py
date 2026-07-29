@@ -1209,3 +1209,45 @@ class ParseYApi(BaseTool):
             }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@register_tool('list_session_files')
+class ListSessionFiles(BaseTool):
+    """列出当前会话的所有可用文件"""
+    description = '列出会话中所有已上传的文件，Agent可自行发现文件无需用户手动提供路径'
+    parameters = []
+
+    def call(self, params: Union[str, dict], **kwargs) -> str:
+        from apps.assistant.models import AgentFile
+        files = AgentFile.objects.filter(source='upload').order_by('-created_at')[:20]
+        results = [{'id': f.id, 'file_name': f.file_name, 'file_path': f.file_path,
+                     'file_size': f.file_size} for f in files]
+        return json.dumps({'count': len(results), 'files': results,
+                          'hint': '用 read_session_file(file_path=...) 读内容'}, ensure_ascii=False, default=str)
+
+
+@register_tool('read_session_file')
+class ReadSessionFile(BaseTool):
+    """读取会话中文件的内容"""
+    description = '读取会话文件内容，支持.json/.yaml/.txt/.md/.csv。PDF/Word/Excel用simple_doc_parser'
+    parameters = [
+        {'name': 'file_path', 'type': 'string', 'description': '文件路径(从list_session_files获取)', 'required': True},
+    ]
+
+    def call(self, params: Union[str, dict], **kwargs) -> str:
+        if isinstance(params, str):
+            params = json.loads(params)
+        fp = params.get('file_path', '')
+        if not fp:
+            return json.dumps({'error': '请提供file_path'})
+        try:
+            if 'uploads' not in os.path.abspath(fp) or 'agent' not in fp:
+                return json.dumps({'error': '安全限制：只能读会话文件目录'})
+            with open(fp, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            return json.dumps({'file': fp, 'size': len(content),
+                              'content': content[:3000], 'truncated': len(content) > 3000}, ensure_ascii=False)
+        except FileNotFoundError:
+            return json.dumps({'error': f'文件不存在: {fp}'})
+        except Exception as e:
+            return json.dumps({'error': str(e)})

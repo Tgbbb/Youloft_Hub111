@@ -100,15 +100,15 @@
               </el-popover>
               <el-button circle :icon="Link" @click="$refs.fileInput.click()" :disabled="sending" />
               <el-button type="primary" circle :icon="Promotion"
-                :disabled="(!inputMessage.trim() && !uploadedFile) || sending"
+                :disabled="(!inputMessage.trim() && uploadedFiles.length === 0) || sending"
                 @click="sendMessage" />
             </div>
           </div>
 
-          <div v-if="uploadedFile" class="uploaded-chip">
+          <div v-for="(f, i) in uploadedFiles" :key="i" class="uploaded-chip">
             <el-icon><Document /></el-icon>
-            <span>{{ uploadedFile.name }}</span>
-            <el-icon class="remove-file" @click="uploadedFile = null"><Close /></el-icon>
+            <span :title="f.path">{{ f.name }}</span>
+            <el-icon class="remove-file" @click="uploadedFiles.splice(i, 1)"><Close /></el-icon>
           </div>
 
           <div class="skills-section">
@@ -233,10 +233,10 @@
         </div>
 
         <div class="chat-footer">
-          <div v-if="uploadedFile" class="uploaded-chip chat-uploaded">
+          <div v-for="(f, i) in uploadedFiles" :key="i" class="uploaded-chip chat-uploaded">
             <el-icon><Document /></el-icon>
-            <span>{{ uploadedFile.name }}</span>
-            <el-icon class="remove-file" @click="uploadedFile = null"><Close /></el-icon>
+            <span :title="f.path">{{ f.name }}</span>
+            <el-icon class="remove-file" @click="uploadedFiles.splice(i, 1)"><Close /></el-icon>
           </div>
           <div class="input-box">
             <el-input v-model="inputMessage" type="textarea" :rows="1"
@@ -260,7 +260,7 @@
             </el-popover>
             <el-button class="upload-btn" circle :icon="Link" @click="$refs.fileInput2.click()" :disabled="sending" />
             <el-button type="primary" class="send-btn"
-              :disabled="(!inputMessage.trim() && !uploadedFile) || sending"
+              :disabled="(!inputMessage.trim() && uploadedFiles.length === 0) || sending"
               @click="sendMessage">
               <el-icon><Promotion /></el-icon>
             </el-button>
@@ -329,7 +329,7 @@ const inputMessage = ref('')
 const sending = ref(false)
 const streaming = ref(false)
 const streamBuffer = ref('')
-const uploadedFile = ref(null)
+const uploadedFiles = ref([])  // 多文件支持
 const messagesContainer = ref(null)
 const fileInput = ref(null)
 const fileInput2 = ref(null)
@@ -505,7 +505,7 @@ const onFileChange = async (e) => {
     const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
     const resp = await fetch(`${baseURL}/assistant/chat/upload_file/`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData })
     const data = await resp.json()
-    if (data.file_path) { uploadedFile.value = { name: data.file_name, path: data.file_path, url: data.file_url }; ElMessage.success('文件已上传') }
+    if (data.file_path) { uploadedFiles.value.push({ name: data.file_name, path: data.file_path, url: data.file_url }); ElMessage.success('文件已上传') }
     else { ElMessage.error(data.error || '上传失败') }
   } catch (error) { ElMessage.error('上传失败: ' + error.message) }
   e.target.value = ''
@@ -516,8 +516,7 @@ const sendMessage = async () => {
   if (!text || sending.value) return
   inputMessage.value = ''
   sending.value = true; streaming.value = true; streamBuffer.value = ''
-  const fileInfo = uploadedFile.value
-  if (fileInfo) { uploadedFile.value = null }
+  // Agent 可通过 list_session_files/read_session_file 自行发现和读取文件
   chatItems.value.push({ type: 'message', role: 'user', content: text })
   scrollToBottom()
 
@@ -534,7 +533,7 @@ const sendMessage = async () => {
     const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
     const response = await fetch(`${baseURL}/assistant/chat/send_message_stream/`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ session_id: sessionId, message: fileInfo ? (text + '\n\n用户上传了文件在: ' + fileInfo.path) : text, project_id: selectedProjectId.value }),
+      body: JSON.stringify({ session_id: sessionId, message: text, project_id: selectedProjectId.value }),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const reader = response.body.getReader(); const decoder = new TextDecoder()

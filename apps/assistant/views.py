@@ -39,6 +39,15 @@ class AssistantSessionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    def perform_destroy(self, instance):
+        """删除会话时同步清理所有文件"""
+        import shutil
+        # 清理目录
+        session_dir = os.path.join(settings.MEDIA_ROOT, 'uploads', 'agent', instance.session_id)
+        if os.path.isdir(session_dir):
+            shutil.rmtree(session_dir, ignore_errors=True)
+        instance.delete()
+
     @action(detail=True, methods=['get'])
     def messages(self, request, pk=None):
         """获取会话的历史消息"""
