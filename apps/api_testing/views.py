@@ -722,36 +722,42 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
                 
                 try:
                     # 解析环境变量
+                    env = test_suite.environment
                     variables = {}
-                    if test_suite.environment:
-                        variables.update(test_suite.environment.variables)
-                    
-                    # 替换URL中的变量（先解析动态函数，再替换环境变量）
-                    url = self._replace_variables(api_request.url, variables)
+                    if env:
+                        variables.update(env.variables)
+
+                    def _resolve_env_dict(data):
+                        result = {}
+                        for k, v in (data or {}).items():
+                            val = self._replace_variables(str(v) if not isinstance(v, str) else v, variables)
+                            result[k] = resolver.resolve(val)
+                        return result
+
+                    # URL: 相对路径拼 base_url，绝对 URL 直接使用
+                    url = api_request.url
+                    if env and env.base_url and not url.startswith(('http://', 'https://')):
+                        url = env.base_url.rstrip('/') + '/' + url.lstrip('/')
+                    url = self._replace_variables(url, variables)
                     url = resolver.resolve(url)
 
-                    # 准备请求头
-                    headers = {}
-                    # 支持新的数组格式和旧的对象格式
+                    # 请求头: 环境默认 + 接口自身（接口优先）
+                    env_headers = _resolve_env_dict(env.default_headers) if env else {}
+                    request_headers_resolved = {}
                     if isinstance(api_request.headers, list):
-                        # 新的数组格式 [{"key": "Authorization", "value": "Bearer {{token}}", "enabled": true, "description": "..."}]
                         for header_item in api_request.headers:
                             if header_item.get('enabled', True) and header_item.get('key'):
                                 key = header_item['key']
                                 value = self._replace_variables(str(header_item.get('value', '')), variables)
-                                value = resolver.resolve(value)
-                                headers[key] = value
+                                request_headers_resolved[key] = resolver.resolve(value)
                     else:
-                        # 旧的对象格式 {"Authorization": "Bearer {{token}}"}
-                        headers = api_request.headers.copy()
-                        for key, value in headers.items():
-                            headers[key] = self._replace_variables(str(value), variables)
-                            headers[key] = resolver.resolve(headers[key])
+                        request_headers_resolved = _resolve_env_dict(api_request.headers) if api_request.headers else {}
+                    headers = {**env_headers, **request_headers_resolved}
 
-                    params = api_request.params.copy()
-                    for key, value in params.items():
-                        params[key] = self._replace_variables(str(value), variables)
-                        params[key] = resolver.resolve(params[key])
+                    # URL参数: 环境默认 + 接口自身（接口优先）
+                    env_params = _resolve_env_dict(env.default_params) if env else {}
+                    request_params_resolved = _resolve_env_dict(api_request.params) if api_request.params else {}
+                    params = {**env_params, **request_params_resolved}
 
                     body_data = None
                     if api_request.body and api_request.method in ['POST', 'PUT', 'PATCH']:
