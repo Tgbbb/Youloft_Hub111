@@ -449,12 +449,13 @@ const formatDate = (dateString) => {
 const formatMessageContent = (content) => {
   if (!content) return ''
   let text = content
-  // 1. 先拆行：Qwen 用 || 代替 \n| 拼接多行，还原
-  text = text.replace(/^(\|.+\|)$/gm, (line) => line.replace(/\|\|/g, '|\n|'))
-  // 2. 再逐行规范化间距：|cell| → | cell |
-  text = text.replace(/^\|.+\|$/gm, (line) => {
-    // 去掉首尾 |，split 中间，trim 后重新拼
-    const inner = line.slice(1, -1)
+  // 0. 标题后紧跟表格拆行：###标题| col | → ###标题\n| col |
+  text = text.replace(/^(#{1,3}\s+.+?)\|(.+)$/gm, '$1\n|$2')
+  // 1. 全局拆行：Qwen 用 || 拼接行，无条件拆分
+  text = text.replace(/\|\|/g, '|\n|')
+  // 2. 逐行规范化：任何以|开头的行都处理
+  text = text.replace(/^\|.+/gm, (line) => {
+    const inner = line.replace(/^\|\s*|\s*\|$/g, '')
     const cells = inner.split('|').map(c => c.trim())
     return '| ' + cells.join(' | ') + ' |'
   })
