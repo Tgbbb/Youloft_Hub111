@@ -450,7 +450,7 @@ const formatMessageContent = (content) => {
   if (!content) return ''
   let text = content
   // 0. 标题后紧跟表格拆行：###标题| col | → ###标题\n| col |
-  text = text.replace(/^(#{1,3}\s+.+?)\|(.+)$/gm, '$1\n|$2')
+  text = text.replace(/^(#{1,3}\s*.+?)\|(.+)$/gm, '$1\n|$2')
   // 1. 全局拆行：Qwen 用 || 拼接行，无条件拆分
   text = text.replace(/\|\|/g, '|\n|')
   // 2. 逐行规范化：任何以|开头的行都处理
