@@ -361,10 +361,18 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
 
             # 解析环境变量
             variables = {}
+            env = None
             if environment_id:
                 env = Environment.objects.get(id=environment_id)
                 variables.update(env.variables)
-            
+
+            def _resolve_env_dict(data):
+                result = {}
+                for k, v in (data or {}).items():
+                    val = self._replace_variables(str(v) if not isinstance(v, str) else v, variables)
+                    result[k] = resolver.resolve(val)
+                return result
+
             # 使用前端发送的更新后的数据，如果没有则使用数据库中的数据
             request_params = request.data.get('params', api_request.params)
             request_headers = request.data.get('headers', api_request.headers)
@@ -372,30 +380,30 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
             request_method = request.data.get('method', api_request.method)
             request_url = request.data.get('url', api_request.url)
 
-            # 替换URL中的变量（先解析动态函数，再替换环境变量）
-            url = self._replace_variables(request_url or '', variables)
+            # URL: 相对路径拼 base_url，绝对 URL 直接使用
+            url = request_url or ''
+            if env and env.base_url and not url.startswith(('http://', 'https://')):
+                url = env.base_url.rstrip('/') + '/' + url.lstrip('/')
+            url = self._replace_variables(url, variables)
             url = resolver.resolve(url)
-            
-            # 准备请求头
-            headers = {}
+
+            # 请求头: 环境默认 + 接口自身（接口优先）
+            env_headers = _resolve_env_dict(env.default_headers) if env else {}
+            request_headers_resolved = {}
             if isinstance(request_headers, list):
                 for header_item in request_headers:
                     if header_item.get('enabled', True) and header_item.get('key'):
                         key = header_item['key']
                         value = self._replace_variables(str(header_item.get('value', '')), variables)
-                        value = resolver.resolve(value)
-                        headers[key] = value
+                        request_headers_resolved[key] = resolver.resolve(value)
             else:
-                headers = request_headers.copy() if request_headers else {}
-                for key, value in headers.items():
-                    headers[key] = self._replace_variables(str(value), variables)
-                    headers[key] = resolver.resolve(headers[key])
+                request_headers_resolved = _resolve_env_dict(request_headers) if request_headers else {}
+            headers = {**env_headers, **request_headers_resolved}
 
-            # 准备请求参数
-            params = request_params.copy() if request_params else {}
-            for key, value in params.items():
-                params[key] = self._replace_variables(str(value), variables)
-                params[key] = resolver.resolve(params[key])
+            # URL参数: 环境默认 + 接口自身（接口优先）
+            env_params = _resolve_env_dict(env.default_params) if env else {}
+            request_params_resolved = _resolve_env_dict(request_params) if request_params else {}
+            params = {**env_params, **request_params_resolved}
 
             # 准备请求体
             body_data = None
