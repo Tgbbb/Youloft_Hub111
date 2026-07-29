@@ -98,6 +98,8 @@ class AgentSkill(models.Model):
 class AssistantSession(models.Model):
     """智能助手会话记录"""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='assistant_sessions', verbose_name='用户')
+    project = models.ForeignKey('projects.Project', on_delete=models.SET_NULL, null=True, blank=True,
+                                 related_name='assistant_sessions', verbose_name='关联项目')
     session_id = models.CharField(max_length=200, verbose_name='会话ID')
     conversation_id = models.CharField(max_length=200, blank=True, null=True, verbose_name='Dify对话ID')
     title = models.CharField(max_length=500, blank=True, verbose_name='会话标题')

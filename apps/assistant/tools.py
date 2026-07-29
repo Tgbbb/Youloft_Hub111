@@ -18,15 +18,10 @@ logger = logging.getLogger(__name__)
 
 @register_tool('get_project_overview')
 class GetProjectOverview(BaseTool):
-    """获取当前项目概览：接口数、用例数、最近执行结果等"""
-    description = '获取项目的整体概况，包括接口数量、测试用例数量、最近执行状态'
+    """获取项目概况"""
+    description = '获取项目概况：接口数、用例数、执行状态'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '项目ID（API测试项目）',
-            'required': True
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -122,21 +117,11 @@ class GetProjectOverview(BaseTool):
 
 @register_tool('search_apis')
 class SearchApis(BaseTool):
-    """搜索 API 接口测试，支持按名称、URL、方法搜索"""
-    description = '搜索项目下的API接口，可按关键词（接口名称/URL路径/请求方法）搜索。project_id 为主项目ID，会自动查找关联的API测试项目'
+    """搜索API接口"""
+    description = '搜索API接口，按名称/URL/方法匹配'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '主项目ID（会自动查找关联的API测试项目）',
-            'required': True
-        },
-        {
-            'name': 'keyword',
-            'type': 'string',
-            'description': '搜索关键词，匹配接口名称、URL或请求方法（GET/POST等）',
-            'required': False
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
+        {'name': 'keyword', 'type': 'string', 'description': '关键词，匹配名称/URL/方法', 'required': False}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -189,15 +174,10 @@ class SearchApis(BaseTool):
 
 @register_tool('get_api_detail')
 class GetApiDetail(BaseTool):
-    """获取单个接口的完整定义：参数、请求头、请求体、断言"""
-    description = '获取某个API接口的完整信息，包括URL、方法、请求头、参数、请求体、断言规则等'
+    """获取接口完整信息"""
+    description = '获取API接口完整信息：URL、方法、请求头、参数、请求体、断言'
     parameters = [
-        {
-            'name': 'request_id',
-            'type': 'integer',
-            'description': 'API请求ID',
-            'required': True
-        }
+        {'name': 'request_id', 'type': 'integer', 'description': '接口ID', 'required': True}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -209,20 +189,18 @@ class GetApiDetail(BaseTool):
 
         try:
             req = ApiRequest.objects.select_related('collection', 'collection__project').get(id=request_id)
-            def _trunc(v, max_len=150):
-                s = json.dumps(v, ensure_ascii=False, default=str) if not isinstance(v, str) else str(v)
-                return s if len(s) <= max_len else s[:max_len] + '...(截断)'
 
             result = {
                 'id': req.id,
                 'name': req.name,
                 'method': req.method,
-                'url': req.url[:200],
-                'headers': _trunc(req.headers),
-                'params': _trunc(req.params),
-                'body': _trunc(req.body),
-                'assertions': _trunc(req.assertions),
+                'url': req.url,
+                'headers': req.headers,
+                'params': req.params,
+                'body': req.body,
+                'assertions': req.assertions,
                 'collection': req.collection.name if req.collection else None,
+                'collection_id': req.collection_id,
                 'project': req.collection.project.name if req.collection and req.collection.project else None,
             }
             return json.dumps(result, ensure_ascii=False, default=str)
@@ -233,20 +211,10 @@ class GetApiDetail(BaseTool):
 @register_tool('search_testcases')
 class SearchTestCases(BaseTool):
     """搜索测试用例"""
-    description = '搜索项目下的测试用例，支持按标题或关键词搜索'
+    description = '搜索测试用例，按标题/描述关键词'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '项目ID',
-            'required': True
-        },
-        {
-            'name': 'keyword',
-            'type': 'string',
-            'description': '搜索关键词',
-            'required': False
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
+        {'name': 'keyword', 'type': 'string', 'description': '搜索关键词', 'required': False}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -289,63 +257,18 @@ class SearchTestCases(BaseTool):
 
 @register_tool('create_api_test')
 class CreateApiTest(BaseTool):
-    """创建一个 API 接口测试"""
-    description = '创建一个新的API接口测试，包含URL、请求方法、参数、请求头、请求体和断言规则。project_id 为主项目ID，会自动使用关联的API测试项目'
+    """创建API接口测试"""
+    description = '创建API接口测试，含URL、方法、请求头、参数、请求体、断言'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '主项目ID（自动查找关联的API测试项目）',
-            'required': True
-        },
-        {
-            'name': 'name',
-            'type': 'string',
-            'description': '接口测试名称',
-            'required': True
-        },
-        {
-            'name': 'method',
-            'type': 'string',
-            'description': '请求方法: GET/POST/PUT/DELETE/PATCH',
-            'required': True
-        },
-        {
-            'name': 'url',
-            'type': 'string',
-            'description': '请求URL路径',
-            'required': True
-        },
-        {
-            'name': 'collection_id',
-            'type': 'integer',
-            'description': '所属集合ID（可选，不填则创建在根目录）',
-            'required': False
-        },
-        {
-            'name': 'headers',
-            'type': 'object',
-            'description': '请求头，JSON对象格式',
-            'required': False
-        },
-        {
-            'name': 'params',
-            'type': 'object',
-            'description': 'URL查询参数，JSON对象格式',
-            'required': False
-        },
-        {
-            'name': 'body',
-            'type': 'object',
-            'description': '请求体，JSON对象格式，包含type和data字段',
-            'required': False
-        },
-        {
-            'name': 'assertions',
-            'type': 'array',
-            'description': '断言规则列表，每条包含type和expected字段',
-            'required': False
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
+        {'name': 'name', 'type': 'string', 'description': '接口名称', 'required': True},
+        {'name': 'method', 'type': 'string', 'description': 'GET/POST/PUT/DELETE/PATCH', 'required': True},
+        {'name': 'url', 'type': 'string', 'description': '请求URL', 'required': True},
+        {'name': 'collection_id', 'type': 'integer', 'description': '集合ID（可选）', 'required': False},
+        {'name': 'headers', 'type': 'object', 'description': '请求头JSON', 'required': False},
+        {'name': 'params', 'type': 'object', 'description': 'URL参数JSON', 'required': False},
+        {'name': 'body', 'type': 'object', 'description': '请求体JSON', 'required': False},
+        {'name': 'assertions', 'type': 'array', 'description': '断言规则列表', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -385,7 +308,7 @@ class CreateApiTest(BaseTool):
                 params=params.get('params', {}),
                 body=params.get('body', {}),
                 assertions=params.get('assertions', []),
-                author=user
+                created_by=user
             )
 
             return json.dumps({
@@ -402,17 +325,17 @@ class CreateApiTest(BaseTool):
 
 @register_tool('update_api_test')
 class UpdateApiTest(BaseTool):
-    """修改 API 接口测试的参数、断言等配置"""
-    description = '修改已有的API接口测试，支持更新请求参数、请求头、请求体、断言规则等'
+    """修改API接口测试"""
+    description = '修改API接口测试的参数、断言等'
     parameters = [
-        {'name': 'request_id', 'type': 'integer', 'description': 'API请求ID', 'required': True},
-        {'name': 'name', 'type': 'string', 'description': '新的接口名称', 'required': False},
-        {'name': 'method', 'type': 'string', 'description': '请求方法: GET/POST/PUT/DELETE/PATCH', 'required': False},
-        {'name': 'url', 'type': 'string', 'description': '请求URL', 'required': False},
-        {'name': 'headers', 'type': 'object', 'description': '请求头，JSON对象', 'required': False},
-        {'name': 'params', 'type': 'object', 'description': 'URL查询参数，JSON对象', 'required': False},
-        {'name': 'body', 'type': 'object', 'description': '请求体，JSON对象', 'required': False},
-        {'name': 'assertions', 'type': 'array', 'description': '断言规则列表，替换全部断言', 'required': False},
+        {'name': 'request_id', 'type': 'integer', 'description': '接口ID', 'required': True},
+        {'name': 'name', 'type': 'string', 'description': '新名称', 'required': False},
+        {'name': 'method', 'type': 'string', 'description': 'GET/POST/PUT/DELETE/PATCH', 'required': False},
+        {'name': 'url', 'type': 'string', 'description': '新URL', 'required': False},
+        {'name': 'headers', 'type': 'object', 'description': '请求头JSON', 'required': False},
+        {'name': 'params', 'type': 'object', 'description': 'URL参数JSON', 'required': False},
+        {'name': 'body', 'type': 'object', 'description': '请求体JSON', 'required': False},
+        {'name': 'assertions', 'type': 'array', 'description': '断言规则（替换全部）', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -446,52 +369,46 @@ class UpdateApiTest(BaseTool):
 
 @register_tool('create_collection')
 class CreateCollection(BaseTool):
-    """创建一个接口集合（类似文件夹，用于分组管理接口）"""
-    description = '创建一个接口集合（文件夹），用于分组管理API接口测试'
+    """创建接口集合"""
+    description = '创建接口集合（文件夹）'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '所属的API项目ID',
-            'required': True
-        },
-        {
-            'name': 'name',
-            'type': 'string',
-            'description': '集合名称',
-            'required': True
-        },
-        {
-            'name': 'description',
-            'type': 'string',
-            'description': '集合描述',
-            'required': False
-        },
-        {
-            'name': 'parent_id',
-            'type': 'integer',
-            'description': '父级集合ID（可选，用于嵌套结构）',
-            'required': False
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
+        {'name': 'name', 'type': 'string', 'description': '集合名称', 'required': True},
+        {'name': 'description', 'type': 'string', 'description': '描述', 'required': False},
+        {'name': 'parent_id', 'type': 'integer', 'description': '父集合ID（嵌套用）', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
+        from apps.projects.models import Project
         from apps.api_testing.models import ApiProject, ApiCollection
 
         if isinstance(params, str):
             params = json.loads(params)
 
         try:
-            project = ApiProject.objects.get(id=params['project_id'])
+            # 与 create_api_test 一致：通过主 Project ID 查找/创建 ApiProject
+            from apps.assistant.agent import TestHubAgent
+            user = TestHubAgent.get_current_user()
+            main_project = Project.objects.get(id=params['project_id'])
+            api_project = ApiProject.objects.filter(
+                name__icontains=main_project.name, owner=main_project.owner
+            ).first()
+            if not api_project:
+                api_project = ApiProject.objects.create(
+                    name=main_project.name,
+                    project_type='HTTP',
+                    status='IN_PROGRESS',
+                    owner=user or main_project.owner
+                )
 
             parent = None
             if params.get('parent_id'):
                 parent = ApiCollection.objects.filter(
-                    id=params['parent_id'], project=project
+                    id=params['parent_id'], project=api_project
                 ).first()
 
             collection = ApiCollection.objects.create(
-                project=project,
+                project=api_project,
                 name=params['name'],
                 description=params.get('description', ''),
                 parent=parent
@@ -501,6 +418,7 @@ class CreateCollection(BaseTool):
                 'success': True,
                 'id': collection.id,
                 'name': collection.name,
+                'api_project_id': api_project.id,
                 'parent': parent.name if parent else None,
             }, ensure_ascii=False)
         except Exception as e:
@@ -509,45 +427,15 @@ class CreateCollection(BaseTool):
 
 @register_tool('create_testcase')
 class CreateTestcase(BaseTool):
-    """创建一个测试用例"""
-    description = '在项目中创建一个新的测试用例，包含标题、步骤和预期结果'
+    """创建测试用例"""
+    description = '创建测试用例，含标题、步骤、优先级'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '项目ID',
-            'required': True
-        },
-        {
-            'name': 'title',
-            'type': 'string',
-            'description': '用例标题',
-            'required': True
-        },
-        {
-            'name': 'priority',
-            'type': 'string',
-            'description': '优先级: low/medium/high/critical',
-            'required': False
-        },
-        {
-            'name': 'status',
-            'type': 'string',
-            'description': '状态: draft/active/deprecated',
-            'required': False
-        },
-        {
-            'name': 'description',
-            'type': 'string',
-            'description': '用例描述/前置条件',
-            'required': False
-        },
-        {
-            'name': 'steps',
-            'type': 'string',
-            'description': '测试步骤（纯文本，非数组），如: "1. 点击新建\n2. 填写标题\n3. 保存"',
-            'required': False
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
+        {'name': 'title', 'type': 'string', 'description': '用例标题', 'required': True},
+        {'name': 'priority', 'type': 'string', 'description': 'low/medium/high/critical', 'required': False},
+        {'name': 'status', 'type': 'string', 'description': 'draft/active/deprecated', 'required': False},
+        {'name': 'description', 'type': 'string', 'description': '描述/前置条件', 'required': False},
+        {'name': 'steps', 'type': 'string', 'description': '测试步骤文本', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -599,10 +487,10 @@ class CreateTestcase(BaseTool):
 
 @register_tool('get_testcase_detail')
 class GetTestcaseDetail(BaseTool):
-    """查看测试用例的完整详情，包括步骤列表"""
-    description = '查看一个测试用例的完整信息：标题、描述、优先级、状态、步骤（含预期结果）'
+    """查看测试用例详情"""
+    description = '查看测试用例详情：标题、描述、步骤、预期结果'
     parameters = [
-        {'name': 'testcase_id', 'type': 'integer', 'description': '测试用例ID', 'required': True}
+        {'name': 'testcase_id', 'type': 'integer', 'description': '用例ID', 'required': True}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -637,14 +525,14 @@ class GetTestcaseDetail(BaseTool):
 
 @register_tool('update_testcase')
 class UpdateTestcase(BaseTool):
-    """修改已有的测试用例"""
-    description = '修改一个测试用例的字段（标题、描述、优先级、状态、步骤等），只传需要修改的字段'
+    """修改测试用例"""
+    description = '修改测试用例字段，只传需修改的'
     parameters = [
-        {'name': 'testcase_id', 'type': 'integer', 'description': '测试用例ID', 'required': True},
-        {'name': 'title', 'type': 'string', 'description': '新的标题', 'required': False},
-        {'name': 'description', 'type': 'string', 'description': '新的描述', 'required': False},
-        {'name': 'priority', 'type': 'string', 'description': '优先级: low/medium/high/critical', 'required': False},
-        {'name': 'status', 'type': 'string', 'description': '状态: draft/active/deprecated', 'required': False},
+        {'name': 'testcase_id', 'type': 'integer', 'description': '用例ID', 'required': True},
+        {'name': 'title', 'type': 'string', 'description': '新标题', 'required': False},
+        {'name': 'description', 'type': 'string', 'description': '新描述', 'required': False},
+        {'name': 'priority', 'type': 'string', 'description': 'low/medium/high/critical', 'required': False},
+        {'name': 'status', 'type': 'string', 'description': 'draft/active/deprecated', 'required': False},
         {'name': 'preconditions', 'type': 'string', 'description': '前置条件', 'required': False},
         {'name': 'expected_result', 'type': 'string', 'description': '预期结果', 'required': False},
     ]
@@ -677,10 +565,10 @@ class UpdateTestcase(BaseTool):
 
 @register_tool('delete_testcase')
 class DeleteTestcase(BaseTool):
-    """删除一个测试用例（谨慎使用，不可恢复）"""
-    description = '删除指定的测试用例。此操作不可恢复，建议先确认用例内容再删除'
+    """删除测试用例"""
+    description = '删除测试用例，不可恢复'
     parameters = [
-        {'name': 'testcase_id', 'type': 'integer', 'description': '要删除的测试用例ID', 'required': True}
+        {'name': 'testcase_id', 'type': 'integer', 'description': '用例ID', 'required': True}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -700,11 +588,11 @@ class DeleteTestcase(BaseTool):
 
 @register_tool('update_knowledge_base')
 class UpdateKnowledgeBase(BaseTool):
-    """更新项目的知识库内容"""
-    description = '更新项目的知识库（业务背景文档）。可以用于追加或替换知识库内容'
+    """更新项目知识库"""
+    description = '更新项目知识库内容'
     parameters = [
         {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True},
-        {'name': 'content', 'type': 'string', 'description': '新的知识库内容', 'required': True},
+        {'name': 'content', 'type': 'string', 'description': '知识库内容', 'required': True},
         {'name': 'mode', 'type': 'string', 'description': 'append=追加, replace=替换', 'required': False},
     ]
 
@@ -738,10 +626,10 @@ class UpdateKnowledgeBase(BaseTool):
 
 @register_tool('bash')
 class SafeBash(BaseTool):
-    """执行受限的 shell 命令（仅白名单内）"""
-    description = '执行 shell 命令。仅支持白名单内的命令，超时 30 秒'
+    """执行受限shell命令"""
+    description = '执行shell命令，仅白名单内命令可用'
     parameters = [
-        {'name': 'command', 'type': 'string', 'description': '要执行的 shell 命令', 'required': True}
+        {'name': 'command', 'type': 'string', 'description': 'shell命令', 'required': True}
     ]
 
     # 白名单：只允许这些命令
@@ -795,21 +683,11 @@ class SafeBash(BaseTool):
 
 @register_tool('execute_api')
 class ExecuteApi(BaseTool):
-    """执行一个接口请求"""
-    description = '执行一个API接口请求并返回响应结果（状态码、响应体、响应时间）'
+    """执行API请求"""
+    description = '执行API请求并返回状态码、响应体、响应时间'
     parameters = [
-        {
-            'name': 'request_id',
-            'type': 'integer',
-            'description': '要执行的API请求ID',
-            'required': True
-        },
-        {
-            'name': 'environment_id',
-            'type': 'integer',
-            'description': '使用的环境ID（可选）',
-            'required': False
-        }
+        {'name': 'request_id', 'type': 'integer', 'description': '接口ID', 'required': True},
+        {'name': 'environment_id', 'type': 'integer', 'description': '环境ID（可选）', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -859,10 +737,10 @@ class ExecuteApi(BaseTool):
 
 @register_tool('list_api_projects')
 class ListApiProjects(BaseTool):
-    """列出所有API测试项目，用于发现和关联"""
-    description = '列出当前用户可访问的所有API测试项目，用于发现项目中关联的接口测试数据'
+    """列出API测试项目"""
+    description = '列出当前用户可访问的API测试项目'
     parameters = [
-        {'name': 'keyword', 'type': 'string', 'description': '按名称筛选（可选）', 'required': False}
+        {'name': 'keyword', 'type': 'string', 'description': '按名称筛选', 'required': False}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -884,10 +762,10 @@ class ListApiProjects(BaseTool):
 
 @register_tool('list_midscene_projects')
 class ListMidsceneProjects(BaseTool):
-    """列出所有AI智能模式(Midscene)项目"""
-    description = '列出Midscene(AI智能模式)项目。建议将当前会话的项目名称作为keyword传入，以查找关联的项目'
+    """列出Midscene(AI智能模式)项目"""
+    description = '列出Midscene项目'
     parameters = [
-        {'name': 'keyword', 'type': 'string', 'description': '当前项目名称，用于筛选关联的Midscene项目', 'required': False}
+        {'name': 'keyword', 'type': 'string', 'description': '按名称筛选', 'required': False}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -909,11 +787,11 @@ class ListMidsceneProjects(BaseTool):
 
 @register_tool('list_midscene_cases')
 class ListMidsceneCases(BaseTool):
-    """列出Midscene项目的AI智能模式测试用例"""
-    description = '列出指定Midscene项目下的AI智能模式测试用例'
+    """列出Midscene项目用例"""
+    description = '列出Midscene项目下的AI智能模式用例'
     parameters = [
         {'name': 'midscene_project_id', 'type': 'integer', 'description': 'Midscene项目ID', 'required': True},
-        {'name': 'keyword', 'type': 'string', 'description': '按名称筛选（可选）', 'required': False}
+        {'name': 'keyword', 'type': 'string', 'description': '按名称筛选', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -941,19 +819,15 @@ class ListMidsceneCases(BaseTool):
 
 @register_tool('update_midscene_case')
 class UpdateMidsceneCase(BaseTool):
-    """修改 Midscene AI 用例的 Prompt 或其他字段"""
-    description = '修改一个 Midscene（AI智能模式）用例。重要：ai_prompt 必须是每行一个步骤（换行分隔），禁止使用 → 箭头连接步骤'
+    """修改Midscene AI用例"""
+    description = '修改Midscene用例。ai_prompt每行一个步骤，换行分隔，禁止用→连接'
     parameters = [
-        {'name': 'case_id', 'type': 'integer', 'description': 'Midscene 用例 ID', 'required': True},
-        {'name': 'name', 'type': 'string', 'description': '新的用例名称', 'required': False},
-        {'name': 'ai_prompt', 'type': 'string',
-         'description': '完整替换 AI Prompt。必须是换行分隔的步骤列表，每行一个操作，禁止用 → 连接',
-         'required': False},
-        {'name': 'description', 'type': 'string', 'description': '新的用例描述', 'required': False},
+        {'name': 'case_id', 'type': 'integer', 'description': '用例ID', 'required': True},
+        {'name': 'name', 'type': 'string', 'description': '新名称', 'required': False},
+        {'name': 'ai_prompt', 'type': 'string', 'description': 'AI Prompt（换行分隔步骤）', 'required': False},
+        {'name': 'description', 'type': 'string', 'description': '新描述', 'required': False},
         {'name': 'max_steps', 'type': 'integer', 'description': '最大执行步数', 'required': False},
-        {'name': 'append_step', 'type': 'string',
-         'description': '在现有步骤末尾追加一个新步骤（自动换行）。不需要传整个 ai_prompt',
-         'required': False},
+        {'name': 'append_step', 'type': 'string', 'description': '追加步骤（自动换行）', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -1000,15 +874,10 @@ class UpdateMidsceneCase(BaseTool):
 
 @register_tool('read_knowledge_base')
 class ReadKnowledgeBase(BaseTool):
-    """读取项目的知识库，了解业务背景、术语、流程等信息"""
-    description = '读取项目的知识库（业务背景文档），用于理解项目术语、业务流程，帮助生成更精准的测试用例'
+    """读取项目知识库"""
+    description = '读取项目知识库内容'
     parameters = [
-        {
-            'name': 'project_id',
-            'type': 'integer',
-            'description': '项目ID',
-            'required': True
-        }
+        {'name': 'project_id', 'type': 'integer', 'description': '项目ID', 'required': True}
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -1040,21 +909,11 @@ class ReadKnowledgeBase(BaseTool):
 
 @register_tool('parse_swagger')
 class ParseSwagger(BaseTool):
-    """解析 Swagger/OpenAPI 文档"""
-    description = '解析OpenAPI/Swagger文档URL或JSON内容，提取所有接口的路径、方法、参数和响应定义'
+    """解析Swagger/OpenAPI文档"""
+    description = '解析OpenAPI/Swagger文档URL或JSON，提取接口列表'
     parameters = [
-        {
-            'name': 'url',
-            'type': 'string',
-            'description': 'Swagger/OpenAPI文档的URL地址',
-            'required': False
-        },
-        {
-            'name': 'content',
-            'type': 'string',
-            'description': 'Swagger/OpenAPI的JSON内容（如果没有URL，直接传内容）',
-            'required': False
-        }
+        {'name': 'url', 'type': 'string', 'description': '文档URL', 'required': False},
+        {'name': 'content', 'type': 'string', 'description': '文档JSON内容', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -1128,11 +987,11 @@ class ParseSwagger(BaseTool):
 
 @register_tool('parse_yapi')
 class ParseYApi(BaseTool):
-    """解析 YApi 导出的 JSON 文档"""
-    description = '解析YApi导出的JSON文档（不是Swagger格式），提取接口列表。支持文件路径或直接传JSON内容'
+    """解析YApi导出的JSON"""
+    description = '解析YApi导出JSON，提取接口列表'
     parameters = [
-        {'name': 'file_path', 'type': 'string', 'description': 'YApi导出的JSON文件路径（绝对路径）', 'required': False},
-        {'name': 'content', 'type': 'string', 'description': 'YApi导出的JSON内容（直接传入）', 'required': False},
+        {'name': 'file_path', 'type': 'string', 'description': 'JSON文件路径', 'required': False},
+        {'name': 'content', 'type': 'string', 'description': 'JSON内容', 'required': False},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -1213,8 +1072,8 @@ class ParseYApi(BaseTool):
 
 @register_tool('list_session_files')
 class ListSessionFiles(BaseTool):
-    """列出当前会话的所有可用文件"""
-    description = '列出会话中所有已上传的文件，Agent可自行发现文件无需用户手动提供路径'
+    """列出会话文件"""
+    description = '列出会话所有已上传文件，Agent可自行发现'
     parameters = []
 
     def call(self, params: Union[str, dict], **kwargs) -> str:
@@ -1228,10 +1087,10 @@ class ListSessionFiles(BaseTool):
 
 @register_tool('read_session_file')
 class ReadSessionFile(BaseTool):
-    """读取会话中文件的内容"""
-    description = '读取会话文件内容，支持.json/.yaml/.txt/.md/.csv。PDF/Word/Excel用simple_doc_parser'
+    """读取会话文件内容"""
+    description = '读取会话文件内容。JSON/YAML用此工具；PDF/Word/Excel用simple_doc_parser'
     parameters = [
-        {'name': 'file_path', 'type': 'string', 'description': '文件路径(从list_session_files获取)', 'required': True},
+        {'name': 'file_path', 'type': 'string', 'description': '文件路径', 'required': True},
     ]
 
     def call(self, params: Union[str, dict], **kwargs) -> str:

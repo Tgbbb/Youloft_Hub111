@@ -434,7 +434,13 @@ const loadProjects = async () => {
   } catch (error) { console.error('Load projects failed:', error) }
 }
 
-const onProjectChange = (val) => { selectedProjectId.value = val }
+const onProjectChange = (val) => {
+  selectedProjectId.value = val
+  // 同步更新会话的 project_id
+  if (currentSession.value?.id) {
+    api.patch(`/assistant/sessions/${currentSession.value.id}/`, { project_id: val }).catch(() => {})
+  }
+}
 
 const formatDate = (dateString) => {
   if (!dateString) return ''
@@ -451,6 +457,9 @@ const formatMessageContent = (content) => {
   let text = content
   // 0. 标题后紧跟表格拆行：###标题| col | → ###标题\n| col |
   text = text.replace(/^(#{1,3}\s*.+?)\|(.+)$/gm, '$1\n|$2')
+  // 0.5. 普通文本后紧跟表格：text✅| col | val | → text✅\n| col | val |
+  // 触发条件：行首非|、非标题，且含3个以上|（表格特征）
+  text = text.replace(/^(?![#|])(.+?)\|((?:.+\|){2,}.*)$/gm, '$1\n|$2')
   // 1. 全局拆行：Qwen 用 || 拼接行，无条件拆分
   text = text.replace(/\|\|/g, '|\n|')
   // 2. 逐行规范化：任何以|开头的行都处理
@@ -474,6 +483,8 @@ const switchToSession = async (session) => {
   if (currentSession.value?.id === session.id) return
   try {
     currentSession.value = { ...session }
+    // 恢复会话关联的项目
+    selectedProjectId.value = session.project_id || apiProjects.value[0]?.id || null
     const response = await api.get(`/assistant/sessions/${session.id}/messages/`)
     messages.value = response.data
     chatItems.value = (response.data || []).map(msg => ({ type: 'message', role: msg.role, content: msg.content, created_at: msg.created_at }))
@@ -526,7 +537,7 @@ const sendMessage = async () => {
     if (!sessionId) {
       const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`
       const title = text.length > 10 ? text.substring(0, 10) + '...' : text
-      const sessionRes = await api.post('/assistant/sessions/', { session_id: newSessionId, title })
+      const sessionRes = await api.post('/assistant/sessions/', { session_id: newSessionId, title, project_id: selectedProjectId.value })
       currentSession.value = sessionRes.data; sessionId = sessionRes.data.session_id
       historySessions.value.unshift(currentSession.value)
     }

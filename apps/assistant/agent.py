@@ -451,9 +451,9 @@ class TestHubAgent:
         return agent
 
     # 历史摘要触发阈值
-    SUMMARY_MIN_MESSAGES = 20       # 超过此数量触发摘要
-    SUMMARY_KEEP_LAST = 15          # 保留最近 N 条消息不参与摘要
-    SUMMARY_MAX_TOKENS = 300        # 摘要最大 token 数
+    SUMMARY_MIN_MESSAGES = 100      # 超过此数量触发摘要
+    SUMMARY_KEEP_LAST = 20          # 保留最近 N 条消息不参与摘要
+    SUMMARY_MAX_TOKENS = 500        # 摘要最大 token 数
 
     def _summarize_history(
         self, history: List[Dict[str, str]]

@@ -211,7 +211,7 @@ class ChatViewSet(viewsets.ViewSet):
         history = []
         history_messages = session.chat_messages.filter(
             id__lt=user_message.id
-        ).order_by('-created_at')[:60]  # 加大窗口，超过 20 条时 agent 会自动摘要压缩
+        ).order_by('-created_at')[:500]  # 大上下文模型，几乎不截断
         for msg in reversed(list(history_messages)):
             history.append({
                 'role': msg.role,
