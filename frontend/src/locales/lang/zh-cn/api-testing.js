@@ -479,6 +479,10 @@ export default {
     scopeHelp: '全局环境变量对所有项目生效，局部环境变量仅对关联项目生效',
     relatedProject: '关联项目',
     selectRelatedProject: '请选择关联项目',
+    baseURL: '基础URL',
+    baseURLHelp: '相对路径接口自动拼接此前缀，如 http://dev.com:8080',
+    defaultHeaders: '默认请求头',
+    defaultParams: '默认URL参数',
     environmentVariables: '环境变量',
     variableName: '变量名',
     initialValue: '初始值',
@@ -784,7 +788,8 @@ export default {
       initialValue: '初始值',
       currentValue: '当前值',
       close: '关闭',
-      editEnvironment: '编辑环境'
+      editEnvironment: '编辑环境',
+      defaultConfig: '默认配置'
     }
   },
 

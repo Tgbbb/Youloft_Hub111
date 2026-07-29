@@ -142,31 +142,44 @@ def execute_test_suite(test_suite, environment, executed_by):
                 variables = {}
                 if environment:
                     variables.update(environment.variables)
-                
-                # 替换URL中的变量（先解析动态函数，再替换环境变量）
-                url = _replace_variables(api_request.url, variables)
+
+                def _resolve_env_dict(data):
+                    result = {}
+                    for k, v in (data or {}).items():
+                        val = _replace_variables(str(v) if not isinstance(v, str) else v, variables)
+                        result[k] = resolver.resolve(val)
+                    return result
+
+                # URL: 相对路径拼 base_url，绝对 URL 直接使用
+                url = api_request.url
+                if environment and environment.base_url and not url.startswith(('http://', 'https://')):
+                    url = environment.base_url.rstrip('/') + '/' + url.lstrip('/')
+                url = _replace_variables(url, variables)
                 url = resolver.resolve(url)
-                
-                # 准备请求头
-                headers = {}
+
+                # 请求头: 环境默认 + 接口自身（接口优先）
+                env_headers = {}
+                request_headers = {}
+                if environment:
+                    env_headers = _resolve_env_dict(environment.default_headers)
+
                 if isinstance(api_request.headers, list):
                     for header_item in api_request.headers:
                         if header_item.get('enabled', True) and header_item.get('key'):
                             key = header_item['key']
                             value = _replace_variables(str(header_item.get('value', '')), variables)
-                            value = resolver.resolve(value)
-                            headers[key] = value
+                            request_headers[key] = resolver.resolve(value)
                 else:
-                    headers = api_request.headers.copy()
-                    for key, value in headers.items():
-                        headers[key] = _replace_variables(str(value), variables)
-                        headers[key] = resolver.resolve(headers[key])
-                
-                # 准备请求参数
-                params = api_request.params.copy() if api_request.params else {}
-                for key, value in params.items():
-                    params[key] = _replace_variables(str(value), variables)
-                    params[key] = resolver.resolve(params[key])
+                    request_headers = _resolve_env_dict(api_request.headers)
+
+                headers = {**env_headers, **request_headers}
+
+                # URL参数: 环境默认 + 接口自身（接口优先）
+                env_params = _resolve_env_dict(environment.default_params) if environment else {}
+                request_params = {}
+                if api_request.params:
+                    request_params = _resolve_env_dict(api_request.params)
+                params = {**env_params, **request_params}
                 
                 # 准备请求体
                 body_data = None
@@ -298,36 +311,50 @@ def execute_api_request(api_request, environment, executed_by):
     try:
         # 创建变量解析器
         resolver = VariableResolver()
-        
+
         # 解析环境变量
         variables = {}
         if environment:
             variables.update(environment.variables)
-        
-        # 替换URL中的变量（先解析动态函数，再替换环境变量）
-        url = _replace_variables(api_request.url, variables)
+
+        def _resolve_env_dict(data):
+            """解析字典中的环境变量和动态函数"""
+            result = {}
+            for k, v in (data or {}).items():
+                val = _replace_variables(str(v) if not isinstance(v, str) else v, variables)
+                result[k] = resolver.resolve(val)
+            return result
+
+        # URL: 相对路径拼 base_url，绝对 URL 直接使用
+        url = api_request.url
+        if environment and environment.base_url and not url.startswith(('http://', 'https://')):
+            url = environment.base_url.rstrip('/') + '/' + url.lstrip('/')
+        url = _replace_variables(url, variables)
         url = resolver.resolve(url)
-        
-        # 准备请求头
-        headers = {}
+
+        # 请求头: 环境默认 + 接口自身（接口优先）
+        env_headers = {}
+        request_headers = {}
+        if environment:
+            env_headers = _resolve_env_dict(environment.default_headers)
+
         if isinstance(api_request.headers, list):
             for header_item in api_request.headers:
                 if header_item.get('enabled', True) and header_item.get('key'):
                     key = header_item['key']
                     value = _replace_variables(str(header_item.get('value', '')), variables)
-                    value = resolver.resolve(value)
-                    headers[key] = value
+                    request_headers[key] = resolver.resolve(value)
         else:
-            headers = api_request.headers.copy()
-            for key, value in headers.items():
-                headers[key] = _replace_variables(str(value), variables)
-                headers[key] = resolver.resolve(headers[key])
-        
-        # 准备请求参数
-        params = api_request.params.copy() if api_request.params else {}
-        for key, value in params.items():
-            params[key] = _replace_variables(str(value), variables)
-            params[key] = resolver.resolve(params[key])
+            request_headers = _resolve_env_dict(api_request.headers)
+
+        headers = {**env_headers, **request_headers}
+
+        # URL参数: 环境默认 + 接口自身（接口优先）
+        env_params = _resolve_env_dict(environment.default_params) if environment else {}
+        request_params = {}
+        if api_request.params:
+            request_params = _resolve_env_dict(api_request.params)
+        params = {**env_params, **request_params}
         
         # 准备请求体
         body_data = None

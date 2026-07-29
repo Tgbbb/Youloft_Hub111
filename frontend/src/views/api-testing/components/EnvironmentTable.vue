@@ -10,6 +10,12 @@
         </template>
       </el-table-column>
       <el-table-column v-if="scope === 'LOCAL'" prop="project_name" :label="$t('apiTesting.component.environmentTable.relatedProject')" width="150" />
+      <el-table-column :label="$t('apiTesting.environment.baseURL')" width="130" show-overflow-tooltip>
+        <template #default="scope2">
+          <span v-if="scope2.row.base_url" style="font-size:12px;color:#409eff">{{ scope2.row.base_url }}</span>
+          <span v-else style="color:#c0c4cc">-</span>
+        </template>
+      </el-table-column>
       <el-table-column :label="$t('apiTesting.component.environmentTable.variableCount')" width="100">
         <template #default="scope">
           {{ Object.keys(scope.row.variables || {}).length }}
@@ -79,6 +85,21 @@
             <el-descriptions-item :label="$t('apiTesting.component.environmentTable.status')">
               <el-tag v-if="viewingEnvironment.is_active" type="success">{{ $t('apiTesting.component.environmentTable.activated') }}</el-tag>
               <el-tag v-else type="info">{{ $t('apiTesting.component.environmentTable.notActivated') }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="viewingEnvironment.base_url" :label="$t('apiTesting.environment.baseURL')" :span="2">
+              {{ viewingEnvironment.base_url }}
+            </el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <div class="defaults-info" v-if="hasDefaults(viewingEnvironment)">
+          <h4>{{ $t('apiTesting.component.environmentTable.defaultConfig') }}</h4>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item :label="$t('apiTesting.environment.defaultHeaders')">
+              {{ Object.keys(viewingEnvironment.default_headers || {}).length }} 项
+            </el-descriptions-item>
+            <el-descriptions-item :label="$t('apiTesting.environment.defaultParams')">
+              {{ Object.keys(viewingEnvironment.default_params || {}).length }} 项
             </el-descriptions-item>
           </el-descriptions>
         </div>
@@ -150,6 +171,13 @@ const formatVariables = (variables) => {
       }
     }
   })
+}
+
+const hasDefaults = (env) => {
+  if (!env) return false
+  const h = Object.keys(env.default_headers || {}).length
+  const p = Object.keys(env.default_params || {}).length
+  return h > 0 || p > 0
 }
 
 const viewVariables = (environment) => {

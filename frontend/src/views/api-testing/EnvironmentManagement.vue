@@ -93,6 +93,30 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item :label="$t('apiTesting.environment.baseURL')">
+          <el-input v-model="form.base_url" placeholder="http://dev.example.com:8080" />
+          <div class="field-help">
+            <el-text size="small" type="info">{{ $t('apiTesting.environment.baseURLHelp') }}</el-text>
+          </div>
+        </el-form-item>
+
+        <el-collapse style="width: 100%">
+          <el-collapse-item :title="$t('apiTesting.environment.defaultHeaders')">
+            <KeyValueEditor
+              v-model="form.default_headers"
+              :placeholder-key="$t('apiTesting.component.keyValueEditor.key')"
+              :placeholder-value="$t('apiTesting.component.keyValueEditor.value')"
+            />
+          </el-collapse-item>
+          <el-collapse-item :title="$t('apiTesting.environment.defaultParams')">
+            <KeyValueEditor
+              v-model="form.default_params"
+              :placeholder-key="$t('apiTesting.component.keyValueEditor.key')"
+              :placeholder-value="$t('apiTesting.component.keyValueEditor.value')"
+            />
+          </el-collapse-item>
+        </el-collapse>
+
         <el-form-item :label="$t('apiTesting.environment.environmentVariables')" prop="variables">
           <div class="variables-editor">
             <div class="variables-header">
@@ -187,6 +211,7 @@ import { useI18n } from 'vue-i18n'
 import { Plus, Delete } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import EnvironmentTable from './components/EnvironmentTable.vue'
+import KeyValueEditor from './components/KeyValueEditor.vue'
 
 const { t } = useI18n()
 const activeTab = ref('GLOBAL')
@@ -205,7 +230,10 @@ const formRef = ref()
 const form = reactive({
   name: '',
   scope: 'GLOBAL',
+  base_url: '',
   project: null,
+  default_headers: [],
+  default_params: [],
   variables: [
     {
       key: '',
@@ -320,12 +348,31 @@ const removeVariable = (index) => {
   }
 }
 
+const objectToKvArray = (obj) => {
+  if (!obj || typeof obj !== 'object') return []
+  if (Array.isArray(obj)) return obj
+  return Object.entries(obj).map(([k, v]) => ({
+    key: k, value: String(v), description: '', enabled: true, type: 'text'
+  }))
+}
+
+const kvArrayToObject = (arr) => {
+  const result = {}
+  for (const item of arr || []) {
+    if (item.enabled !== false && item.key) result[item.key] = item.value || ''
+  }
+  return result
+}
+
 const editEnvironment = (environment) => {
   editingEnvironment.value = environment
   form.name = environment.name
   form.scope = environment.scope
+  form.base_url = environment.base_url || ''
   form.project = environment.project
-  
+  form.default_headers = objectToKvArray(environment.default_headers)
+  form.default_params = objectToKvArray(environment.default_params)
+
   // 转换变量格式
   const variables = environment.variables || {}
   form.variables = Object.keys(variables).map(key => {
@@ -344,7 +391,7 @@ const editEnvironment = (environment) => {
       }
     }
   })
-  
+
   if (form.variables.length === 0) {
     form.variables.push({
       key: '',
@@ -352,7 +399,7 @@ const editEnvironment = (environment) => {
       currentValue: ''
     })
   }
-  
+
   showCreateDialog.value = true
 }
 
@@ -402,9 +449,12 @@ const duplicateEnvironment = async (environment) => {
   const newEnv = {
     name: `${environment.name} - Copy`,
     scope: environment.scope,
+    base_url: environment.base_url || '',
     project: environment.scope === 'LOCAL' ?
       (typeof environment.project === 'object' ? environment.project.id : environment.project) :
       null,
+    default_headers: environment.default_headers || {},
+    default_params: environment.default_params || {},
     variables: environment.variables || {}
   }
 
@@ -444,7 +494,10 @@ const submitForm = async () => {
     const data = {
       name: form.name,
       scope: form.scope,
+      base_url: form.base_url || '',
       project: form.scope === 'LOCAL' ? form.project : null,
+      default_headers: kvArrayToObject(form.default_headers),
+      default_params: kvArrayToObject(form.default_params),
       variables
     }
     
@@ -475,7 +528,10 @@ const resetForm = () => {
   Object.assign(form, {
     name: '',
     scope: 'GLOBAL',
+    base_url: '',
     project: null,
+    default_headers: [],
+    default_params: [],
     variables: [
       {
         key: '',
@@ -519,7 +575,7 @@ onMounted(async () => {
   border-bottom: 1px solid #e4e7ed;
 }
 
-.scope-help {
+.scope-help, .field-help {
   margin-top: 5px;
 }
 

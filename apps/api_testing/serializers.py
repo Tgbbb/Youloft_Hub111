@@ -135,7 +135,8 @@ class EnvironmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Environment
         fields = [
-            'id', 'name', 'scope', 'project', 'project_name', 'variables', 'is_active',
+            'id', 'name', 'scope', 'base_url', 'project', 'project_name',
+            'variables', 'default_headers', 'default_params', 'is_active',
             'created_by', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by', 'project_name']

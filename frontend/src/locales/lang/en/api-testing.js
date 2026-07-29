@@ -468,6 +468,10 @@ export default {
     scopeHelp: 'Global environments apply to all projects, local environments only apply to the associated project',
     relatedProject: 'Related Project',
     selectRelatedProject: 'Select related project',
+    baseURL: 'Base URL',
+    baseURLHelp: 'Automatically prepended to relative URL paths, e.g. http://dev.com:8080',
+    defaultHeaders: 'Default Headers',
+    defaultParams: 'Default URL Parameters',
     environmentVariables: 'Environment Variables',
     variableName: 'Variable Name',
     initialValue: 'Initial Value',
@@ -773,7 +777,8 @@ export default {
       initialValue: 'Initial Value',
       currentValue: 'Current Value',
       close: 'Close',
-      editEnvironment: 'Edit Environment'
+      editEnvironment: 'Edit Environment',
+      defaultConfig: 'Default Configurations'
     }
   },
 

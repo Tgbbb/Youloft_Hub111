@@ -118,7 +118,13 @@ class Environment(models.Model):
 
     name = models.CharField(max_length=200, verbose_name='环境名称')
     scope = models.CharField(max_length=10, choices=SCOPE_CHOICES, verbose_name='作用域')
+    base_url = models.CharField(max_length=500, blank=True, default='', verbose_name='基础URL',
+                                 help_text='相对路径接口自动拼接此前缀，如 http://dev.com:8080')
     variables = models.JSONField(default=dict, verbose_name='环境变量')
+    default_headers = models.JSONField(default=dict, verbose_name='默认请求头',
+                                        help_text='所有接口自动携带的请求头，接口自身可覆盖')
+    default_params = models.JSONField(default=dict, verbose_name='默认URL参数',
+                                       help_text='所有接口自动携带的URL参数，接口自身可覆盖')
     is_active = models.BooleanField(default=False, verbose_name='是否激活')
     project = models.ForeignKey(ApiProject, on_delete=models.CASCADE, null=True, blank=True,
                                 related_name='environments', verbose_name='关联项目')
