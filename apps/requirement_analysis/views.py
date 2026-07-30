@@ -2911,11 +2911,16 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if existing_task_obj:
                     task.clarification_questions = existing_task_obj.clarification_questions
                     task.clarification_answers = existing_task_obj.clarification_answers
-                    task.multimodal_mode = existing_task_obj.multimodal_mode
-                    task.page_images_base64 = existing_task_obj.page_images_base64
+                    # 图片：优先用新请求带的（已处理为base64），旧task的screenshot_url作为兜底
+                    if not task.multimodal_mode:
+                        task.multimodal_mode = existing_task_obj.multimodal_mode
+                    if not task.page_images_base64:
+                        task.page_images_base64 = existing_task_obj.page_images_base64
                     task.pipeline_stage = 'answers_ready'
-                    task.save(update_fields=['clarification_questions', 'clarification_answers',
-                        'multimodal_mode', 'page_images_base64', 'pipeline_stage'])
+                    update_fields = ['clarification_questions', 'clarification_answers', 'pipeline_stage']
+                    if task.multimodal_mode:
+                        update_fields += ['multimodal_mode', 'page_images_base64']
+                    task.save(update_fields=update_fields)
                     existing_task_obj.pipeline_stage = 'completed'
                     existing_task_obj.status = 'cancelled'
                     existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
