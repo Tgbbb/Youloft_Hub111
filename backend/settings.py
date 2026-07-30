@@ -190,10 +190,10 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),  # access_token 60分钟
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=120),  # access_token 120分钟
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),  # refresh_token 7天
     'ROTATE_REFRESH_TOKENS': True,  # 刷新时轮换refresh_token
-    'BLACKLIST_AFTER_ROTATION': True,  # 旧的refresh_token加入黑名单
+    'BLACKLIST_AFTER_ROTATION': False,  # 禁用黑名单，避免多标签页并发刷新导致401
     'UPDATE_LAST_LOGIN': True,  # 更新最后登录时间
 
     'ALGORITHM': 'HS256',
