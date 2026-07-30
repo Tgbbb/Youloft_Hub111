@@ -2911,11 +2911,25 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if existing_task_obj:
                     task.clarification_questions = existing_task_obj.clarification_questions
                     task.clarification_answers = existing_task_obj.clarification_answers
-                    # 图片：优先用新请求带的（已处理为base64），旧task的screenshot_url作为兜底
+                    # 图片：优先用新请求带的（已处理为base64），旧task的screenshot_url转格式兜底
                     if not task.multimodal_mode:
                         task.multimodal_mode = existing_task_obj.multimodal_mode
-                    if not task.page_images_base64:
-                        task.page_images_base64 = existing_task_obj.page_images_base64
+                    if not task.page_images_base64 and existing_task_obj.page_images_base64:
+                        imgs = []
+                        for img in existing_task_obj.page_images_base64:
+                            if img.get('data'):
+                                imgs.append(img)
+                            elif img.get('screenshot_url'):
+                                url = img['screenshot_url']
+                                fp = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
+                                if os.path.exists(fp):
+                                    import base64 as b64
+                                    with open(fp, 'rb') as f:
+                                        img_data = b64.b64encode(f.read()).decode('utf-8')
+                                    imgs.append({'page': len(imgs)+1, 'data': img_data, 'media_type': img.get('media_type', 'image/png')})
+                        if imgs:
+                            task.page_images_base64 = imgs
+                            logger.info(f'[generate] 已将{len(imgs)}张screenshot_url转为data格式')
                     task.pipeline_stage = 'answers_ready'
                     update_fields = ['clarification_questions', 'clarification_answers', 'pipeline_stage']
                     if task.multimodal_mode:
