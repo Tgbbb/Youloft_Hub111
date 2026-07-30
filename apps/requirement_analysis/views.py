@@ -2901,8 +2901,11 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if existing_task_obj:
                     task.clarification_questions = existing_task_obj.clarification_questions
                     task.clarification_answers = existing_task_obj.clarification_answers
+                    task.multimodal_mode = existing_task_obj.multimodal_mode
+                    task.page_images_base64 = existing_task_obj.page_images_base64
                     task.pipeline_stage = 'answers_ready'
-                    task.save(update_fields=['clarification_questions', 'clarification_answers', 'pipeline_stage'])
+                    task.save(update_fields=['clarification_questions', 'clarification_answers',
+                        'multimodal_mode', 'page_images_base64', 'pipeline_stage'])
                     existing_task_obj.pipeline_stage = 'completed'
                     existing_task_obj.status = 'cancelled'
                     existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
