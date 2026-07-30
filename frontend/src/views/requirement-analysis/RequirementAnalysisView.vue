@@ -1095,6 +1095,9 @@ export default {
           }
 
           // 构建生成上下文，确保确认生成时可用
+          // 多模态任务带上图片引用（screenshot_url），startGeneration 走 JSON 传
+          const pageImages = (task.multimodal_mode && task.page_images_base64?.length > 0)
+            ? task.page_images_base64 : null
           this.pendingGeneration = {
             type: 'manual',
             title: task.title || '',
@@ -1102,7 +1105,8 @@ export default {
             projectId: task.project || this.manualInput.selectedProject || null,
             versionIds: task.version_ids || [],
             functionModuleId: task.function_module || '',
-            outputMode: task.output_mode || 'stream'
+            outputMode: task.output_mode || 'stream',
+            pageImages
           }
           this.showClarificationPanel = true
           ElMessage.success(`已恢复任务 ${taskId}，可继续澄清或直接生成`)

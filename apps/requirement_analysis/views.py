@@ -1907,10 +1907,20 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 future = executor.submit(run_clarify_multimodal)
                 questions = future.result(timeout=300)
 
-                # 保存澄清结果到 task
+                # 保存澄清结果到 task（含图片引用，便于断线恢复）
                 task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
+                task.multimodal_mode = True
+                # 优先存 URL 引用（modao 截图已在磁盘），base64 的才存 data
+                task_images = []
+                for img in page_images_from_json_raw:
+                    if img.get('screenshot_url'):
+                        task_images.append({'screenshot_url': img['screenshot_url'], 'media_type': img.get('media_type', 'image/png')})
+                    else:
+                        task_images.append(img)
+                task.page_images_base64 = task_images
                 task.pipeline_stage = 'awaiting_answers'
-                task.save(update_fields=['clarification_questions', 'pipeline_stage'])
+                task.save(update_fields=['clarification_questions', 'multimodal_mode',
+                    'page_images_base64', 'pipeline_stage'])
 
                 return Response({
                     'task_id': task.task_id,
