@@ -391,9 +391,25 @@ export default {
       }
       
       if (isTableFormat && tableData.length > 1) {
-        // 表格格式解析
-        const headers = tableData[0]
-        for (let i = 1; i < tableData.length; i++) {
+        // 表格格式解析 — 检测第一行是否为表头
+        const firstRow = tableData[0]
+        const headerKeywords = ['用例id', '测试目标', '测试场景', '优先级', 'id', '编号', 'caseid', 'priority']
+        const isHeaderRow = firstRow.some(cell => {
+          const c = cell.trim().toLowerCase()
+          return headerKeywords.some(kw => c === kw || c.includes(kw))
+        })
+
+        let headers, startIndex
+        if (isHeaderRow) {
+          headers = firstRow
+          startIndex = 1
+        } else {
+          // 兜底：无表头行，按8列位置硬解析
+          headers = ['用例ID', '测试目标', '前置条件', '操作步骤', '预期结果', '优先级', '测试类型', '关联需求']
+          startIndex = 0
+        }
+
+        for (let i = startIndex; i < tableData.length; i++) {
           const row = tableData[i]
           const testCase = {}
 
