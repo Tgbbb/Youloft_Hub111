@@ -347,6 +347,12 @@ export default {
         const taskResponse = await api.get(`/requirement-analysis/testcase-generation/${this.taskId}/`)
         this.task = taskResponse.data
 
+        // 未完成且有澄清问题 → 跳回需求分析页恢复流程
+        if (this.task.status !== 'completed' && this.task.clarification_questions?.length > 0) {
+          this.$router.push({ name: 'RequirementAnalysis', query: { taskId: this.taskId } })
+          return
+        }
+
         // 解析最终测试用例
         if (this.task.final_test_cases) {
           this.testCases = this.parseTestCases(this.task.final_test_cases)

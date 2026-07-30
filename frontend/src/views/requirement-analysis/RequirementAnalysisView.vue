@@ -426,6 +426,12 @@ export default {
     this.progressText = this.$t('requirementAnalysis.preparing')
     this.loadProjects()
     this.checkConfigStatus()
+
+    // 从任务记录恢复澄清流程
+    const taskId = this.$route.query.taskId
+    if (taskId) {
+      this.restoreTask(taskId)
+    }
   },
 
   activated() {
@@ -1053,6 +1059,53 @@ export default {
         ElMessage.error(this.$t('requirementAnalysis.extractFailed') + ': ' + (error.response?.data?.error || error.message))
       } finally {
         this.isExtracting = false
+      }
+    },
+
+    async restoreTask(taskId) {
+      try {
+        const response = await api.get(`/requirement-analysis/testcase-generation/${taskId}/`)
+        const task = response.data
+
+        // 恢复需求文本和标题
+        this.manualInput.title = task.title || ''
+        this.manualInput.description = task.requirement_text || ''
+        this.activeTab = 'manual'
+
+        // 恢复项目
+        if (task.project) {
+          this.manualInput.selectedProject = task.project
+          this.loadProjectVersions(task.project)
+        }
+
+        // 恢复澄清状态
+        if (task.clarification_questions?.length > 0) {
+          this.clarificationTaskId = task.task_id
+          this.currentTaskId = task.task_id
+          this.clarificationQuestions = task.clarification_questions
+
+          // 恢复已回答
+          this.clarificationAnswers = {}
+          if (task.clarification_answers) {
+            for (const a of task.clarification_answers) {
+              if (a.question_id !== undefined) {
+                this.clarificationAnswers[a.question_id] = a.answer || ''
+              }
+            }
+          }
+
+          // 如果是clarifying状态但有已回答 → 回到生成步骤；否则显示澄清面板
+          if (task.status === 'clarifying' && task.clarification_answers?.some(a => a.answer?.trim())) {
+            this.pendingGeneration = { title: task.title, requirementText: task.requirement_text }
+          }
+          this.showClarificationPanel = true
+          ElMessage.success(`已恢复任务 ${taskId}，可继续澄清或直接生成`)
+        } else if (task.status === 'completed') {
+          ElMessage.info('该任务已完成，请查看结果')
+        }
+      } catch (error) {
+        console.error('恢复任务失败:', error)
+        ElMessage.error('加载任务失败')
       }
     },
 
