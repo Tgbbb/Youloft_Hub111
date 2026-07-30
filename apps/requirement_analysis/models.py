@@ -2111,7 +2111,7 @@ class AIModelService:
             browser = await p.chromium.launch(**launch_args)
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1200},
-                device_scale_factor=3,
+                device_scale_factor=4,
                 locale='zh-CN',
             )
             page = await context.new_page()
