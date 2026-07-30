@@ -1094,9 +1094,15 @@ export default {
             }
           }
 
-          // 如果是clarifying状态但有已回答 → 回到生成步骤；否则显示澄清面板
-          if (task.status === 'clarifying' && task.clarification_answers?.some(a => a.answer?.trim())) {
-            this.pendingGeneration = { title: task.title, requirementText: task.requirement_text }
+          // 构建生成上下文，确保确认生成时可用
+          this.pendingGeneration = {
+            type: 'manual',
+            title: task.title || '',
+            requirementText: task.requirement_text || '',
+            projectId: task.project || this.manualInput.selectedProject || null,
+            versionIds: task.version_ids || [],
+            functionModuleId: task.function_module || '',
+            outputMode: task.output_mode || 'stream'
           }
           this.showClarificationPanel = true
           ElMessage.success(`已恢复任务 ${taskId}，可继续澄清或直接生成`)
