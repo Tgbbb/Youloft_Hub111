@@ -92,6 +92,28 @@
               <button class="ef-btn ef-btn--signal" @click="importFromModao" :disabled="isImportingModao || !modaoUrl || !modaoToken">{{ isImportingModao ? `导入中 ${_importProgress}%` : '从墨刀导入' }}</button>
               <button v-if="modaoCanvases.length > 0" class="ef-btn ef-btn--dark" @click="generateFromModao" :disabled="isGenerating || selectedCanvasCount === 0">生成 ({{ selectedCanvasCount }})</button>
             </div>
+            <!-- 导入进度面板 -->
+            <div v-if="isImportingModao" class="ef-import">
+              <div class="ef-import__head">
+                <span class="ef-import__title">导入进度</span>
+                <span class="ef-import__pct">{{ _importProgress }}%</span>
+              </div>
+              <div class="ef-import__bar"><div class="ef-import__fill" :style="{ width: Math.min(100, _importProgress) + '%' }"></div></div>
+              <div class="ef-import__stages">
+                <span v-for="s in importStages" :key="s.key" class="ef-import__stage" :class="importStageClass(s.key)">{{ s.label }}</span>
+              </div>
+              <template v-if="_importDetail">
+                <div class="ef-import__msg">{{ _importDetail.message || '处理中…' }}</div>
+                <div v-if="_importDetail.canvases && _importDetail.canvases.length" class="ef-import__canvases">
+                  <div v-for="c in _importDetail.canvases" :key="c.index" class="ef-import__canvas" :class="'is-' + (c.status || 'pending')">
+                    <span class="ef-import__idx">{{ String(c.index).padStart(2, '0') }}</span>
+                    <span class="ef-import__name">{{ c.name }}</span>
+                    <span class="ef-import__state">{{ c.status === 'done' ? '✓' : (c.status === 'failed' ? '✗' : '●') }}</span>
+                    <span class="ef-import__note">{{ c.message || '' }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
             <!-- Canvases -->
             <div v-if="modaoCanvases.length > 0" class="ef-canvas-bar">
               <button class="ef-btn ef-btn--text" @click="selectAllCanvases">
@@ -389,6 +411,9 @@ export default {
       replaceInputs: {},       // 添加截图的 file input refs
       isImportingModao: false,
       _importProgress: 0,          // 导入进度（0-100）
+      _importStage: '',            // 当前阶段 prepare/login/list/canvas/done/failed
+      _importDetail: null,         // 导入进度明细 {stage, message, current, total, canvases: []}
+      _importPollTimer: null,      // 导入进度轮询定时器
 
       // 需求澄清
       showClarificationPanel: false,  // 是否显示澄清面板
@@ -410,6 +435,16 @@ export default {
       return this.manualInput.title.trim() &&
              this.manualInput.description.trim() &&
              this.manualInput.description.length <= 2000
+    },
+
+    importStages() {
+      return [
+        { key: 'prepare', label: '启动' },
+        { key: 'login', label: '登录' },
+        { key: 'list', label: '画布列表' },
+        { key: 'canvas', label: '截图' },
+        { key: 'done', label: '完成' },
+      ]
     },
 
     isMultimodalFile() {
@@ -450,6 +485,10 @@ export default {
   beforeUnmount() {
     if (this.pollInterval) {
       clearInterval(this.pollInterval)
+    }
+    if (this._importPollTimer) {
+      clearTimeout(this._importPollTimer)
+      this._importPollTimer = null
     }
     // 停止token自动刷新定时器
     const userStore = useUserStore()
@@ -915,10 +954,23 @@ export default {
       } catch (e) { this.modaoHistory = [] }
     },
 
+    importStageClass(key) {
+      const order = ['prepare', 'login', 'list', 'canvas', 'done']
+      if (this._importStage === 'failed') return 'is-failed'
+      if (this._importStage === 'done') return 'is-done'
+      const cur = order.indexOf(this._importStage)
+      const idx = order.indexOf(key)
+      if (idx < cur) return 'is-done'
+      if (idx === cur) return 'is-on'
+      return ''
+    },
+
     async importFromModao() {
       if (!this.modaoUrl || !this.modaoToken) return
       this.isImportingModao = true
       this._importProgress = 0
+      this._importStage = 'prepare'
+      this._importDetail = { stage: 'prepare', message: '任务已提交，等待执行', current: 0, total: 1, canvases: [] }
       try {
         if (this.modaoToken) {
           localStorage.setItem('modao_cookie', this.modaoToken)
@@ -940,6 +992,8 @@ export default {
           try {
             const { data: r } = await api.get(`/requirement-analysis/wx/${importId}/`)
             this._importProgress = r.progress || 0
+            this._importStage = r.stage || ''
+            this._importDetail = r.progress_detail || this._importDetail
             if (r.status === 'completed') {
               // 加载结果
               this.modaoCanvases = (r.data?.canvases || []).map(c => ({
@@ -953,7 +1007,13 @@ export default {
               this._modaoHistoryId = r.id
               this._modaoImportId = r.data?.import_id || ''
               this.isImportingModao = false
-              ElMessage.success(`导入成功: ${this.modaoCanvases.length}个画布`)
+              const detail = r.progress_detail || {}
+              const failedCount = (detail.canvases || []).filter(c => c.status === 'failed').length
+              if (failedCount > 0) {
+                ElMessage.warning(`导入完成: 成功 ${this.modaoCanvases.length} 个画布，${failedCount} 个失败`)
+              } else {
+                ElMessage.success(`导入成功: ${this.modaoCanvases.length}个画布`)
+              }
               this.loadModaoHistoryList()
               return
             }
@@ -970,13 +1030,13 @@ export default {
               return
             }
             // 继续轮询
-            setTimeout(poll, 2000)
+            this._importPollTimer = setTimeout(poll, 1000)
           } catch (e) {
             this.isImportingModao = false
             ElMessage.error('查询进度失败')
           }
         }
-        setTimeout(poll, 1000)
+        this._importPollTimer = setTimeout(poll, 1000)
       } catch (e) {
         this.isImportingModao = false
         const msg = e.response?.data?.error || e.message || ''
@@ -2521,6 +2581,36 @@ export default {
   &__thumbs { display: flex; gap: 4px; margin-bottom: 8px; min-height: 40px; flex-wrap: wrap; }
   &__name { font-size: 12px; color: #555; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 }
+
+/* ======== Modao import progress ======== */
+.ef-import {
+  margin: 12px 0; padding: 14px 16px; background: #fff; border: 1px solid #e4e2dc;
+  &__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  &__title { font-size: 11px; font-weight: 700; color: #777; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; }
+  &__pct { font-size: 18px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: var(--ef-ink); }
+  &__bar { height: 6px; background: #f0efe9; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+  &__fill { height: 100%; background: var(--ef-signal); transition: width .4s ease; }
+  &__stages { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  &__stage {
+    font-size: 11px; padding: 3px 10px; border: 1px solid #e0ded8; color: #b5b3ad; border-radius: 20px;
+    &.is-on { border-color: var(--ef-ink); color: var(--ef-ink); background: #fffef5; font-weight: 700; }
+    &.is-done { border-color: #9cc98e; color: #5c9c4a; background: #f2f9ef; }
+    &.is-failed { border-color: #e0a0a0; color: #c0392b; background: #fdf2f2; }
+  }
+  &__msg { font-size: 12px; color: #666; margin-bottom: 8px; }
+  &__canvases { max-height: 220px; overflow-y: auto; border-top: 1px solid #f0efe9; }
+  &__canvas {
+    display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-size: 12px; border-bottom: 1px solid #f6f5f1;
+    &.is-done .ef-import__state { color: #5c9c4a; }
+    &.is-failed .ef-import__state { color: #c0392b; }
+    &.is-processing .ef-import__state, &.is-pending .ef-import__state { color: #d4a017; animation: ef-import-pulse 1s ease-in-out infinite; }
+  }
+  &__idx { font-size: 11px; font-weight: 700; color: #b5b3ad; font-family: "Space Grotesk", system-ui, sans-serif; }
+  &__name { color: #444; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  &__state { width: 14px; text-align: center; font-weight: 900; flex-shrink: 0; }
+  &__note { color: #999; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+}
+@keyframes ef-import-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* ======== Lightbox ======== */
 .ef-lightbox {

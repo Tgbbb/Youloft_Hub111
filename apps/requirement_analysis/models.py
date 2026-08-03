@@ -12,6 +12,147 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 墨刀截图输出控制：目标长边（控制模型输入大小/成本）与原始像素上限（防 OOM）
+# 2048 会导致大画布文字模糊，提升到 4096（仍会控制成本，但清晰度明显改善）
+MODAO_SCREENSHOT_TARGET_LONG_EDGE = 4096
+MODAO_SCREENSHOT_MAX_EDGE = 25000
+
+_MODAO_BOUNDS_JS = '''() => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let count = 0;
+    const vw = window.innerWidth;
+    const hasScreen = document.querySelector('.mb-screen') !== null;
+    document.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
+        const b = w.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) return;
+        // 优先只统计当前画布容器(.mb-screen)内的元素，天然排除左右侧边栏/面板；
+        // 旧版页面无该容器时，退化为按右侧 15% 视口宽度过滤
+        if (hasScreen && !w.closest('.mb-screen')) return;
+        if (!hasScreen && b.left > vw * 0.85) return;
+        count++;
+        minX = Math.min(minX, b.left);
+        minY = Math.min(minY, b.top);
+        maxX = Math.max(maxX, b.right);
+        maxY = Math.max(maxY, b.bottom);
+    });
+    if (count === 0) return null;
+    return {x: minX, y: minY, w: maxX - minX, h: maxY - minY, count};
+}'''
+
+_MODAO_REPOSITION_JS = '''(arg) => {
+    const fit = arg.fit, padX = arg.padX, padY = arg.padY;
+    const za = document.querySelector('.zoom-area');
+    if (!za) return null;
+    const grabBounds = () => {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        let count = 0;
+        const hasScreen = document.querySelector('.mb-screen') !== null;
+        document.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
+            const b = w.getBoundingClientRect();
+            if (b.width <= 0 || b.height <= 0) return;
+            if (hasScreen && !w.closest('.mb-screen')) return;
+            count++;
+            minX = Math.min(minX, b.left);
+            minY = Math.min(minY, b.top);
+            maxX = Math.max(maxX, b.right);
+            maxY = Math.max(maxY, b.bottom);
+        });
+        if (count === 0) return null;
+        return {x: minX, y: minY, w: maxX - minX, h: maxY - minY, count};
+    };
+    const m = (getComputedStyle(za).transform || '').match(/^matrix\\(([^)]+)\\)$/);
+    if (!m) return null;
+    const p = m[1].split(',').map(Number);
+    let e = p[4], f = p[5];
+    za.style.transform = `matrix(${fit}, 0, 0, ${fit}, ${e}, ${f})`;
+    let b = grabBounds();
+    if (!b) return null;
+    for (let i = 0; i < 8; i++) {
+        const dx = padX - b.x, dy = padY - b.y;
+        if (Math.abs(dx) < 0.6 && Math.abs(dy) < 0.6) break;
+        e += dx;
+        f += dy;
+        za.style.transform = `matrix(${fit}, 0, 0, ${fit}, ${e}, ${f})`;
+        b = grabBounds();
+    }
+    return {x: b.x, y: b.y, w: b.w, h: b.h, count: b.count};
+}'''
+
+_MODAO_REVERT_ZOOM_JS = '''() => {
+    const st = window.__modaoZoomState;
+    if (st) {
+        if (st.isZoom) st.el.style.zoom = st.originalZoom;
+        else st.el.style.transform = st.originalTransform;
+        delete window.__modaoZoomState;
+    }
+}'''
+
+_MODAO_CANVAS_FP_JS = '''() => {
+    const t = document.querySelector('[class*="canvas-title"], [class*="CanvasName"], .canvas_title');
+    const za = document.querySelector('.zoom-area');
+    return {
+        title: t ? t.innerText.trim().replace(/\\s+/g, ' ').slice(0, 60) : '',
+        zoom: za ? getComputedStyle(za).transform : '',
+    };
+}'''
+
+# 隐藏墨刀 UI（顶栏/标尺/左侧页面树/右侧面板等），并记录原 display 以便截图后恢复。
+# 左侧页面树必须只在截图期间隐藏，否则后续点击画布项会失效。
+_MODAO_HIDE_UI_JS = '''() => {
+    const selectors = [
+        '#fixed-area, .fixed_area, [class*="StyledSignUpPrompt"]',
+        '.ruler, .rulerH, .rulerV, #mb-ruler, [class*="Ruler"], [class*="StyledRulerContainer"]',
+        '[class*="ToolBar"], [class*="toolbar-left"], [class*="toolbar"], [class*="StyledToolbar"]',
+        '[class*="comment"], [class*="annotation"], [class*="note-panel"], [class*="right-panel"]',
+        '[class*="thumbnail"], [class*="status-bar"], [class*="bottom-bar"]',
+        '[class*="LeftSidePanel"], [class*="left-panel"], [class*="LeftPane"], [class*="CanvasListPanel"], [class*="ScreenList"], .canvas-scroll-list, .toggleable-zone',
+    ];
+    const saved = window.__modaoHiddenUI || [];
+    document.querySelectorAll(selectors.join(',')).forEach(el => {
+        if (el.style.display !== 'none') {
+            saved.push({el, display: el.style.display});
+            el.style.display = 'none';
+        }
+    });
+    window.__modaoHiddenUI = saved;
+    return saved.length;
+}'''
+
+_MODAO_RESTORE_UI_JS = '''() => {
+    const saved = window.__modaoHiddenUI || [];
+    for (const item of saved) {
+        item.el.style.display = item.display;
+    }
+    window.__modaoHiddenUI = [];
+    return saved.length;
+}'''
+
+_MODAO_EXPAND_ALL_JS = '''() => {
+    let n = 0;
+    // 每次只点第一个折叠的 expander，避免 DOM 重建后句柄失效
+    for (let guard = 0; guard < 10; guard++) {
+        let a = null;
+        const all = document.querySelectorAll('a.expander');
+        for (const el of all) {
+            const svg = el.querySelector('svg');
+            // 注意：svg.className 是 SVGAnimatedString，String() 为 "[object SVGAnimatedString]"，
+            // 必须用 getAttribute('class') 判断 is-collapse/is-expand
+            if (svg && /is-collapse/.test(svg.getAttribute('class') || '')) { a = el; break; }
+        }
+        if (!a) break;
+        a.click();
+        n++;
+    }
+    return n;
+}'''
+
+_MODAO_ACTIVE_CID_JS = '''() => {
+    const active = document.querySelector('li.rn-content-item.active, [class*="rn-list-item"].active');
+    if (!active) return null;
+    const li = active.closest('li');
+    return li ? (li.getAttribute('data-cid') || null) : null;
+}'''
+
 
 class ModaoImport(models.Model):
     """墨刀导入记录"""
@@ -26,6 +167,8 @@ class ModaoImport(models.Model):
     data = models.JSONField(default=dict, verbose_name='导入数据', help_text='{canvases: [...], screenshots: [...]}')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
     progress = models.IntegerField(default=0, verbose_name='进度(0-100)')
+    stage = models.CharField(max_length=30, blank=True, default='', verbose_name='当前阶段')
+    progress_detail = models.JSONField(default=dict, blank=True, verbose_name='进度明细')
     celery_task_id = models.CharField(max_length=100, blank=True, default='', verbose_name='Celery任务ID')
     error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
     project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True,
@@ -2092,6 +2235,27 @@ class AIModelService:
         import_id = uuid_mod.uuid4().hex[:12]
         result = {'title': '', 'canvases': [], 'import_id': import_id}
 
+        # 进度上报：维护当前阶段/画布计数，回调仅透出最新状态
+        progress = {'current': 0, 'total': 1, 'stage': 'prepare'}
+
+        def report(message='', current=None, total=None, stage=None,
+                   canvas_index=None, canvas_name=None, canvas_status=None):
+            if not progress_callback:
+                return
+            if current is not None:
+                progress['current'] = current
+            if total is not None:
+                progress['total'] = total
+            if stage is not None:
+                progress['stage'] = stage
+            progress_callback(
+                progress['current'], progress['total'], message,
+                stage=progress['stage'],
+                canvas_index=canvas_index,
+                canvas_name=canvas_name,
+                canvas_status=canvas_status,
+            )
+
         # 截图保存目录
         screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', import_id)
         os.makedirs(screenshot_dir, exist_ok=True)
@@ -2105,10 +2269,12 @@ class AIModelService:
         chrome_path = next((p for p in chrome_paths if os.path.exists(p)), None)
 
         async with async_playwright() as p:
+            report('正在启动浏览器…', stage='prepare')
             launch_args = {'headless': True, 'args': ['--no-sandbox', '--disable-gpu']}
             if chrome_path:
                 launch_args['executable_path'] = chrome_path
             browser = await p.chromium.launch(**launch_args)
+            report('浏览器已启动，正在打开墨刀页面…', stage='login')
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1200},
                 device_scale_factor=4,
@@ -2138,6 +2304,7 @@ class AIModelService:
             await page.wait_for_timeout(3000)
             result['title'] = await page.title()
             logger.info(f'[Modao] 页面标题: {result["title"]}')
+            report(f'已打开页面: {result["title"]}', stage='login')
 
             # Cookie 过期检测：标题为"墨刀"说明未登录
             if result['title'] == '墨刀':
@@ -2158,90 +2325,284 @@ class AIModelService:
             all_items = await page.query_selector_all('li.rn-content-item')
             logger.info(f'[Modao] 发现 {len(all_items)} 个侧边栏项，正在过滤非画布...')
 
-            # 过滤：只保留真正的页面画布(target-type=6)，排除图层/热区(target-type=2)
-            canvas_items = []
+            # 过滤：只保留真正的页面画布(target-type=6)，排除图层/热区(target-type=2)。
+            # 只记录 data-cid，不缓存元素句柄——折叠/展开会重建侧边栏 DOM，句柄会失效
+            canvas_cids = []
             for item in all_items:
                 target_type = await item.evaluate(
                     'el => el.querySelector("[data-interactive-target-type]")?.getAttribute("data-interactive-target-type") || ""'
                 )
                 if target_type == '6':
-                    canvas_items.append(item)
+                    cid = await item.get_attribute('data-cid')
+                    canvas_cids.append(cid)
                 else:
                     name_el = await item.query_selector('.editable-span')
                     name = (await name_el.inner_text()).strip() if name_el else '(空)'
                     logger.info(f'[Modao] 跳过非画布项: {name} (target-type={target_type})')
 
-            canvas_count = len(canvas_items)
+            canvas_count = len(canvas_cids)
             logger.info(f'[Modao] 过滤后 {canvas_count} 个画布')
+            report(f'发现 {canvas_count} 个画布，开始逐个截图', current=0, total=canvas_count, stage='list')
 
             if canvas_count == 0:
                 await browser.close()
                 raise Exception('Cookie已失效或页面无权限：未找到画布，请检查Cookie是否正确（F12→Network→请求头→Cookie整行复制）')
 
-            for i, item in enumerate(canvas_items):
+            async def _locate_canvas_item(cid):
+                for it in await page.query_selector_all('li.rn-content-item'):
+                    if await it.get_attribute('data-cid') == cid:
+                        return it
+                return None
+
+            for i, cid in enumerate(canvas_cids):
                 try:
+                    # 每次处理前确保子页面树全部展开（防止上一张父级画布折叠后子页不可见）
+                    await page.evaluate(_MODAO_EXPAND_ALL_JS)
+                    await page.wait_for_timeout(400)
+                    item = await _locate_canvas_item(cid)
+                    if item is None:
+                        raise Exception('画布项在侧边栏中不可见，无法定位')
                     name_el = await item.query_selector('.editable-span')
                     name = (await name_el.inner_text()).strip() if name_el else f'画布{i+1}'
-                    name_slug = name.replace('/', '_').replace('\\', '_')
+                    report(f'正在处理画布 {i+1}/{canvas_count}: {name}',
+                           current=i, total=canvas_count, stage='canvas',
+                           canvas_index=i + 1, canvas_name=name, canvas_status='processing')
 
-                    # 滚动到可见再点击
-                    await item.scroll_into_view_if_needed()
-                    await page.wait_for_timeout(300)
-                    await item.click()
-                    await page.wait_for_timeout(1500)
+                    # 点击行内文字（或行本身）。不要点击 li 中心：
+                    # li 里嵌套着子页面行，点 li 中心会落到子页上，导致父级画布
+                    # （如 单人模式设置页）跳到其第一个子页面（倒计时页），截图重复。
+                    async def click_row():
+                        item = await _locate_canvas_item(cid)
+                        if item is None:
+                            return None
+                        row = await item.query_selector('div[data-interactive-target-type]') or item
+                        click_el = await row.query_selector('.editable-span') or row
+                        await click_el.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(300)
+                        await click_el.click()
+                        await page.wait_for_timeout(1500)
+                        return item
 
-                    # 隐藏墨刀 UI（标尺、工具栏、弹窗、注释面板；不隐藏左侧页面树，否则后续点击失效）
-                    await page.evaluate('''() => {
-                        document.querySelectorAll('#fixed-area, .fixed_area, [class*="StyledSignUpPrompt"]')
-                            .forEach(el => { el.style.display = 'none'; });
-                        document.querySelectorAll('.ruler, .rulerH, .rulerV, #mb-ruler, [class*="Ruler"]')
-                            .forEach(el => { el.style.display = 'none'; });
-                        document.querySelectorAll('[class*="ToolBar"], [class*="toolbar-left"], [class*="toolbar"]')
-                            .forEach(el => { el.style.display = 'none'; });
-                        document.querySelectorAll('[class*="comment"], [class*="annotation"], [class*="note-panel"], [class*="right-panel"]')
-                            .forEach(el => { el.style.display = 'none'; });
-                        document.querySelectorAll('[class*="thumbnail"], [class*="status-bar"], [class*="bottom-bar"]')
-                            .forEach(el => { el.style.display = 'none'; });
-                    }''')
+                    item = await click_row()
+                    if item is None:
+                        raise Exception('画布项在侧边栏中不可见，无法定位')
+
+                    # 校验是否真的激活了目标画布（父级画布可能跳到第一个子页面）
+                    active_cid = await page.evaluate(_MODAO_ACTIVE_CID_JS)
+                    if active_cid and active_cid != cid:
+                        logger.warning(f'[Modao] 画布{i+1}[{name}] 点击后激活了 {active_cid}'
+                                       f'（父级画布跳到子页），折叠后重试…')
+                        try:
+                            await item.evaluate(
+                                'el => { const a = el.querySelector("a.expander"); if (a) a.click(); }'
+                            )
+                            await page.wait_for_timeout(500)
+                        except Exception:
+                            pass
+                        item = await click_row()
+                        if item is None:
+                            raise Exception('折叠后画布项不可见，无法定位')
+                        active_cid = await page.evaluate(_MODAO_ACTIVE_CID_JS)
+                        if active_cid and active_cid != cid:
+                            raise Exception(f'画布点击后未切换（激活了 {active_cid}），已跳过')
+                    report(f'正在等待渲染: {name}', current=i, total=canvas_count, stage='canvas',
+                           canvas_index=i + 1, canvas_name=name)
+
+                    # 隐藏墨刀 UI（顶栏/标尺/左侧页面树/右侧面板等），截图后恢复
+                    await page.evaluate(_MODAO_HIDE_UI_JS)
                     await page.wait_for_timeout(1000)
 
-                    # 计算可见 widget 包围盒（保持 zoom scale，annotation 自然被挤出视口）
-                    bounds = await page.evaluate('''() => {
-                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                        let count = 0;
-                        const vw = window.innerWidth;
-                        document.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
-                            const b = w.getBoundingClientRect();
-                            if (b.width <= 0 || b.height <= 0) return;
-                            if (b.left > vw * 0.85) return; // 跳过右侧面板元素
-                            count++;
-                            minX = Math.min(minX, b.left);
-                            minY = Math.min(minY, b.top);
-                            maxX = Math.max(maxX, b.right);
-                            maxY = Math.max(maxY, b.bottom);
-                        });
-                        if (count === 0) return null;
-                        return {x: minX, y: minY, w: maxX - minX, h: maxY - minY, count};
+                    # 计算可见 widget 包围盒，并尝试把大画布恢复为 100% 缩放（提升文字清晰度）
+                    try:
+                        zoom_probe = await page.evaluate('''() => {
+                        const grabBounds = () => {
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                            let count = 0;
+                            const vw = window.innerWidth;
+                            document.querySelectorAll('.widget, [id^="text-dom-"], .wImage, [class*="draft"]').forEach(w => {
+                                const b = w.getBoundingClientRect();
+                                if (b.width <= 0 || b.height <= 0) return;
+                                if (b.left > vw * 0.85) return; // 跳过右侧面板元素
+                                count++;
+                                minX = Math.min(minX, b.left);
+                                minY = Math.min(minY, b.top);
+                                maxX = Math.max(maxX, b.right);
+                                maxY = Math.max(maxY, b.bottom);
+                            });
+                            if (count === 0) return null;
+                            return {x: minX, y: minY, w: maxX - minX, h: maxY - minY, count};
+                        };
+
+                        const before = grabBounds();
+                        if (!before) return null;
+
+                        // 向上查找画布缩放的来源（transform scale 或 CSS zoom）
+                        const findZoomSource = (el) => {
+                            let node = el;
+                            while (node && node !== document.body) {
+                                const cs = getComputedStyle(node);
+                                const m = cs.transform.match(/^matrix\\(([^)]+)\\)$/);
+                                if (m) {
+                                    const p = m[1].split(',').map(Number);
+                                    const sx = Math.hypot(p[0], p[1]);
+                                    if (sx > 0.05 && Math.abs(sx - 1) > 0.02) return {el: node, scale: sx};
+                                }
+                                const z = parseFloat(cs.zoom);
+                                if (Number.isFinite(z) && z > 0.05 && Math.abs(z - 1) > 0.02) return {el: node, scale: z, isZoom: true};
+                                node = node.parentElement;
+                            }
+                            return null;
+                        };
+
+                        const sample = document.querySelectorAll('.widget, [id^="text-dom-"], .wImage');
+                        let source = null;
+                        for (const w of Array.from(sample).slice(0, 20)) {
+                            source = findZoomSource(w);
+                            if (source) break;
+                        }
+                        if (!source || source.scale >= 0.9) {
+                            return {x: before.x, y: before.y, w: before.w, h: before.h, count: before.count,
+                                    scale: source ? source.scale : 1, normalized: false};
+                        }
+                        try {
+                            if (source.isZoom) {
+                                window.__modaoZoomState = {el: source.el, isZoom: true, originalZoom: source.el.style.zoom};
+                                source.el.style.zoom = String(1 / source.scale);
+                            } else {
+                                window.__modaoZoomState = {el: source.el, isZoom: false, originalTransform: source.el.style.transform};
+                                const cur = getComputedStyle(source.el).transform;
+                                source.el.style.transform = (cur && cur !== 'none' ? cur + ' ' : '') +
+                                    'scale(' + (1 / source.scale).toFixed(6) + ')';
+                            }
+                            return {x: before.x, y: before.y, w: before.w, h: before.h, count: before.count,
+                                    scale: source.scale, normalized: true};
+                        } catch (e) {
+                            return {x: before.x, y: before.y, w: before.w, h: before.h, count: before.count,
+                                    scale: source.scale, normalized: false};
+                        }
                     }''')
+                    except Exception as e:
+                        logger.warning(f'[Modao] 缩放探测失败，按原缩放截图: {e}')
+                        zoom_probe = None
+
+                    if zoom_probe and zoom_probe.get('normalized'):
+                        await page.wait_for_timeout(600)
+                        logger.info(f'[Modao] 画布缩放已恢复100%: scale={zoom_probe["scale"]:.3f}')
+                    elif zoom_probe and zoom_probe.get('scale', 1) < 0.9:
+                        logger.warning(f'[Modao] 检测到画布缩放 {zoom_probe["scale"]:.3f} 但归一化失败，使用原缩放截图')
+
+                    # 归一化后计算包围盒
+                    try:
+                        bounds = await page.evaluate(_MODAO_BOUNDS_JS)
+                    except Exception as e:
+                        logger.warning(f'[Modao] 包围盒计算失败: {e}')
+                        bounds = zoom_probe
+
+                    # 视口扩展：包围盒超出视口时扩大视口，确保完整截图（避免只截到视口内部分）
+                    if bounds and (bounds['w'] > 1900 or bounds['h'] > 1200):
+                        try:
+                            new_w = min(max(int(bounds['w']) + 40, 1280), 4096)
+                            new_h = min(max(int(bounds['h']) + 40, 900), 4096)
+                            vs = page.viewport_size or {}
+                            if new_w != vs.get('width') or new_h != vs.get('height'):
+                                await page.set_viewport_size({'width': new_w, 'height': new_h})
+                                await page.wait_for_timeout(500)
+                                bounds = await page.evaluate(_MODAO_BOUNDS_JS)
+                        except Exception as e:
+                            logger.warning(f'[Modao] 视口扩展失败: {e}')
+
+                    # 重定位 + 适配缩放：把画布左上角对齐到 (pad,pad)，必要时等比缩小到视口内。
+                    # 解决归一化到 100% 后画布左上角落在负坐标、或右/下边缘超出视口
+                    # （clip 超出视口的部分会被浏览器静默裁掉，导致内容不全）
+                    vs = page.viewport_size or {}
+                    if bounds and (bounds['x'] < 0 or bounds['y'] < 0
+                                   or bounds['x'] + bounds['w'] + 20 > vs.get('width', 1920)
+                                   or bounds['y'] + bounds['h'] + 20 > vs.get('height', 1200)):
+                        try:
+                            pad_align = 10
+                            vw_cur = max(vs.get('width', 1920), 1)
+                            vh_cur = max(vs.get('height', 1200), 1)
+                            fit = min(1.0,
+                                      (vw_cur - pad_align * 2 - 4) / max(bounds['w'], 1),
+                                      (vh_cur - pad_align * 2 - 4) / max(bounds['h'], 1))
+                            fit = max(fit, 0.01)
+                            reposition = await page.evaluate(
+                                _MODAO_REPOSITION_JS,
+                                {'fit': fit, 'padX': pad_align, 'padY': pad_align},
+                            )
+                            if reposition:
+                                await page.wait_for_timeout(300)
+                                bounds = await page.evaluate(_MODAO_BOUNDS_JS)
+                                logger.info(f'[Modao] 画布已重定位: fit={fit:.4f}, '
+                                            f'bounds=({bounds["x"]:.0f},{bounds["y"]:.0f},{bounds["w"]:.0f}x{bounds["h"]:.0f})')
+                        except Exception as e:
+                            logger.warning(f'[Modao] 画布重定位失败: {e}')
+
+                    # 仍超出视口（重定位失败等极端情况）：回退原缩放状态，避免截取部分内容
+                    vs = page.viewport_size or {}
+                    if bounds and (bounds['w'] > vs.get('width', 1920) + 5 or bounds['h'] > vs.get('height', 1200) + 5
+                                   or bounds['x'] < -0.5 or bounds['y'] < -0.5):
+                        try:
+                            await page.evaluate(_MODAO_REVERT_ZOOM_JS)
+                            await page.wait_for_timeout(400)
+                            bounds = await page.evaluate(_MODAO_BOUNDS_JS)
+                            logger.warning('[Modao] 画布超出视口上限，已回退原缩放截图')
+                        except Exception as e:
+                            logger.warning(f'[Modao] 回退缩放失败: {e}')
+
+                    # 截图前等待字体加载完成，避免 fallback 字体导致的模糊/缺字
+                    try:
+                        await page.evaluate(
+                            'document.fonts ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2000))]) : true'
+                        )
+                    except Exception:
+                        pass
 
                     # 截图
+                    report(f'正在截图: {name}', current=i, total=canvas_count, stage='canvas',
+                           canvas_index=i + 1, canvas_name=name)
                     if bounds:
                         pad = 10
                         clip_region = {
                             'x': max(0, bounds['x'] - pad),
                             'y': max(0, bounds['y'] - pad),
-                            'width': min(bounds['w'] + pad * 2, 8000),
-                            'height': min(bounds['h'] + pad * 2, 8000),
+                            'width': min(bounds['w'] + pad * 2, 12000),
+                            'height': min(bounds['h'] + pad * 2, 12000),
                         }
-                        screenshot_bytes = await page.screenshot(clip=clip_region, type='png')
+                        # 输出像素超 8192 长边时，Chrome 普通截图可能失败，改用 CDP 截图
+                        longest_css = max(clip_region['width'], clip_region['height'])
+                        try:
+                            if longest_css * 4 > 8192:
+                                cdp = await context.new_cdp_session(page)
+                                shot = await cdp.send('Page.captureScreenshot', {
+                                    'format': 'png',
+                                    'clip': {
+                                        'x': clip_region['x'], 'y': clip_region['y'],
+                                        'width': clip_region['width'], 'height': clip_region['height'],
+                                        'scale': 1,
+                                    },
+                                    'captureBeyondViewport': False,
+                                })
+                                screenshot_bytes = b64.b64decode(shot['data'])
+                                logger.info(f'[Modao] 大图截图走CDP: {clip_region["width"]:.0f}x{clip_region["height"]:.0f}')
+                            else:
+                                screenshot_bytes = await page.screenshot(clip=clip_region, type='png')
+                        except Exception as e:
+                            logger.warning(f'[Modao] 截图异常，回退普通截图: {e}')
+                            screenshot_bytes = await page.screenshot(clip=clip_region, type='png')
                     else:
                         screenshot_bytes = await page.screenshot(type='png', full_page=True)
 
-                    # PIL 智能背景裁剪 + JPEG 压缩
+                    # PIL：内存保护 → 背景裁剪 → 目标长边降采样 → 高质量 JPEG
+                    final_w, final_h = (bounds['w'], bounds['h']) if bounds else (0, 0)
                     try:
                         from PIL import Image
                         import io
                         img = Image.open(io.BytesIO(screenshot_bytes))
+                        # 内存保护：原始像素超上限时先等比压到上限
+                        if max(img.size) > MODAO_SCREENSHOT_MAX_EDGE:
+                            ratio = MODAO_SCREENSHOT_MAX_EDGE / max(img.size)
+                            img = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
                         gray = img.convert('L')
                         arr = gray.load()
                         pw, ph = img.size
@@ -2271,10 +2632,16 @@ class AIModelService:
                             logger.info(f'[Modao] 背景裁剪: {pw}×{ph} → {crop[2]-crop[0]}×{crop[3]-crop[1]}')
                         if img.mode in ('RGBA', 'P'):
                             img = img.convert('RGB')
+                        # 统一缩放到目标长边：控制模型输入大小与 token 成本
+                        long_edge = max(img.size)
+                        if long_edge > MODAO_SCREENSHOT_TARGET_LONG_EDGE:
+                            ratio = MODAO_SCREENSHOT_TARGET_LONG_EDGE / long_edge
+                            img = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
+                        final_w, final_h = img.size
                         buf = io.BytesIO()
-                        img.save(buf, format='JPEG', quality=85)
+                        img.save(buf, format='JPEG', quality=92, subsampling=0)
                         screenshot_bytes = buf.getvalue()
-                        logger.info(f'[Modao] JPEG 压缩: {len(screenshot_bytes) / 1024:.0f}KB')
+                        logger.info(f'[Modao] 输出: {final_w}×{final_h}, {len(screenshot_bytes) / 1024:.0f}KB')
                     except Exception:
                         pass  # PIL 不可用则保留原图
 
@@ -2285,8 +2652,7 @@ class AIModelService:
                         f.write(screenshot_bytes)
 
                     screenshot_url = f'{settings.MEDIA_URL}modao_screenshots/{import_id}/{filename}'
-                    w = bounds['w'] if bounds else 0
-                    h = bounds['h'] if bounds else 0
+                    w, h = final_w, final_h
 
                     result['canvases'].append({
                         'name': name,
@@ -2295,11 +2661,22 @@ class AIModelService:
                         'height': h,
                     })
                     logger.info(f'[Modao] 画布 {i+1}/{canvas_count}: {name} ({w}×{h}) → {screenshot_url}')
-                    if progress_callback:
-                        progress_callback(i + 1, canvas_count, f'{name} ({w}×{h})')
+                    report(f'{name} 截图完成 ({w}×{h})', current=i + 1, total=canvas_count, stage='canvas',
+                           canvas_index=i + 1, canvas_name=name, canvas_status='done')
                 except Exception as ex:
                     logger.error(f'[Modao] 画布{i+1}提取失败: {ex}')
+                    report(f'画布{i+1} 处理失败: {ex}', current=i + 1, total=canvas_count, stage='canvas',
+                           canvas_index=i + 1, canvas_name=locals().get('name') or f'画布{i+1}',
+                           canvas_status='failed')
+                finally:
+                    # 恢复被隐藏的 UI（顶栏/左侧页面树等），确保下一个画布能正常点击
+                    try:
+                        await page.evaluate(_MODAO_RESTORE_UI_JS)
+                    except Exception:
+                        pass
 
             await browser.close()
             logger.info(f'[Modao] 导入完成: {len(result["canvases"])}画布')
+            report(f'导入完成: {len(result["canvases"])} 个画布',
+                   current=len(result['canvases']), total=canvas_count, stage='done')
             return result

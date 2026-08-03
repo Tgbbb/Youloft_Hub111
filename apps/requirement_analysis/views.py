@@ -49,6 +49,89 @@ from .services import RequirementAnalysisService, DocumentProcessor
 logger = logging.getLogger(__name__)
 
 
+MODAO_SCREENSHOT_RE = re.compile(
+    r'^modao_screenshots/([A-Za-z0-9_-]{1,64})/([A-Za-z0-9_.-]{1,80})\.(png|jpe?g|webp|gif|bmp)$',
+    re.IGNORECASE,
+)
+MAX_MODAO_SCREENSHOT_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+def _resolve_media_file(url):
+    """将截图 URL 解析为 MEDIA_ROOT 内的安全绝对路径；越界/非法时返回 None"""
+    if not url or not isinstance(url, str):
+        return None
+    if url.startswith(settings.MEDIA_URL):
+        rel = url[len(settings.MEDIA_URL):].lstrip('/')
+    else:
+        rel = url.lstrip('/')
+    if not rel or '\\' in rel:
+        return None
+    media_root = os.path.realpath(settings.MEDIA_ROOT)
+    full = os.path.realpath(os.path.join(media_root, rel))
+    try:
+        if os.path.commonpath([media_root, full]) != media_root:
+            return None
+    except ValueError:
+        return None
+    return full
+
+
+def _modao_dir_owned_by(import_dir, user):
+    """判断截图目录是否属于当前用户；已被其他用户占用时返回 False"""
+    if not user or not user.is_authenticated:
+        return False
+    for m in ModaoImport.objects.filter(created_by=user).only('id', 'data'):
+        data = m.data or {}
+        if data.get('import_id') == import_dir or str(m.id) == import_dir:
+            return True
+    for m in ModaoImport.objects.exclude(created_by=user).only('id', 'data'):
+        data = m.data or {}
+        if data.get('import_id') == import_dir or str(m.id) == import_dir:
+            return False
+    return True  # 全新目录（前端首次上传时生成）
+
+
+def _looks_like_image(head, ext):
+    """校验文件头是否为真实图片（防止上传 html/svg 等可执行内容）"""
+    ext = ext.lower()
+    if ext in ('png', 'jpg', 'jpeg'):
+        return head[:8] == b'\x89PNG\r\n\x1a\n' or head[:3] == b'\xff\xd8\xff'
+    if ext == 'webp':
+        return len(head) >= 12 and head[:4] == b'RIFF' and head[8:12] == b'WEBP'
+    if ext == 'gif':
+        return head[:6] in (b'GIF87a', b'GIF89a')
+    if ext == 'bmp':
+        return head[:2] == b'BM'
+    return False
+
+
+def _clear_generation_task_images(task, update_fields=None):
+    """多模态任务完成/失败/取消时清空图片 base64，释放数据库空间"""
+    if getattr(task, 'multimodal_mode', False) and task.page_images_base64:
+        task.page_images_base64 = None
+        if update_fields is not None and 'page_images_base64' not in update_fields:
+            update_fields.append('page_images_base64')
+        return True
+    return False
+
+
+def _modao_folder_referenced_by_others(folder_id, exclude_pk=None):
+    """检查 modao_screenshots/<folder_id> 是否被其他导入记录（import_id 或画布 URL）引用"""
+    qs = ModaoImport.objects.exclude(pk=exclude_pk) if exclude_pk else ModaoImport.objects.all()
+    for o in qs.only('id', 'data'):
+        data = o.data or {}
+        if data.get('import_id') == folder_id:
+            return True
+        for c in data.get('canvases', []):
+            url = c.get('screenshotUrl') or c.get('screenshot_url') or ''
+            if not url:
+                shots = c.get('screenshots') or []
+                url = shots[0].get('url', '') if shots else ''
+            if url and f'modao_screenshots/{folder_id}/' in url:
+                return True
+    return False
+
+
 class RequirementDocumentViewSet(viewsets.ModelViewSet):
     """需求文档视图集"""
     queryset = RequirementDocument.objects.all()
@@ -1696,7 +1779,15 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             title=initial_title,
             url=url,
             status='pending',
+            stage='prepare',
             progress=0,
+            progress_detail={
+                'stage': 'prepare',
+                'message': '任务已提交，等待执行',
+                'current': 0,
+                'total': 1,
+                'canvases': [],
+            },
             project_id=request.data.get('project_id') or request.data.get('project') or None,
             created_by=request.user if request.user.is_authenticated else None,
         )
@@ -1721,10 +1812,26 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
         filepath = request.data.get('path', '').strip()
         if not file or not filepath:
             return Response({'error': '缺少文件或路径'}, status=400)
-        # 安全检查：只允许修改 modao_screenshots 目录
+        # 安全检查：只允许写 modao_screenshots/<目录>/<图片文件名>
         norm = os.path.normpath(filepath).replace('\\', '/')
-        if not norm.startswith('modao_screenshots/'):
-            return Response({'error': '路径不合法'}, status=400)
+        m2 = MODAO_SCREENSHOT_RE.match(norm)
+        if not m2:
+            return Response({'error': '路径不合法，仅允许 modao_screenshots/<目录>/<文件名>.<图片扩展名>'}, status=400)
+        import_dir = m2.group(1)
+        ext = m2.group(3)
+
+        # 归属校验：不允许覆盖其他用户的导入截图
+        if not _modao_dir_owned_by(import_dir, request.user):
+            return Response({'error': '无权修改该截图'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 大小与文件头校验
+        if file.size and file.size > MAX_MODAO_SCREENSHOT_SIZE:
+            return Response({'error': '截图文件过大（上限 50MB）'}, status=400)
+        head = file.read(12)
+        file.seek(0)
+        if not _looks_like_image(head, ext):
+            return Response({'error': '文件类型不合法，仅允许图片'}, status=400)
+
         dest = os.path.join(settings.MEDIA_ROOT, norm)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, 'wb+') as f:
@@ -1801,12 +1908,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         })
                     # 方式2: 截图文件 URL → 读文件转 base64
                     elif img.get('screenshot_url'):
-                        url = img['screenshot_url']
-                        if url.startswith(settings.MEDIA_URL):
-                            filepath = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
-                        else:
-                            filepath = os.path.join(settings.MEDIA_ROOT, url.lstrip('/'))
-                        if os.path.exists(filepath):
+                        filepath = _resolve_media_file(img['screenshot_url'])
+                        if filepath and os.path.exists(filepath):
                             with open(filepath, 'rb') as f:
                                 img_data = b64.b64encode(f.read()).decode('utf-8')
                             page_images.append({
@@ -1815,7 +1918,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                 'media_type': 'image/png',
                             })
                         else:
-                            logger.warning(f'[clarify] 截图文件不存在: {filepath}')
+                            logger.warning(f'[clarify] 截图文件不存在或路径不合法: {str(img.get("screenshot_url"))[:120]}')
                 text_parts = [request.data.get('requirement_text', '')]
                 if files:
                     # 覆盖为文件内容
@@ -2180,7 +2283,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task.status = 'failed'
             task.pipeline_stage = 'failed'
             task.error_message = str(e)[:500]
-            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+            update_fields = ['status', 'pipeline_stage', 'error_message']
+            _clear_generation_task_images(task, update_fields)
+            task.save(update_fields=update_fields)
 
     def _start_review_pipeline(self, task):
         """执行评审 → 改进 流程"""
@@ -2231,7 +2336,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task.status = 'failed'
             task.pipeline_stage = 'failed'
             task.error_message = str(e)[:500]
-            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+            update_fields = ['status', 'pipeline_stage', 'error_message']
+            _clear_generation_task_images(task, update_fields)
+            task.save(update_fields=update_fields)
 
     def _start_revise_pipeline(self, task):
         """执行改进 → 完成"""
@@ -2274,7 +2381,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task.pipeline_stage = 'completed'
             task.progress = 100
             task.completed_at = timezone.now()
-            task.save(update_fields=['status', 'pipeline_stage', 'final_test_cases', 'progress', 'completed_at'])
+            update_fields = ['status', 'pipeline_stage', 'final_test_cases', 'progress', 'completed_at']
+            _clear_generation_task_images(task, update_fields)
+            task.save(update_fields=update_fields)
             logger.info(f"[pipeline] task={task.task_id} 改进完成，全流程结束")
 
         except Exception as e:
@@ -2282,7 +2391,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task.status = 'failed'
             task.pipeline_stage = 'failed'
             task.error_message = str(e)[:500]
-            task.save(update_fields=['status', 'pipeline_stage', 'error_message'])
+            update_fields = ['status', 'pipeline_stage', 'error_message']
+            _clear_generation_task_images(task, update_fields)
+            task.save(update_fields=update_fields)
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
              url_path='generate_multimodal')
@@ -2487,7 +2598,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 task.save(update_fields=['clarification_questions', 'clarification_answers', 'pipeline_stage'])
                 existing_task_obj.pipeline_stage = 'completed'
                 existing_task_obj.status = 'cancelled'
-                existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
+                update_fields = ['pipeline_stage', 'status']
+                _clear_generation_task_images(existing_task_obj, update_fields)
+                existing_task_obj.save(update_fields=update_fields)
                 logger.info(f"[generate_multimodal] 迁移澄清数据 task={existing_task_id} → {task.task_id}")
 
             # 异步执行
@@ -2712,7 +2825,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                             logger.error(f"多模态生成任务执行失败: {e}")
                             task.status = 'failed'
                             task.error_message = str(e)
-                            task.save(update_fields=['status', 'error_message'])
+                            update_fields = ['status', 'error_message']
+                            _clear_generation_task_images(task, update_fields)
+                            task.save(update_fields=update_fields)
 
                     thread = threading.Thread(target=execute_task)
                     thread.daemon = True
@@ -2847,12 +2962,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     if img.get('data'):
                         page_images_base64.append({'page': len(page_images_base64)+1, 'data': img['data'], 'media_type': img.get('media_type', 'image/png')})
                     elif img.get('screenshot_url'):
-                        url = img['screenshot_url']
-                        if url.startswith(settings.MEDIA_URL):
-                            filepath = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
-                        else:
-                            filepath = os.path.join(settings.MEDIA_ROOT, url.lstrip('/'))
-                        if os.path.exists(filepath):
+                        filepath = _resolve_media_file(img['screenshot_url'])
+                        if filepath and os.path.exists(filepath):
                             with open(filepath, 'rb') as f:
                                 img_data = b64.b64encode(f.read()).decode('utf-8')
                             page_images_base64.append({'page': len(page_images_base64)+1, 'data': img_data, 'media_type': 'image/png'})
@@ -2920,9 +3031,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                             if img.get('data'):
                                 imgs.append(img)
                             elif img.get('screenshot_url'):
-                                url = img['screenshot_url']
-                                fp = os.path.join(settings.MEDIA_ROOT, url[len(settings.MEDIA_URL):].lstrip('/'))
-                                if os.path.exists(fp):
+                                fp = _resolve_media_file(img['screenshot_url'])
+                                if fp and os.path.exists(fp):
                                     import base64 as b64
                                     with open(fp, 'rb') as f:
                                         img_data = b64.b64encode(f.read()).decode('utf-8')
@@ -2937,7 +3047,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     task.save(update_fields=update_fields)
                     existing_task_obj.pipeline_stage = 'completed'
                     existing_task_obj.status = 'cancelled'
-                    existing_task_obj.save(update_fields=['pipeline_stage', 'status'])
+                    update_fields = ['pipeline_stage', 'status']
+                    _clear_generation_task_images(existing_task_obj, update_fields)
+                    existing_task_obj.save(update_fields=update_fields)
                     logger.info(f"[generate] 迁移澄清数据 task={existing_task_id} → {task.task_id}")
             else:
                 return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -3346,6 +3458,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                 logger.error(f"生成任务执行失败: {e}")
                                 task.status = 'failed'
                                 task.error_message = str(e)
+                                _clear_generation_task_images(task)
                                 task.save()
 
                         # 在新线程中执行任务
@@ -3357,6 +3470,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         logger.error(f"启动生成任务失败: {e}")
                         task.status = 'failed'
                         task.error_message = str(e)
+                        _clear_generation_task_images(task)
                         task.save()
 
             # 启动异步任务
@@ -3715,6 +3829,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 )
 
             task.status = 'cancelled'
+            _clear_generation_task_images(task)
             task.save()
 
             return Response({
@@ -4783,11 +4898,11 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
 
     def list(self, request):
         qs = ModaoImport.objects.filter(created_by=request.user).only(
-            'id', 'title', 'url', 'status', 'progress', 'created_at'
+            'id', 'title', 'url', 'status', 'stage', 'progress', 'created_at'
         ).order_by('-created_at')
         data = [{
             'id': m.id, 'title': m.title, 'url': m.url,
-            'status': m.status, 'progress': m.progress,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
             'canvas_count': len((m.data or {}).get('canvases', [])),
             'created_at': m.created_at.isoformat() if m.created_at else '',
         } for m in qs]
@@ -4797,7 +4912,8 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
         m = ModaoImport.objects.get(pk=pk, created_by=request.user)
         return Response({
             'id': m.id, 'title': m.title, 'url': m.url, 'data': m.data,
-            'status': m.status, 'progress': m.progress,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
+            'progress_detail': m.progress_detail,
             'error_message': m.error_message,
             'created_at': m.created_at.isoformat() if m.created_at else '',
         })
@@ -4824,22 +4940,39 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
 
     def destroy(self, request, pk=None):
         import shutil, re
-        m = self.get_object()
-        # 删除本地截图文件夹
-        canvases = (m.data or {}).get('canvases', [])
-        if canvases:
-            for c in canvases:
-                # 兼容新旧格式：旧 screenshotUrl，新 screenshots 数组
-                url = (c.get('screenshotUrl') or c.get('screenshot_url') or '')
-                if not url:
-                    shots = c.get('screenshots') or []
-                    url = shots[0].get('url', '') if shots else ''
-                m2 = re.search(r'modao_screenshots/([^/]+)/', url)
+        try:
+            m = ModaoImport.objects.get(pk=pk, created_by=request.user)
+        except ModaoImport.DoesNotExist:
+            return Response({'error': '记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 收集本记录引用的所有截图目录（import_id + 画布 URL，含被替换遗留的旧目录）
+        data = m.data or {}
+        folder_ids = set()
+        import_id = str(data.get('import_id') or '')
+        if re.fullmatch(r'[A-Za-z0-9_-]{1,64}', import_id):
+            folder_ids.add(import_id)
+        for c in data.get('canvases', []):
+            urls = []
+            for key in ('screenshotUrl', 'screenshot_url'):
+                if c.get(key):
+                    urls.append(c[key])
+            for s in (c.get('screenshots') or []):
+                if s.get('url'):
+                    urls.append(s['url'])
+            for url in urls:
+                m2 = re.search(r'modao_screenshots/([^/]+)/', url or '')
                 if m2:
-                    screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', m2.group(1))
-                    if os.path.isdir(screenshot_dir):
-                        shutil.rmtree(screenshot_dir)
-                        logger.info(f'[Modao] 删除截图文件夹: {screenshot_dir}')
-                    break  # 一个 import 只有一个文件夹
+                    folder_ids.add(m2.group(1))
+
+        for folder_id in folder_ids:
+            # 防止伪造 data 指向他人截图目录：其他用户记录引用了同一目录则跳过
+            if _modao_folder_referenced_by_others(folder_id, exclude_pk=m.pk):
+                logger.warning(f'[Modao] 截图目录被其他记录引用，跳过删除: {folder_id}')
+                continue
+            screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', folder_id)
+            if os.path.isdir(screenshot_dir):
+                shutil.rmtree(screenshot_dir)
+                logger.info(f'[Modao] 删除截图文件夹: {screenshot_dir}')
+
         m.delete()
         return Response({'message': '已删除'})

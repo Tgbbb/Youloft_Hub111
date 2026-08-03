@@ -170,7 +170,7 @@ class DocumentProcessor:
 
             buffer = BytesIO()
             if output_format.upper() == 'JPEG':
-                img.save(buffer, format='JPEG', quality=100)
+                img.save(buffer, format='JPEG', quality=85)
                 media_type = 'image/jpeg'
             else:
                 img.save(buffer, format='PNG')
