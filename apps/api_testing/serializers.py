@@ -2,6 +2,8 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import datetime
+from django.db.models import Q
+from apps.projects.serializer_mixins import MainProjectSerializerMixin
 
 
 class NullableDateField(serializers.DateField):
@@ -28,7 +30,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name']
 
 
-class ApiProjectSerializer(serializers.ModelSerializer):
+class ApiProjectSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
     members = UserSerializer(many=True, read_only=True)
     member_ids = serializers.ListField(child=serializers.IntegerField(), write_only=True, required=False)
@@ -40,7 +42,7 @@ class ApiProjectSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'project_type', 'status',
             'owner', 'members', 'member_ids', 'start_date', 'end_date',
-            'created_at', 'updated_at'
+            'main_project', 'main_project_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
 
@@ -146,6 +148,14 @@ class EnvironmentSerializer(serializers.ModelSerializer):
             attrs['project'] = None
         elif attrs.get('scope') == 'LOCAL' and not attrs.get('project'):
             raise serializers.ValidationError({'project': '局部环境变量必须关联项目'})
+        project = attrs.get('project')
+        if project:
+            user = self.context['request'].user
+            if not ApiProject.objects.filter(
+                Q(owner=user) | Q(members=user),
+                id=project.id
+            ).exists():
+                raise serializers.ValidationError({'project': '无权关联该项目'})
         return attrs
 
     def to_representation(self, instance):
@@ -172,11 +182,52 @@ class RequestHistorySerializer(serializers.ModelSerializer):
 
 
 class TestSuiteRequestSerializer(serializers.ModelSerializer):
+    """套件用例序列化器（同一个接口可以有多条用例，参数不同）"""
     request = ApiRequestSerializer(read_only=True)
+    request_id = serializers.PrimaryKeyRelatedField(
+        source='request', queryset=ApiRequest.objects.all(), write_only=True, required=False
+    )
+    test_suite = serializers.PrimaryKeyRelatedField(queryset=TestSuite.objects.all(), required=False)
+    request_name = serializers.CharField(source='request.name', read_only=True)
+    request_method = serializers.CharField(source='request.method', read_only=True)
+    request_url = serializers.CharField(source='request.url', read_only=True)
 
     class Meta:
         model = TestSuiteRequest
-        fields = ['id', 'request', 'order', 'assertions', 'enabled']
+        fields = [
+            'id', 'test_suite', 'request', 'request_id', 'request_name',
+            'request_method', 'request_url', 'name', 'description', 'order',
+            'assertions', 'params', 'headers', 'body', 'extract_rules', 'enabled'
+        ]
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        if self.instance is None and (not attrs.get('test_suite') or not attrs.get('request')):
+            raise serializers.ValidationError({'test_suite': '创建用例时必须指定测试套件和接口'})
+        accessible_projects = ApiProject.objects.filter(
+            Q(owner=user) | Q(members=user)
+        )
+        test_suite = attrs.get('test_suite')
+        if test_suite and not accessible_projects.filter(id=test_suite.project_id).exists():
+            raise serializers.ValidationError({'test_suite': '无权操作该测试套件'})
+        api_request = attrs.get('request')
+        if api_request and not ApiRequest.objects.filter(
+            Q(collection__project__in=accessible_projects)
+            | Q(collection__isnull=True, created_by=user)
+        ).filter(id=api_request.id).exists():
+            raise serializers.ValidationError({'request_id': '请求不存在或无权访问'})
+        return attrs
+
+    def create(self, validated_data):
+        test_suite = validated_data.get('test_suite')
+        api_request = validated_data.get('request')
+        if not validated_data.get('name') and api_request:
+            validated_data['name'] = api_request.name
+        if validated_data.get('order') is None:
+            validated_data['order'] = TestSuiteRequest.objects.filter(
+                test_suite=test_suite
+            ).count()
+        return super().create(validated_data)
 
 
 class TestSuiteSerializer(serializers.ModelSerializer):
@@ -292,6 +343,27 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("测试套件不能为空")
         elif task_type == 'API_REQUEST' and not attrs.get('api_request'):
             raise serializers.ValidationError("API请求不能为空")
+
+        # 校验资源归属：定时任务只能引用当前用户可访问的资源
+        user = self.context['request'].user
+        accessible_projects = ApiProject.objects.filter(
+            Q(owner=user) | Q(members=user)
+        )
+        test_suite = attrs.get('test_suite')
+        if test_suite and not accessible_projects.filter(id=test_suite.project_id).exists():
+            raise serializers.ValidationError({'test_suite': '无权使用该测试套件'})
+        api_request = attrs.get('api_request')
+        if api_request and not ApiRequest.objects.filter(
+            Q(collection__project__in=accessible_projects)
+            | Q(collection__isnull=True, created_by=user)
+        ).filter(id=api_request.id).exists():
+            raise serializers.ValidationError({'api_request': '无权使用该API请求'})
+        environment = attrs.get('environment')
+        if environment and not Environment.objects.filter(
+            Q(scope='GLOBAL')
+            | Q(scope='LOCAL', project__in=accessible_projects)
+        ).filter(id=environment.id).exists():
+            raise serializers.ValidationError({'environment': '无权使用该环境'})
 
         return attrs
 
@@ -812,16 +884,25 @@ class AIServiceConfigSerializer(serializers.ModelSerializer):
     service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    api_key = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    api_key_preview = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = AIServiceConfig
         fields = [
             'id', 'name', 'service_type', 'service_type_display',
-            'role', 'role_display', 'api_key', 'base_url', 'model_name',
+            'role', 'role_display', 'api_key', 'api_key_preview', 'base_url', 'model_name',
             'max_tokens', 'temperature', 'is_active', 'created_by',
             'created_by_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by']
+
+    def get_api_key_preview(self, obj):
+        """密钥只回显末四位"""
+        key = obj.api_key or ''
+        if len(key) <= 4:
+            return '****'
+        return f"****{key[-4:]}"
 
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user

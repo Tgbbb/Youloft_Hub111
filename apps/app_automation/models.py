@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from .constants import DeviceStatus, ExecutionStatus, ExecutionResult, ElementType
+from apps.projects.models import Project
 
 User = get_user_model()
 
@@ -28,6 +29,10 @@ class AppProject(models.Model):
     members = models.ManyToManyField(
         User, blank=True,
         related_name='app_projects', verbose_name='团队成员'
+    )
+    main_project = models.OneToOneField(
+        Project, on_delete=models.CASCADE,
+        related_name='app_project', verbose_name='主项目'
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')

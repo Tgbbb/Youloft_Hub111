@@ -3,12 +3,13 @@
 Midscene AI 移动端自动化 - 序列化器
 """
 from rest_framework import serializers
+from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
     MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneExecutionRecord
 )
 
 
-class MidsceneProjectSerializer(serializers.ModelSerializer):
+class MidsceneProjectSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     owner_name = serializers.SerializerMethodField()
     member_count = serializers.SerializerMethodField()
     case_count = serializers.SerializerMethodField()
@@ -18,7 +19,7 @@ class MidsceneProjectSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'default_app_package', 'default_ios_bundle_id',
             'owner', 'owner_name',
-            'members', 'member_count', 'case_count',
+            'members', 'member_count', 'case_count', 'main_project', 'main_project_name',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'owner', 'created_at', 'updated_at']

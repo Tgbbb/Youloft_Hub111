@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 import json
+from apps.projects.models import Project
 
 User = get_user_model()
 
@@ -27,6 +28,10 @@ class ApiProject(models.Model):
     end_date = models.DateField(null=True, blank=True, verbose_name='结束日期')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_api_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='api_projects', verbose_name='团队成员')
+    main_project = models.OneToOneField(
+        Project, on_delete=models.CASCADE,
+        related_name='api_project', verbose_name='主项目'
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
@@ -190,22 +195,27 @@ class TestSuite(models.Model):
 
 
 class TestSuiteRequest(models.Model):
-    """测试套件中的请求关联模型"""
+    """测试套件中的用例模型（同一个接口可以添加多条用例，参数不同）"""
     test_suite = models.ForeignKey(TestSuite, on_delete=models.CASCADE, verbose_name='测试套件')
     request = models.ForeignKey(ApiRequest, on_delete=models.CASCADE, verbose_name='API请求')
+    name = models.CharField(max_length=200, blank=True, verbose_name='用例名称')
+    description = models.TextField(blank=True, verbose_name='用例描述')
     order = models.IntegerField(default=0, verbose_name='执行顺序')
     assertions = models.JSONField(default=list, verbose_name='断言规则')
+    params = models.JSONField(default=dict, blank=True, verbose_name='参数覆盖')
+    headers = models.JSONField(default=dict, blank=True, verbose_name='请求头覆盖')
+    body = models.JSONField(null=True, blank=True, verbose_name='请求体覆盖')
+    extract_rules = models.JSONField(default=list, verbose_name='响应变量提取规则')
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
 
     class Meta:
         db_table = 'api_test_suite_requests'
-        verbose_name = '套件请求'
-        verbose_name_plural = '套件请求'
-        unique_together = ['test_suite', 'request']
+        verbose_name = '套件用例'
+        verbose_name_plural = '套件用例'
         ordering = ['order']
 
     def __str__(self):
-        return f"{self.test_suite.name} - {self.request.name}"
+        return f"{self.test_suite.name} - {self.name or self.request.name}"
 
 
 class TestExecution(models.Model):
@@ -317,12 +327,12 @@ class ScheduledTask(models.Model):
     def calculate_next_run(self):
         """计算下次运行时间"""
         from datetime import datetime, timedelta
-        from croniter import croniter
 
         now = timezone.now()
 
         if self.trigger_type == 'CRON' and self.cron_expression:
             try:
+                from croniter import croniter
                 iter = croniter(self.cron_expression, now)
                 return iter.get_next(datetime)
             except Exception:

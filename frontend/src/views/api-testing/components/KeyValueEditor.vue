@@ -582,26 +582,79 @@ defineExpose({
   gap: 135px;
 }
 
+/* Endfield / moderate — replace Element Plus blue/green helpers with
+   charcoal + signal-yellow field-engineering grammar */
 .data-factory-btn {
-  background-color: #409eff !important;
-  border-color: #409eff !important;
-  color: white !important;
+  background-color: #191919 !important;
+  border-color: #191919 !important;
+  color: #ffffff !important;
+  font-weight: 600;
 }
 
 .data-factory-btn:hover {
-  background-color: #66b1ff !important;
-  border-color: #66b1ff !important;
+  background-color: #2c2c2c !important;
+  border-color: #fffa00 !important;
+  color: #fffa00 !important;
 }
 
 .variable-helper-btn {
-  background-color: #67c23a;
-  border-color: #67c23a;
-  color: white;
+  background-color: transparent;
+  border-color: #191919;
+  color: #191919;
+  font-weight: 600;
 }
 
 .variable-helper-btn:hover {
-  background-color: #5daf34;
-  border-color: #5daf34;
+  background-color: rgba(255, 250, 0, .16);
+  border-color: #191919;
+  color: #191919;
+}
+
+.data-factory-btn:focus-visible,
+.variable-helper-btn:focus-visible {
+  outline: 2px solid #fffa00;
+  outline-offset: 1px;
+}
+
+.key-value-editor :deep(.el-button--danger) {
+  background: transparent;
+  border-color: #191919;
+  color: #191919;
+}
+
+.key-value-editor :deep(.el-button--danger:hover) {
+  background: rgba(220, 38, 38, .08);
+  border-color: #b91c1c;
+  color: #b91c1c;
+}
+
+/* Endfield / moderate — row enable checkbox (was Element Plus blue) */
+.key-value-editor :deep(.el-checkbox__inner) {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #191919;
+  border-radius: 0;
+  background: #ffffff;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.key-value-editor :deep(.el-checkbox__input:hover .el-checkbox__inner) {
+  border-color: #191919;
+}
+
+.key-value-editor :deep(.el-checkbox.is-checked .el-checkbox__inner) {
+  background: #fffa00;
+  border-color: #fffa00;
+}
+
+.key-value-editor :deep(.el-checkbox.is-checked .el-checkbox__inner::after) {
+  border-color: #191919;
+}
+
+.key-value-editor :deep(.el-checkbox__input.is-focus .el-checkbox__inner) {
+  border-color: #fffa00;
+  outline: 1px solid rgba(255, 250, 0, .45);
+  outline-offset: 1px;
 }
 
 .file-name {

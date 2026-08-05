@@ -1,159 +1,227 @@
 <template>
-  <div class="tcl-root">
-    <!-- 顶栏 -->
-    <div class="tcl-top">
-      <div class="tcl-top__left">
-        <h1 class="tcl-top__title">{{ $t('testcase.title') }}</h1>
-        <span v-if="total > 0 && hasAnyFilter()" class="tcl-top__count">{{ total }} 条结果</span>
-      </div>
-      <div class="tcl-top__actions">
-        <button class="tcl-btn" v-if="selectedTestCases.length > 0" @click="batchDeleteTestCases" :disabled="isDeleting">
-          🗑 {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
-        </button>
-        <button class="tcl-btn" @click="exportToExcel">📥 {{ $t('testcase.exportExcel') }}</button>
-        <button class="tcl-btn" @click="downloadImportTemplate">📋 模板</button>
-        <button class="tcl-btn" @click="openImportDialog">📤 {{ $t('testcase.importCases') }}</button>
-        <button class="tcl-btn" @click="goToImportRecords">📂 记录</button>
-        <button class="tcl-btn--primary" @click="$router.push('/ai-generation/testcases/create')">＋ {{ $t('testcase.newCase') }}</button>
-      </div>
-    </div>
+  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <!-- Grid -->
+    <div class="ag-grid" aria-hidden="true"></div>
 
-    <!-- 筛选命令区 -->
-    <div class="tcl-filter">
-      <div class="tcl-filter__row">
-        <div class="tcl-filter__group">
-          <label class="tcl-filter__label">项目</label>
-          <el-select v-model="projectFilter" :placeholder="$t('testcase.relatedProject')" clearable @change="handleProjectFilterChange" class="tcl-filter__select">
+    <!-- ====== Zone A: Header ====== -->
+    <section class="ag-zone ag-zone--head">
+      <header class="ag-zone__bar">
+        <span class="ag-zone__kicker">TEST CASE / INDEX</span>
+        <span class="ag-zone__rule" aria-hidden="true"></span>
+        <span class="ag-zone__code">{{ total }} RECORDS</span>
+      </header>
+      <div class="ag-head">
+        <h1 class="ag-head__title">{{ $t('testcase.title') }}</h1>
+        <div class="ag-head__actions">
+          <button
+            v-if="selectedTestCases.length > 0"
+            class="ag-btn ag-btn--danger"
+            @click="batchDeleteTestCases"
+            :disabled="isDeleting">
+            {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
+          </button>
+          <button class="ag-btn ag-btn--ghost" @click="exportToExcel">{{ $t('testcase.exportExcel') }}</button>
+          <button class="ag-btn ag-btn--ghost" @click="downloadImportTemplate">{{ $t('testcase.downloadImportTemplate') }}</button>
+          <button class="ag-btn ag-btn--ghost" @click="openImportDialog">{{ $t('testcase.importCases') }}</button>
+          <button class="ag-btn ag-btn--ghost" @click="goToImportRecords">{{ $t('testcase.importRecords') }}</button>
+          <button class="ag-btn ag-btn--ok" @click="$router.push('/ai-generation/testcases/create')">+ {{ $t('testcase.newCase') }}</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== Zone B: Content ====== -->
+    <section class="ag-zone ag-zone--content">
+      <div v-if="loading" class="ag-loading-bar" aria-hidden="true"></div>
+
+      <!-- Filter -->
+      <div class="ag-filter">
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">PROJECT</span>
+          <el-select
+            v-model="projectFilter"
+            :placeholder="$t('testcase.relatedProject')"
+            clearable
+            popper-class="ag-dropdown"
+            @change="handleProjectFilterChange"
+            class="ag-select-el">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
         </div>
-        <span class="tcl-filter__arrow">→</span>
-        <div class="tcl-filter__group">
-          <label class="tcl-filter__label">版本</label>
-          <el-select v-model="versionFilter" :placeholder="$t('testcase.versionFilter')" clearable filterable @change="handleVersionFilterChange" :disabled="!projectFilter" class="tcl-filter__select">
+        <span class="ag-flow__arrow" aria-hidden="true">→</span>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">VERSION</span>
+          <el-select
+            v-model="versionFilter"
+            :placeholder="$t('testcase.versionFilter')"
+            clearable
+            filterable
+            popper-class="ag-dropdown"
+            @change="handleVersionFilterChange"
+            :disabled="!projectFilter"
+            class="ag-select-el">
             <el-option v-for="v in versions" :key="v.id" :label="v.name + (v.is_baseline ? ' 基线' : '')" :value="v.id" />
           </el-select>
         </div>
-        <span class="tcl-filter__arrow">→</span>
-        <div class="tcl-filter__group">
-          <label class="tcl-filter__label">模块</label>
-          <el-select v-model="moduleFilter" :placeholder="$t('testcase.moduleFilter')" clearable filterable @change="handleFilter" :disabled="!versionFilter" class="tcl-filter__select">
+        <span class="ag-flow__arrow" aria-hidden="true">→</span>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">MODULE</span>
+          <el-select
+            v-model="moduleFilter"
+            :placeholder="$t('testcase.moduleFilter')"
+            clearable
+            filterable
+            popper-class="ag-dropdown"
+            @change="handleFilter"
+            :disabled="!versionFilter"
+            class="ag-select-el">
             <el-option v-for="m in filterModules" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
         </div>
-        <div class="tcl-filter__div"></div>
-        <div class="tcl-filter__group">
-          <label class="tcl-filter__label">优先级</label>
-          <el-select v-model="priorityFilter" :placeholder="$t('testcase.priorityFilter')" clearable @change="handleFilter" class="filter-select short">
+        <span class="ag-filter__div" aria-hidden="true"></span>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">PRIORITY</span>
+          <el-select
+            v-model="priorityFilter"
+            :placeholder="$t('testcase.priorityFilter')"
+            clearable
+            popper-class="ag-dropdown"
+            @change="handleFilter"
+            class="ag-select-el ag-select-el--sm">
             <el-option :label="$t('testcase.low')" value="low" />
             <el-option :label="$t('testcase.medium')" value="medium" />
             <el-option :label="$t('testcase.high')" value="high" />
             <el-option :label="$t('testcase.critical')" value="critical" />
           </el-select>
         </div>
-        <div class="filter-group search-group">
-          <label class="tcl-filter__label">搜索</label>
-          <el-input v-model="searchText" :placeholder="$t('testcase.searchPlaceholder')" clearable @input="handleSearch" class="tcl-filter__search">
+        <div class="ag-filter__field ag-filter__field--search">
+          <span class="ag-filter__label">SEARCH</span>
+          <el-input v-model="searchText" :placeholder="$t('testcase.searchPlaceholder')" clearable @input="handleSearch" class="ag-search">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
         </div>
       </div>
 
-      <!-- 活跃筛选标签 -->
-      <div v-if="activeFilters.length > 0" class="tcl-chips">
-        <span class="tcl-chip__label">当前筛选：</span>
-        <span v-for="f in activeFilters" :key="f.key" class="tcl-chip" @click="removeFilter(f.key)">
-          {{ f.label }} ✕
+      <!-- Active filter chips -->
+      <div v-if="activeFilters.length > 0" class="ag-chips">
+        <span class="ag-chips__label">当前筛选：</span>
+        <span v-for="f in activeFilters" :key="f.key" class="ag-chip" @click="removeFilter(f.key)">
+          {{ f.label }} <span class="ag-chip__x" aria-hidden="true">×</span>
         </span>
-        <span class="tcl-chip__clear" @click="clearAllFilters">清除全部</span>
-      </div>
-    </div>
-
-    <!-- 表格区 -->
-    <div class="tcl-table-card">
-      <div v-if="!hasAnyFilter() && !loading" class="tcl-empty">
-        <div class="tcl-empty__icon">🔍</div>
-        <div class="tcl-empty__title">筛选条件后查看用例</div>
-        <div class="tcl-empty__desc">选择 <strong>项目</strong> → <strong>版本</strong> → <strong>模块</strong> 快速定位目标用例</div>
+        <button class="ag-chip__clear" @click="clearAllFilters">清除全部</button>
       </div>
 
-      <el-table v-else :data="testcases" v-loading="loading" style="width: 100%" @selection-change="handleSelectionChange" stripe>
-        <el-table-column type="selection" width="48" />
-        <el-table-column type="index" :label="'#'" width="60" :index="getSerialNumber" />
-        <el-table-column prop="title" :label="$t('testcase.caseTitle')" min-width="280" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="tcl-link" @click="goToTestCase(row.id)">{{ row.title }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="priority" :label="$t('testcase.priority')" width="90" align="center">
-          <template #default="{ row }">
-            <span class="tcl-pri" :class="row.priority">{{ getPriorityText(row.priority) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="function_module" :label="$t('testcase.moduleName')" width="130">
-          <template #default="{ row }">
-            <span v-if="row.function_module" class="tcl-mod">{{ row.function_module.name }}</span>
-            <span v-else class="tcl-muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column :label="$t('testcase.execution')" width="130" align="center">
-          <template #default="{ row }">
-            <span v-if="row.execution_status === 'passed'" class="tcl-exec pass">✓ 通过</span>
-            <span v-else-if="row.execution_status === 'failed'" class="tcl-exec fail">✕ 不通过</span>
-            <span v-else class="tcl-muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="author.username" :label="$t('testcase.author')" width="100" />
-        <el-table-column prop="created_at" :label="$t('testcase.createdAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column :label="$t('project.actions')" width="200" fixed="right">
-          <template #default="{ row }">
-            <button class="row-btn pass" @click="executeCase(row, 'passed')" :disabled="row._executing">✓</button>
-            <button class="row-btn fail" @click="executeCase(row, 'failed')" :disabled="row._executing">✕</button>
-            <button class="tcl-row-btn" @click="editTestCase(row)">编辑</button>
-            <button class="row-btn danger" @click="deleteTestCase(row)">删除</button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
+      <!-- Empty state: pick filters first -->
+      <div v-if="!hasAnyFilter() && !loading" class="ag-empty">
+        <span class="ag-empty__code">00 / PICK</span>
+        <p class="ag-empty__title">筛选条件后查看用例</p>
+        <p class="ag-empty__desc">选择 <strong>项目</strong> → <strong>版本</strong> → <strong>模块</strong> 快速定位目标用例</p>
+      </div>
 
-    <!-- 分页 -->
-    <div class="pager-bar" v-if="hasAnyFilter()">
-      <el-pagination
-        v-model:current-page="currentPage"
-        v-model:page-size="pageSize"
-        :page-sizes="[15, 25, 35, 50, 100]"
-        :total="total"
-        layout="total, sizes, prev, pager, next"
-        @current-change="handlePageChange"
-        @size-change="handleSizeChange"
-      />
-    </div>
+      <!-- Table -->
+      <div v-else class="ag-table-wrap">
+        <table class="ag-table ag-table--list">
+          <thead>
+            <tr>
+              <th class="ag-th ag-th--sel">
+                <input type="checkbox" :checked="pageAllSelected" @change="togglePageAll" :aria-label="$t('testcase.title')" />
+              </th>
+              <th class="ag-th ag-th--idx">#</th>
+              <th class="ag-th ag-th--title">{{ $t('testcase.caseTitle') }}</th>
+              <th class="ag-th ag-th--pri">{{ $t('testcase.priority') }}</th>
+              <th class="ag-th ag-th--mod">{{ $t('testcase.moduleName') }}</th>
+              <th class="ag-th ag-th--exec">执行状态</th>
+              <th class="ag-th ag-th--author">{{ $t('testcase.author') }}</th>
+              <th class="ag-th ag-th--time">{{ $t('testcase.createdAt') }}</th>
+              <th class="ag-th ag-th--act">{{ $t('project.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in testcases" :key="row.id" class="ag-tr">
+              <td class="ag-td ag-td--sel">
+                <input type="checkbox" :checked="isRowSelected(row)" @change="toggleRow(row)" :aria-label="row.title" />
+              </td>
+              <td class="ag-td ag-td--idx">{{ getSerialNumber(testcases.indexOf(row)) }}</td>
+              <td class="ag-td ag-td--title">
+                <button class="ag-link" @click="goToTestCase(row.id)">{{ row.title }}</button>
+              </td>
+              <td class="ag-td ag-td--pri">
+                <span class="ag-badge" :class="'ag-badge--' + row.priority">{{ getPriorityText(row.priority) }}</span>
+              </td>
+              <td class="ag-td ag-td--mod">
+                <span v-if="row.function_module" class="ag-tag">{{ row.function_module.name }}</span>
+                <span v-else class="ag-muted">—</span>
+              </td>
+              <td class="ag-td ag-td--exec">
+                <span v-if="row.execution_status === 'passed'" class="ag-exec ag-exec--pass">✓ 通过</span>
+                <span v-else-if="row.execution_status === 'failed'" class="ag-exec ag-exec--fail">✗ 不通过</span>
+                <span v-else class="ag-muted">—</span>
+              </td>
+              <td class="ag-td ag-td--author">{{ row.author?.username }}</td>
+              <td class="ag-td ag-td--time">{{ formatDate(row.created_at) }}</td>
+              <td class="ag-td ag-td--act">
+                <div class="ag-actions">
+                  <button class="ag-btn ag-btn--sm ag-btn--pass" @click="executeCase(row, 'passed')" :disabled="row._executing" title="通过">✓</button>
+                  <button class="ag-btn ag-btn--sm ag-btn--fail" @click="executeCase(row, 'failed')" :disabled="row._executing" title="不通过">✗</button>
+                  <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="editTestCase(row)">{{ $t('common.edit') }}</button>
+                  <button class="ag-btn ag-btn--sm ag-btn--danger" @click="deleteTestCase(row)">{{ $t('common.delete') }}</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-    <!-- 导入弹窗（不变） -->
-    <el-dialog v-model="importDialogVisible" :title="$t('testcase.importDialogTitle')" width="560px">
-      <el-alert :title="$t('testcase.uploadTip')" type="info" :closable="false" show-icon class="import-alert" />
-      <el-form label-width="100px">
-        <el-form-item :label="$t('testcase.importProject')">
-          <el-select v-model="importForm.projectId" style="width: 100%" :placeholder="$t('testcase.selectImportProject')" filterable>
-            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="$t('testcase.selectImportFile')">
-          <el-upload class="import-upload" drag action="#" :auto-upload="false" :limit="1" accept=".xlsx" :show-file-list="false" :on-change="handleImportFileChange">
-            <el-icon class="el-icon--upload"><Upload /></el-icon>
-            <div class="el-upload__text">{{ $t('testcase.chooseFile') }}</div>
-            <template #tip><div class="el-upload__tip">{{ $t('testcase.selectedFile') }}: {{ selectedImportFile?.name || '-' }}</div></template>
-          </el-upload>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="importDialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button @click="downloadImportTemplate">{{ $t('testcase.downloadImportTemplate') }}</el-button>
-        <el-button type="primary" :loading="isCreatingImport" @click="submitImport">{{ isCreatingImport ? $t('testcase.uploading') : $t('common.confirm') }}</el-button>
-      </template>
-    </el-dialog>
+      <!-- Pagination -->
+      <div v-if="hasAnyFilter()" class="ag-page">
+        <span class="ag-page__info">共 {{ total }} 条</span>
+        <div class="ag-page__ctrls">
+          <select v-model="pageSize" @change="handleSizeChange" class="ag-select ag-select--page" aria-label="page size">
+            <option v-for="n in [15, 25, 35, 50, 100]" :key="n" :value="n">{{ n }} / PAGE</option>
+          </select>
+          <div class="ag-page__btns">
+            <button class="ag-btn ag-btn--sm" :disabled="currentPage <= 1" @click="currentPage--; handlePageChange()">← 上一页</button>
+            <span class="ag-page__current">{{ currentPage }} / {{ Math.max(1, Math.ceil(total / pageSize)) }}</span>
+            <button class="ag-btn ag-btn--sm" :disabled="currentPage >= Math.max(1, Math.ceil(total / pageSize))" @click="currentPage++; handlePageChange()">下一页 →</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== Modal: Import ====== -->
+    <div v-if="importDialogVisible" class="ag-modal" @click.self="importDialogVisible = false">
+      <div class="ag-modal__box">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">TEST CASE / IMPORT</span>
+          <button class="ag-modal__close" @click="importDialogVisible = false">×</button>
+        </header>
+        <div class="ag-modal__body">
+          <div class="ag-tip">{{ $t('testcase.uploadTip') }}</div>
+          <div class="ag-form">
+            <div class="ag-form__group">
+              <label>{{ $t('testcase.importProject') }}</label>
+              <el-select v-model="importForm.projectId" :placeholder="$t('testcase.selectImportProject')" filterable popper-class="ag-dropdown" style="width: 100%">
+                <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+            </div>
+            <div class="ag-form__group">
+              <label>{{ $t('testcase.selectImportFile') }}</label>
+              <el-upload class="ag-upload" drag action="#" :auto-upload="false" :limit="1" accept=".xlsx" :show-file-list="false" :on-change="handleImportFileChange">
+                <el-icon class="el-icon--upload"><Upload /></el-icon>
+                <div class="el-upload__text">{{ $t('testcase.chooseFile') }}</div>
+                <div class="el-upload__tip">{{ $t('testcase.selectedFile') }}: {{ selectedImportFile?.name || '-' }}</div>
+              </el-upload>
+            </div>
+          </div>
+        </div>
+        <footer class="ag-modal__foot">
+          <button class="ag-btn ag-btn--ghost" @click="importDialogVisible = false">{{ $t('common.cancel') }}</button>
+          <button class="ag-btn ag-btn--ghost" @click="downloadImportTemplate">{{ $t('testcase.downloadImportTemplate') }}</button>
+          <button class="ag-btn ag-btn--ok" :disabled="isCreatingImport" @click="submitImport">
+            {{ isCreatingImport ? $t('testcase.uploading') : $t('common.confirm') }}
+          </button>
+        </footer>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -232,6 +300,26 @@ const clearAllFilters = () => {
   searchText.value = ''
   filterModules.value = []
   currentPage.value = 1
+}
+
+// ===== 行选择 =====
+const isRowSelected = (row) => selectedTestCases.value.some(s => s.id === row.id)
+const toggleRow = (row) => {
+  const idx = selectedTestCases.value.findIndex(s => s.id === row.id)
+  if (idx >= 0) selectedTestCases.value.splice(idx, 1)
+  else selectedTestCases.value.push(row)
+}
+const pageAllSelected = computed(() => testcases.value.length > 0 && testcases.value.every(r => isRowSelected(r)))
+const togglePageAll = () => {
+  const pageIds = new Set(testcases.value.map(r => r.id))
+  if (pageAllSelected.value) {
+    selectedTestCases.value = selectedTestCases.value.filter(s => !pageIds.has(s.id))
+  } else {
+    const selectedIds = new Set(selectedTestCases.value.map(s => s.id))
+    for (const r of testcases.value) {
+      if (!selectedIds.has(r.id)) selectedTestCases.value.push(r)
+    }
+  }
 }
 
 // ===== API =====
@@ -332,7 +420,6 @@ const deleteTestCase = async (tc) => {
   } catch (error) { if (error !== 'cancel') ElMessage.error(t('testcase.deleteFailed')) }
 }
 
-const handleSelectionChange = (s) => { selectedTestCases.value = s }
 const getSerialNumber = (i) => (currentPage.value - 1) * pageSize.value + i + 1
 
 const batchDeleteTestCases = async () => {
@@ -429,25 +516,473 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.tcl-root { padding: 24px; max-width: 1400px; margin: 0 auto; min-height: calc(100vh - 52px); background: #f2f2f0; font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; }
-.tcl-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; &__left { display: flex; align-items: baseline; gap: 14px; } &__title { margin: 0; font-size: 1.5rem; font-weight: 800; color: #191919; letter-spacing: -.01em; } &__count { font-size: .85rem; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; } &__actions { display: flex; gap: 6px; flex-wrap: wrap; } }
-.tcl-btn { all: unset; cursor: pointer; padding: 7px 16px; font-size: 12px; font-weight: 600; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; color: #555; background: #fff; border: 1px solid #ccc; white-space: nowrap; transition: all .12s; &:hover:not(:disabled) { border-color: #999; color: #333; } &:disabled { opacity: .3; cursor: not-allowed; } &--primary { background: #fffa00; color: #191919; border-color: #fffa00; font-weight: 700; &:hover:not(:disabled) { background: #e6e100; } } }
-.tcl-filter { background: #fff; padding: 20px 24px; margin-bottom: 16px; border: 1px solid #e4e4de; &__row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; } &__group { display: flex; flex-direction: column; gap: 4px; } &__label { font-size: 10px; font-weight: 700; color: #999; text-transform: uppercase; letter-spacing: .08em; font-family: "Space Grotesk", system-ui, sans-serif; } &__select { width: 160px; :deep(.el-input__wrapper) { border-radius: 0 !important; box-shadow: 0 0 0 1px #d0cec8 inset !important; } } &__select--short { width: 100px; :deep(.el-input__wrapper) { border-radius: 0 !important; } } &__search { width: 200px; :deep(.el-input__wrapper) { border-radius: 0 !important; box-shadow: 0 0 0 1px #d0cec8 inset !important; } } &__arrow { color: #ccc; font-size: 1.1rem; padding-bottom: 8px; } &__div { width: 1px; height: 36px; background: #e4e4de; align-self: center; } &__search-group { flex: 1; min-width: 180px; max-width: 280px; } }
-.tcl-chips { margin-top: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.tcl-chip { display: inline-block; padding: 3px 12px; font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; background: #f2f2f0; color: #555; cursor: pointer; border: 1px solid #e0ded8; &:hover { background: #191919; color: #fff; border-color: #191919; } &__label { font-size: 12px; color: #999; } &__clear { font-size: 12px; color: #c03939; cursor: pointer; margin-left: 4px; &:hover { text-decoration: underline; } } }
-.tcl-table-card { background: #fff; border: 1px solid #e4e4de; overflow: hidden; }
-.tcl-empty { text-align: center; padding: 80px 40px; &__icon { font-size: 3rem; margin-bottom: 16px; } &__title { font-size: 1.1rem; color: #191919; font-weight: 700; margin-bottom: 8px; } &__desc { font-size: .9rem; color: #999; line-height: 1.6; } }
-.tcl-link { color: #191919; cursor: pointer; font-weight: 600; &:hover { text-decoration: underline; } }
-.tcl-muted { color: #ccc; }
-.tcl-pri { display: inline-block; padding: 2px 10px; font-size: 11px; font-weight: 700; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; border: 1px solid; &.low { color: #1a8051; background: #e0f5e8; border-color: #88d4a0; } &.medium { color: #8a6d14; background: #fefae0; border-color: #e8d888; } &.high { color: #a04030; background: #fef0f0; border-color: #f0b0b0; } &.critical { color: #fff; background: #191919; border-color: #191919; } }
-.tcl-mod { display: inline-block; padding: 2px 8px; font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; color: #1a8051; background: #e0f5e8; }
-.tcl-exec { display: inline-block; padding: 3px 12px; font-size: 11px; font-weight: 600; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em; &.pass { background: #e0f5e8; color: #1a8051; } &.fail { background: #fef0f0; color: #a04030; } }
-.tcl-row-btn { all: unset; cursor: pointer; padding: 2px 8px; font-size: 13px; color: #999; &:hover { color: #191919; } &--pass { &:hover { color: #00a86b; } } &--fail { &:hover { color: #e04040; } } &--danger { color: #ccc; &:hover { color: #e04040; } } &:disabled { opacity: .2; cursor: not-allowed; } }
-.pager-bar { display: flex; justify-content: center; padding: 24px 0; }
-:deep(.el-table) { font-size: .88rem; }
-:deep(.el-table th) { color: #999; font-weight: 700; font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #191919; background: #fafaf8; }
-:deep(.el-table .el-table__row) { cursor: pointer; }
-:deep(.el-table .el-table__row:hover) { background: #fafaf8; }
-:deep(.el-checkbox__input.is-checked .el-checkbox__inner) { background-color: #191919; border-color: #191919; }
-@media (max-width: 768px) { .tcl-root { padding: 12px; } .tcl-top { flex-direction: column; gap: 12px; } .tcl-filter__arrow, .tcl-filter__div { display: none; } .tcl-filter__select, .tcl-filter__search, .tcl-filter__search-group { width: 100%; } .tcl-filter__row { flex-direction: column; } }
+/* =============================================
+   Ark Moderate — Test Case Index
+   ============================================= */
+.ag-shell {
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-border: #e4e4de;
+
+  height: calc(100vh - 52px);
+  background: var(--ark-paper);
+  position: relative;
+  padding: 24px 24px 0;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+/* Grid */
+.ag-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(0,0,0,.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.03) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+/* ============================================
+   Zones
+   ============================================ */
+.ag-zone {
+  position: relative; z-index: 1;
+  background: #fff;
+  border: 1px solid var(--ark-border);
+  animation: ag-enter .35s ease-out both;
+
+  &--head { flex-shrink: 0; margin-bottom: 16px; border-top: 3px solid var(--ark-ink); }
+  &--content {
+    flex: 1; min-height: 0; margin-bottom: 24px;
+    display: flex; flex-direction: column; overflow: auto;
+    animation-delay: .05s;
+  }
+  &__bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px 0;
+  }
+  &__kicker {
+    font-size: 10px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .16em; color: #888; white-space: nowrap;
+  }
+  &__rule { flex: 1; height: 1px; background: var(--ark-border); }
+  &__code {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .1em; color: #aaa; white-space: nowrap;
+  }
+}
+
+/* ============================================
+   Header
+   ============================================ */
+.ag-head {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 20px;
+  padding: 16px 20px 20px;
+  &__title {
+    margin: 0; font-size: 24px; font-weight: 900; color: var(--ark-ink); line-height: 1.3;
+    &::before {
+      content: ""; display: block; width: 44px; height: 4px;
+      background: var(--ark-signal); margin-bottom: 10px;
+    }
+  }
+  &__actions { display: flex; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+}
+
+/* ============================================
+   Filter
+   ============================================ */
+.ag-filter {
+  display: flex; align-items: flex-end; gap: 12px; padding: 16px 20px;
+  border-bottom: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__field {
+    display: flex; flex-direction: column; gap: 6px;
+    &--search { flex: 1; min-width: 200px; max-width: 300px; }
+  }
+  &__label {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .12em; color: #999;
+  }
+  &__div { width: 1px; height: 34px; background: var(--ark-border); align-self: flex-end; margin-bottom: 2px; }
+}
+.ag-flow__arrow {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  color: #c5c7c3; font-size: 13px; padding-bottom: 10px; user-select: none;
+}
+
+/* ============================================
+   Element Plus overrides (select / search)
+   ============================================ */
+.ag-select-el {
+  width: 180px;
+  :deep(.el-input__wrapper) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset; background: #fff;
+    font-family: inherit;
+  }
+  :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--ark-signal) inset; }
+  :deep(.el-input__inner) { font-family: inherit; font-size: 13px; }
+  &--sm { width: 120px; }
+}
+.ag-search {
+  width: 100%;
+  :deep(.el-input__wrapper) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset; background: #fff;
+    font-family: inherit;
+  }
+  :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--ark-signal) inset; }
+  :deep(.el-input__inner) { font-family: inherit; font-size: 13px; }
+  :deep(.el-input__prefix) { color: #999; }
+}
+
+/* ============================================
+   Chips
+   ============================================ */
+.ag-chips {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--ark-border);
+  &__label { font-size: 12px; color: #999; }
+}
+.ag-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; font-size: 12px; cursor: pointer;
+  background: #f2f2f0; color: #555; border: 1px solid #d8dad7;
+  transition: background .12s, color .12s, border-color .12s;
+  &:hover { background: var(--ark-ink); color: #fff; border-color: var(--ark-ink); }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  &__x { font-size: 13px; line-height: 1; color: #999; }
+}
+.ag-chip:hover .ag-chip__x { color: #fff; }
+.ag-chip__clear {
+  all: unset; cursor: pointer; font-size: 12px; color: #b03a35; padding: 4px 6px;
+  &:hover { text-decoration: underline; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+}
+
+/* ============================================
+   Empty
+   ============================================ */
+.ag-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 72px 20px; color: #999; text-align: center; flex: 1;
+  &__code {
+    font-size: 20px; font-weight: 900; letter-spacing: .24em;
+    font-family: "Space Grotesk", system-ui, sans-serif; color: var(--ark-ink);
+    background: #fff; border: 1px solid var(--ark-border);
+    border-left: 3px solid var(--ark-signal);
+    padding: 12px 24px; margin-bottom: 16px;
+  }
+  &__title { margin: 0 0 8px; font-size: 15px; font-weight: 700; color: var(--ark-ink); }
+  &__desc { margin: 0; font-size: 13px; color: #999; line-height: 1.8; }
+}
+
+/* ============================================
+   Table
+   ============================================ */
+.ag-table-wrap { flex: 1; overflow: visible; }
+.ag-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  &--list { min-width: 1120px; }
+  thead {
+    background: var(--ark-ink);
+    input[type="checkbox"] { accent-color: var(--ark-signal); }
+  }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: middle; }
+}
+.ag-th {
+  font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; color: rgba(255,255,255,.85); font-weight: 600;
+  &--sel { width: 44px; text-align: center; }
+  &--idx { width: 56px; text-align: center; }
+  &--title { min-width: 240px; }
+  &--pri { width: 96px; }
+  &--mod { width: 140px; }
+  &--exec { width: 110px; text-align: center; }
+  &--author { width: 110px; }
+  &--time { width: 150px; }
+  &--act { width: 200px; }
+}
+.ag-tr {
+  border-bottom: 1px solid #eee;
+  transition: background .1s;
+  &:hover { background: #f8fafa; }
+}
+.ag-td {
+  color: #444; line-height: 1.6;
+  &--sel { text-align: center; }
+  &--idx { color: #999; text-align: center; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; }
+  &--title { font-weight: 600; }
+  &--pri { text-align: center; }
+  &--mod { color: #666; }
+  &--exec { text-align: center; }
+  &--author { color: #666; }
+  &--time { color: #888; font-size: 12px; white-space: nowrap; }
+  &--act { white-space: nowrap; }
+}
+.ag-actions { display: flex; gap: 4px; flex-wrap: nowrap; }
+.ag-link {
+  all: unset; cursor: pointer; color: var(--ark-ink); font-weight: 700;
+  text-decoration: underline; text-underline-offset: 3px;
+  &:hover { color: #666; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+}
+.ag-muted { color: #ccc; }
+input[type="checkbox"] {
+  width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--ark-ink);
+}
+
+/* ============================================
+   Badges / tags / exec state
+   ============================================ */
+.ag-badge {
+  display: inline-block; padding: 3px 10px; font-size: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 600; border: 1px solid;
+  &--low { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
+  &--medium { color: #7d6a16; background: #fdf7e4; border-color: #e0d29a; }
+  &--high { color: #a04030; background: #fbeef0; border-color: #ecc0c0; }
+  &--critical { color: #fff; background: var(--ark-ink); border-color: var(--ark-ink); }
+}
+.ag-tag {
+  display: inline-block; padding: 2px 10px; font-size: 11px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em;
+  color: #555; background: #fafaf8; border: 1px solid var(--ark-border);
+}
+.ag-exec {
+  display: inline-block; padding: 3px 10px; font-size: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 700; border: 1px solid;
+  &--pass { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
+  &--fail { color: #b03a35; background: #fbefee; border-color: #e3b9b6; }
+}
+
+/* ============================================
+   Buttons
+   ============================================ */
+.ag-btn {
+  all: unset; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 8px 18px; box-sizing: border-box;
+  white-space: nowrap;
+  font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
+
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent;
+    transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
+  }
+
+  &--sm { min-height: 30px; padding: 4px 10px; font-size: 11px; letter-spacing: .06em; }
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+    &:disabled { background: transparent; border-color: transparent; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+    &:active:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+    &:disabled { color: #c9cbc8; background: #e8eae7; border-color: #d6d8d5; &::before { background: transparent; } }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #c9aca9; background: #f8f4f3; border-color: #eadcd9; &::before { background: transparent; } }
+  }
+  &--pass {
+    color: #0f8a5c; background: #fff; border-color: #b9dccb;
+    &::before { background: var(--ark-state); }
+    &:hover:not(:disabled) { background: #e6f7f0; border-color: #9edfc2; }
+    &:disabled { color: #c9d8cf; background: #f4f8f5; border-color: #dce7e0; &::before { background: transparent; } }
+  }
+  &--fail {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #d8c2c0; background: #faf5f4; border-color: #ecdcd9; &::before { background: transparent; } }
+  }
+}
+
+/* ============================================
+   Pagination
+   ============================================ */
+.ag-page {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  padding: 14px 20px; border-top: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__info { font-size: 12px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; }
+  &__ctrls { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  &__btns { display: flex; align-items: center; gap: 8px; }
+  &__current {
+    font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #555; padding: 0 4px; white-space: nowrap;
+  }
+}
+.ag-select--page { height: 30px; font-size: 11px; padding: 0 26px 0 8px; }
+
+/* ============================================
+   Select (native)
+   ============================================ */
+.ag-select {
+  height: 36px; padding: 0 28px 0 10px; box-sizing: border-box; line-height: 1;
+  border: 1px solid #ccc; background: #fff;
+  font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em; color: #444;
+  cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+}
+
+/* ============================================
+   Loading bar
+   ============================================ */
+.ag-loading-bar {
+  position: absolute; top: -1px; left: 0; right: 0; height: 3px; z-index: 5;
+  background: linear-gradient(90deg, transparent 0%, var(--ark-signal) 50%, transparent 100%);
+  background-size: 200px 3px; background-repeat: no-repeat;
+  animation: ag-scan 1.1s linear infinite;
+}
+@keyframes ag-scan {
+  from { background-position: -200px 0; }
+  to { background-position: calc(100% + 200px) 0; }
+}
+
+/* ============================================
+   Modal
+   ============================================ */
+.ag-modal {
+  position: fixed; inset: 0; background: rgba(4,6,8,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+  &__box {
+    background: #fff; width: 90%; max-width: 560px; max-height: 84vh;
+    display: flex; flex-direction: column; border: 1px solid #888;
+  }
+  &__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: var(--ark-ink); color: #fff; flex-shrink: 0;
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
+  }
+  &__close {
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
+  &__body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
+  &__foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 24px; border-top: 1px solid var(--ark-border);
+    background: #fafaf8; flex-shrink: 0;
+  }
+}
+.ag-tip {
+  padding: 10px 14px; margin-bottom: 16px;
+  background: #fafaf8; border: 1px solid var(--ark-border); border-left: 3px solid var(--ark-signal);
+  font-size: 12px; color: #666; line-height: 1.6;
+}
+
+/* ============================================
+   Form (Element Plus deep overrides)
+   ============================================ */
+.ag-form {
+  &__group {
+    display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px;
+    label {
+      font-weight: 600; font-size: 11px; color: #666;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+  }
+  :deep(.el-input__wrapper), :deep(.el-textarea__inner) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset; background: #fff;
+    font-family: inherit;
+  }
+  :deep(.el-input__wrapper.is-focus), :deep(.el-textarea__inner:focus) {
+    box-shadow: 0 0 0 1px var(--ark-signal) inset;
+  }
+  :deep(.el-input__inner) { font-family: inherit; }
+}
+
+/* Upload dropzone */
+.ag-upload {
+  width: 100%;
+  :deep(.el-upload-dragger) {
+    border-radius: 0; border: 1px dashed #c9cbc8; background: #fff; padding: 30px 20px;
+    &:hover { border-color: var(--ark-ink); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: -2px; }
+  }
+  :deep(.el-icon--upload) { color: #999; }
+  :deep(.el-upload__text) { color: #666; font-size: 13px; }
+  :deep(.el-upload__tip) { color: #999; font-size: 12px; margin-top: 10px; }
+}
+
+/* ============================================
+   Motion
+   ============================================ */
+@keyframes ag-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-zone, .ag-btn, .ag-select, .ag-tr, .ag-chip, .ag-modal__close, .ag-loading-bar {
+    transition: none !important; animation: none !important;
+  }
+  .ag-btn:active:not(:disabled) { transform: none; }
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 1024px) {
+  .ag-shell { padding: 16px 16px 0; }
+  .ag-table { min-width: 1000px; }
+}
+@media (max-width: 768px) {
+  .ag-shell { padding: 12px 12px 0; }
+  .ag-head { flex-direction: column; align-items: flex-start; }
+  .ag-head__actions { width: 100%; justify-content: flex-start; }
+  .ag-head__actions .ag-btn { flex: 1; }
+  .ag-filter { flex-direction: column; align-items: stretch; }
+  .ag-flow__arrow, .ag-filter__div { display: none; }
+  .ag-select-el, .ag-select-el--sm, .ag-filter__field--search { width: 100%; max-width: none; }
+  .ag-page { flex-direction: column; align-items: flex-start; }
+  .ag-page__ctrls { flex-direction: column; align-items: flex-start; width: 100%; }
+  .ag-modal__box { width: 95%; }
+}
+</style>
+
+<!-- Unscoped styles for teleported Element Plus dropdown poppers -->
+<style lang="scss">
+.ag-dropdown.el-popper { border-radius: 0; border-color: #191919; }
+.ag-dropdown .el-select-dropdown {
+  border-radius: 0; border-color: #191919; box-shadow: none;
+}
+.ag-dropdown .el-select-dropdown__item {
+  border-radius: 0; font-size: 13px; color: #333; height: 34px; line-height: 34px;
+}
+.ag-dropdown .el-select-dropdown__item:hover { background: #f4f5f3; color: #191919; }
+.ag-dropdown .el-select-dropdown__item.is-selected { color: #191919; font-weight: 700; }
 </style>

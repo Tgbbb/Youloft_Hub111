@@ -1,31 +1,46 @@
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h1 class="page-title">{{ $t('project.projectDetail') }}</h1>
-      <el-button type="primary" @click="$router.back()">
-        <el-icon><ArrowLeft /></el-icon>
-        {{ $t('common.back') }}
-      </el-button>
-    </div>
+  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <!-- Grid -->
+    <div class="ag-grid" aria-hidden="true"></div>
 
-    <div class="card-container">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane :label="$t('project.projectInfo')" name="info">
-          <div v-if="project">
-            <el-descriptions :column="2" border>
-              <el-descriptions-item :label="$t('project.projectName')">{{ project.name }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('project.status')">
-                <el-tag :type="getStatusType(project.status)">{{ getStatusText(project.status) }}</el-tag>
-              </el-descriptions-item>
-              <el-descriptions-item :label="$t('project.owner')">{{ project.owner?.username }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('project.createdAt')">{{ formatDate(project.created_at) }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('project.projectDescription')" :span="2">{{ project.description || $t('project.noDescription') }}</el-descriptions-item>
-            </el-descriptions>
+    <!-- ====== Zone A: Header ====== -->
+    <section class="ag-zone ag-zone--head">
+      <header class="ag-zone__bar">
+        <span class="ag-zone__kicker">PROJECT / DETAIL</span>
+        <span class="ag-zone__rule" aria-hidden="true"></span>
+        <span class="ag-zone__code">{{ project?.name || '' }}</span>
+      </header>
+      <div class="ag-head">
+        <h1 class="ag-head__title">{{ $t('project.projectDetail') }}</h1>
+        <div class="ag-head__actions">
+          <button class="ag-btn ag-btn--ghost" @click="$router.back()">← {{ $t('common.back') }}</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== Zone B: Content ====== -->
+    <section class="ag-zone ag-zone--content">
+      <div class="ag-tabs">
+        <button class="ag-tab" :class="{ 'is-active': activeTab === 'info' }" @click="activeTab = 'info'">{{ $t('project.projectInfo') }}</button>
+        <button class="ag-tab" :class="{ 'is-active': activeTab === 'knowledge' }" @click="activeTab = 'knowledge'">{{ $t('project.knowledgeBaseTab') }}</button>
+        <button class="ag-tab" :class="{ 'is-active': activeTab === 'members' }" @click="activeTab = 'members'">{{ $t('project.projectMembers') }}</button>
+        <button class="ag-tab" :class="{ 'is-active': activeTab === 'environments' }" @click="activeTab = 'environments'">{{ $t('project.environments') }}</button>
+      </div>
+
+      <div v-if="activeTab === 'info'" class="ag-pane">
+        <div v-if="project">
+          <div class="ag-info">
+            <div class="ag-info__row"><label>{{ $t('project.projectName') }}</label><span>{{ project.name }}</span></div>
+            <div class="ag-info__row"><label>{{ $t('project.status') }}</label><span class="ag-badge" :class="'ag-badge--' + project.status">{{ getStatusText(project.status) }}</span></div>
+            <div class="ag-info__row"><label>{{ $t('project.owner') }}</label><span>{{ project.owner?.username }}</span></div>
+            <div class="ag-info__row"><label>{{ $t('project.createdAt') }}</label><span>{{ formatDate(project.created_at) }}</span></div>
+            <div class="ag-info__row ag-info__row--wide"><label>{{ $t('project.projectDescription') }}</label><span>{{ project.description || $t('project.noDescription') }}</span></div>
           </div>
-        </el-tab-pane>
+        </div>
+      </div>
 
         <!-- 知识背景 Tab -->
-        <el-tab-pane :label="$t('project.knowledgeBaseTab')" name="knowledge">
+        <div v-if="activeTab === 'knowledge'" class="ag-pane">
           <div class="knowledge-base-layout">
             <!-- 工具栏 -->
             <div class="kb-toolbar">
@@ -44,45 +59,35 @@
                 </span>
               </div>
               <div class="kb-toolbar-right">
-                <el-button size="small" text @click="triggerFileUpload">
-                  📂 {{ $t('project.uploadMd') }}
-                </el-button>
                 <input
                   ref="fileInputRef"
                   type="file"
                   accept=".md,.txt,.markdown"
                   style="display: none"
                   @change="handleFileUpload" />
-                <el-button size="small" text @click="applyTemplate">
-                  📄 {{ $t('project.useTemplate') }}
-                </el-button>
-                <el-button
+                <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="triggerFileUpload">{{ $t('project.uploadMd') }}</button>
+                <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="applyTemplate">{{ $t('project.useTemplate') }}</button>
+                <button
                   v-if="parsedSections.length > 0"
-                  size="small"
-                  :type="globalEditMode ? 'primary' : 'default'"
+                  class="ag-btn ag-btn--sm"
+                  :class="{ 'ag-btn--ok': globalEditMode }"
                   @click="globalEditMode = !globalEditMode">
                   {{ globalEditMode ? $t('project.preview') : $t('project.rawEdit') }}
-                </el-button>
-                <el-button
-                  type="primary"
-                  size="small"
-                  @click="saveKnowledgeBase"
-                  :loading="savingKnowledge">
-                  {{ $t('common.save') }}
-                </el-button>
+                </button>
+                <button class="ag-btn ag-btn--sm ag-btn--ok" @click="saveKnowledgeBase" :disabled="savingKnowledge">
+                  {{ savingKnowledge ? '保存中…' : $t('common.save') }}
+                </button>
               </div>
             </div>
 
             <!-- ===== 空状态 ===== -->
-            <div v-if="!knowledgeBaseText" class="kb-empty">
-              <div class="kb-empty-icon">📋</div>
+            <div v-if="!knowledgeBaseText" class="ag-empty">
+              <div class="ag-empty__icon">KB</div>
               <p>{{ $t('project.noKnowledgeBase') }}</p>
-              <el-button type="primary" @click="addSection()">
-                {{ $t('project.addFirstSection') }}
-              </el-button>
-              <div style="margin-top:12px;display:flex;gap:8px">
-                <el-button size="small" text @click="triggerFileUpload">📂 {{ $t('project.uploadMd') }}</el-button>
-                <el-button size="small" text @click="applyTemplate">📄 {{ $t('project.useTemplate') }}</el-button>
+              <button class="ag-btn ag-btn--ok" @click="addSection()">{{ $t('project.addFirstSection') }}</button>
+              <div class="ag-empty__sub">
+                <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="triggerFileUpload">{{ $t('project.uploadMd') }}</button>
+                <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="applyTemplate">{{ $t('project.useTemplate') }}</button>
               </div>
             </div>
 
@@ -96,9 +101,7 @@
               >
                 <div class="kb-toc-header">
                   <span>{{ $t('project.tableOfContents') }}</span>
-                  <el-button size="small" text class="kb-toc-close" @click="showToc = false">
-                    <el-icon><Close /></el-icon>
-                  </el-button>
+                  <button class="kb-toc-close" @click="showToc = false" aria-label="close">×</button>
                 </div>
                 <div class="kb-toc-list">
                   <div
@@ -118,24 +121,19 @@
                   </div>
                 </div>
                 <div class="kb-toc-footer">
-                  <el-button size="small" text @click="addSection()" class="kb-add-section-btn">
-                    + {{ $t('project.addSection') }}
-                  </el-button>
+                  <button class="ag-btn ag-btn--sm ag-btn--ghost ag-w100" @click="addSection()">+ {{ $t('project.addSection') }}</button>
                 </div>
               </aside>
 
               <!-- Content Area -->
               <div class="kb-content-area">
                 <!-- Mobile TOC toggle -->
-                <el-button
+                <button
                   v-if="parsedSections.length > 0"
-                  size="small"
-                  text
-                  class="kb-toc-toggle"
+                  class="ag-btn ag-btn--sm ag-btn--ghost kb-toc-toggle"
                   @click="showToc = !showToc">
-                  <el-icon><Menu /></el-icon>
                   {{ $t('project.tableOfContents') }}
-                </el-button>
+                </button>
 
                 <!-- ===== 全局 Raw 编辑模式（高级用户） ===== -->
                 <div class="kb-editor-area" v-if="globalEditMode">
@@ -169,7 +167,7 @@
                     <div class="kb-section-header">
                       <span class="kb-section-heading-icon">📄</span>
                       <span class="kb-section-heading-text">{{ section.heading }}</span>
-                      <el-dropdown trigger="click" class="kb-section-menu">
+                      <el-dropdown trigger="click" class="kb-section-menu" popper-class="ag-dropdown">
                         <el-button size="small" text class="kb-section-menu-btn">
                           <el-icon><MoreFilled /></el-icon>
                         </el-button>
@@ -189,7 +187,7 @@
                               <el-icon><Bottom /></el-icon> {{ $t('project.moveDown') }}
                             </el-dropdown-item>
                             <el-dropdown-item divided @click="deleteSection(realSectionIndex(idx))">
-                              <span style="color:#f56c6c">
+                              <span class="is-danger">
                                 <el-icon><Delete /></el-icon> {{ $t('project.deleteSection') }}
                               </span>
                             </el-dropdown-item>
@@ -203,17 +201,17 @@
                       <!-- 编辑模式：textarea + 实时预览 -->
                       <template v-if="editingSectionIndex === realSectionIndex(idx)">
                         <div class="kb-format-toolbar" @click.stop>
-                          <el-button size="small" text title="粗体" @click="insertMdSyntax(realSectionIndex(idx), 'bold')"><b>B</b></el-button>
-                          <el-button size="small" text title="斜体" @click="insertMdSyntax(realSectionIndex(idx), 'italic')"><i>I</i></el-button>
-                          <el-divider direction="vertical" />
-                          <el-button size="small" text title="三级标题" @click="insertMdSyntax(realSectionIndex(idx), 'h3')">H3</el-button>
-                          <el-button size="small" text title="无序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ul')">•</el-button>
-                          <el-button size="small" text title="有序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ol')">1.</el-button>
-                          <el-divider direction="vertical" />
-                          <el-button size="small" text title="行内代码" @click="insertMdSyntax(realSectionIndex(idx), 'code')">&lt;/&gt;</el-button>
-                          <el-button size="small" text title="代码块" @click="insertMdSyntax(realSectionIndex(idx), 'codeblock')">```</el-button>
-                          <el-button size="small" text title="链接" @click="insertMdSyntax(realSectionIndex(idx), 'link')">🔗</el-button>
-                          <el-button size="small" text title="表格" @click="insertMdSyntax(realSectionIndex(idx), 'table')">⊞</el-button>
+                          <button class="kb-fmt-btn" title="粗体" @click="insertMdSyntax(realSectionIndex(idx), 'bold')"><b>B</b></button>
+                          <button class="kb-fmt-btn" title="斜体" @click="insertMdSyntax(realSectionIndex(idx), 'italic')"><i>I</i></button>
+                          <span class="kb-fmt-sep" aria-hidden="true"></span>
+                          <button class="kb-fmt-btn" title="三级标题" @click="insertMdSyntax(realSectionIndex(idx), 'h3')">H3</button>
+                          <button class="kb-fmt-btn" title="无序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ul')">•</button>
+                          <button class="kb-fmt-btn" title="有序列表" @click="insertMdSyntax(realSectionIndex(idx), 'ol')">1.</button>
+                          <span class="kb-fmt-sep" aria-hidden="true"></span>
+                          <button class="kb-fmt-btn" title="行内代码" @click="insertMdSyntax(realSectionIndex(idx), 'code')">&lt;/&gt;</button>
+                          <button class="kb-fmt-btn" title="代码块" @click="insertMdSyntax(realSectionIndex(idx), 'codeblock')">```</button>
+                          <button class="kb-fmt-btn" title="链接" @click="insertMdSyntax(realSectionIndex(idx), 'link')">🔗</button>
+                          <button class="kb-fmt-btn" title="表格" @click="insertMdSyntax(realSectionIndex(idx), 'table')">⊞</button>
                         </div>
                         <div class="kb-split-pane">
                           <div class="kb-pane kb-pane-left">
@@ -232,9 +230,7 @@
                           </div>
                         </div>
                         <div class="kb-section-edit-actions" @click.stop>
-                          <el-button size="small" type="primary" @click="exitSectionEdit()">
-                            ✓ {{ $t('project.doneEditing') }}
-                          </el-button>
+                          <button class="ag-btn ag-btn--sm ag-btn--ok" @click="exitSectionEdit()">✓ {{ $t('project.doneEditing') }}</button>
                           <span class="kb-section-edit-hint">{{ $t('project.clickOutsideHint') }}</span>
                         </div>
                       </template>
@@ -246,77 +242,98 @@
 
                   <!-- 新增板块按钮 -->
                   <div class="kb-add-section-wrapper">
-                    <el-button @click="addSection()" class="kb-add-section-block">
-                      <el-icon><Plus /></el-icon> {{ $t('project.addSection') }}
-                    </el-button>
+                    <button class="ag-btn kb-add-section-block" @click="addSection()">+ {{ $t('project.addSection') }}</button>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </el-tab-pane>
+        </div>
 
-        <el-tab-pane :label="$t('project.projectMembers')" name="members">
-          <div class="members-section">
-            <el-button type="primary" @click="showAddMemberDialog = true">{{ $t('project.addMember') }}</el-button>
-            <el-table :data="project?.members || []" style="width: 100%; margin-top: 20px;">
-              <el-table-column prop="user.username" :label="$t('project.username')" />
-              <el-table-column prop="user.email" :label="$t('project.email')" />
-              <el-table-column prop="role" :label="$t('project.role')" />
-              <el-table-column prop="joined_at" :label="$t('project.joinedAt')">
-                <template #default="{ row }">
-                  {{ formatDate(row.joined_at) }}
-                </template>
-              </el-table-column>
-              <el-table-column :label="$t('project.actions')" width="100">
-                <template #default="{ row }">
-                  <el-button size="small" type="danger" @click="removeMember(row)">{{ $t('common.delete') }}</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
+        <div v-if="activeTab === 'members'" class="ag-pane">
+          <div class="ag-pane-head">
+            <button class="ag-btn ag-btn--ok" @click="showAddMemberDialog = true">+ {{ $t('project.addMember') }}</button>
           </div>
-        </el-tab-pane>
+          <div class="ag-table-wrap">
+            <table class="ag-table ag-table--sub">
+              <thead>
+                <tr>
+                  <th class="ag-th">{{ $t('project.username') }}</th>
+                  <th class="ag-th">{{ $t('project.email') }}</th>
+                  <th class="ag-th ag-th--role">{{ $t('project.role') }}</th>
+                  <th class="ag-th">{{ $t('project.joinedAt') }}</th>
+                  <th class="ag-th ag-th--act">{{ $t('project.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in project?.members || []" :key="row.id" class="ag-tr">
+                  <td class="ag-td">{{ row.user?.username }}</td>
+                  <td class="ag-td">{{ row.user?.email }}</td>
+                  <td class="ag-td">{{ row.role }}</td>
+                  <td class="ag-td">{{ formatDate(row.joined_at) }}</td>
+                  <td class="ag-td"><button class="ag-btn ag-btn--sm ag-btn--danger" @click="removeMember(row)">{{ $t('common.delete') }}</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-        <el-tab-pane :label="$t('project.environments')" name="environments">
-          <div class="environments-section">
-            <el-button type="primary" @click="showAddEnvDialog = true">{{ $t('project.addEnvironment') }}</el-button>
-            <el-table :data="project?.environments || []" style="width: 100%; margin-top: 20px;">
-              <el-table-column prop="name" :label="$t('project.environmentName')" />
-              <el-table-column prop="base_url" :label="$t('project.baseUrl')" />
-              <el-table-column prop="description" :label="$t('project.description')" />
-              <el-table-column prop="is_default" :label="$t('project.defaultEnvironment')">
-                <template #default="{ row }">
-                  <el-tag v-if="row.is_default" type="success">{{ $t('project.yes') }}</el-tag>
-                  <span v-else>{{ $t('project.no') }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
+        <div v-if="activeTab === 'environments'" class="ag-pane">
+          <div class="ag-pane-head">
+            <button class="ag-btn ag-btn--ok" @click="showAddEnvDialog = true">+ {{ $t('project.addEnvironment') }}</button>
           </div>
-        </el-tab-pane>
-      </el-tabs>
-    </div>
+          <div class="ag-table-wrap">
+            <table class="ag-table ag-table--sub">
+              <thead>
+                <tr>
+                  <th class="ag-th">{{ $t('project.environmentName') }}</th>
+                  <th class="ag-th">{{ $t('project.baseUrl') }}</th>
+                  <th class="ag-th">{{ $t('project.description') }}</th>
+                  <th class="ag-th ag-th--default">{{ $t('project.defaultEnvironment') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in project?.environments || []" :key="row.id" class="ag-tr">
+                  <td class="ag-td">{{ row.name }}</td>
+                  <td class="ag-td ag-td--mono">{{ row.base_url }}</td>
+                  <td class="ag-td">{{ row.description }}</td>
+                  <td class="ag-td">
+                    <span v-if="row.is_default" class="ag-badge ag-badge--active">{{ $t('project.yes') }}</span>
+                    <span v-else>{{ $t('project.no') }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+    </section>
 
     <!-- 添加成员弹窗 -->
-    <el-dialog v-model="showAddMemberDialog" title="添加成员" width="400px">
-      <el-form>
-        <el-form-item label="用户名">
-          <el-input v-model="newMember.username" placeholder="输入用户名" />
-        </el-form-item>
-        <el-form-item label="角色">
-          <el-select v-model="newMember.role" style="width: 100%">
-            <el-option label="观察者" value="viewer" />
-            <el-option label="测试者" value="tester" />
-            <el-option label="开发者" value="developer" />
-            <el-option label="管理员" value="admin" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAddMemberDialog = false">取消</el-button>
-        <el-button type="primary" @click="addMember" :loading="addingMember">添加</el-button>
-      </template>
-    </el-dialog>
-
+    <div v-if="showAddMemberDialog" class="ag-modal" @click.self="showAddMemberDialog = false">
+      <div class="ag-modal__box ag-modal__box--sm">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">PROJECT / MEMBER</span>
+          <button class="ag-modal__close" @click="showAddMemberDialog = false">×</button>
+        </header>
+        <div class="ag-modal__body">
+          <div class="ag-form">
+            <div class="ag-form__group"><label>用户名</label><input v-model="newMember.username" class="ag-input" placeholder="输入用户名" /></div>
+            <div class="ag-form__group"><label>角色</label>
+              <select v-model="newMember.role" class="ag-select">
+                <option value="viewer">观察者</option>
+                <option value="tester">测试者</option>
+                <option value="developer">开发者</option>
+                <option value="admin">管理员</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <footer class="ag-modal__foot">
+          <button class="ag-btn ag-btn--ghost" @click="showAddMemberDialog = false">取消</button>
+          <button class="ag-btn ag-btn--ok" @click="addMember" :disabled="addingMember">{{ addingMember ? '添加中…' : '添加' }}</button>
+        </footer>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -777,583 +794,542 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-// Design tokens
-$primary: #667eea;
-$primary-light: #f0f2ff;
-$bg-card: #ffffff;
-$bg-subtle: #f8f9fb;
-$border: #e8ecf1;
-$text-primary: #1a1a2e;
-$text-secondary: #8b8fa3;
-$radius: 8px;
+/* =============================================
+   Ark Moderate — Project Detail
+   ============================================= */
+.ag-shell {
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-border: #e4e4de;
 
-// ── Knowledge Base Layout ──
-
-// ── Knowledge Base Layout ──
-
-.knowledge-base-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  height: calc(100vh - 52px);
+  background: var(--ark-paper);
+  position: relative;
+  padding: 24px 24px 0;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
 
-// Toolbar
+/* Grid */
+.ag-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(0,0,0,.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.03) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+/* ============================================
+   Zones
+   ============================================ */
+.ag-zone {
+  position: relative; z-index: 1;
+  background: #fff;
+  border: 1px solid var(--ark-border);
+  animation: ag-enter .35s ease-out both;
+
+  &--head { flex-shrink: 0; margin-bottom: 16px; }
+  &--content {
+    flex: 1; min-height: 0; margin-bottom: 24px;
+    display: flex; flex-direction: column; overflow: hidden;
+    animation-delay: .05s;
+  }
+  &__bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px 0;
+  }
+  &__kicker {
+    font-size: 10px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .16em; color: #888; white-space: nowrap;
+  }
+  &__rule { flex: 1; height: 1px; background: var(--ark-border); }
+  &__code {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .1em; color: #aaa; white-space: nowrap;
+  }
+}
+
+/* ============================================
+   Header
+   ============================================ */
+.ag-head {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 20px;
+  padding: 16px 20px 20px;
+  &__title {
+    margin: 0; font-size: 24px; font-weight: 900; color: var(--ark-ink); line-height: 1.3;
+    &::before {
+      content: ""; display: block; width: 44px; height: 4px;
+      background: var(--ark-signal); margin-bottom: 10px;
+    }
+  }
+  &__actions { display: flex; gap: 10px; flex-shrink: 0; }
+}
+
+/* ============================================
+   Tabs
+   ============================================ */
+.ag-tabs {
+  display: flex; gap: 0; padding: 0 20px;
+  border-bottom: 2px solid var(--ark-ink); flex-shrink: 0;
+}
+.ag-tab {
+  all: unset; cursor: pointer;
+  padding: 12px 18px 10px; font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: #777; border-bottom: 3px solid transparent; margin-bottom: -2px;
+  white-space: nowrap;
+  &:hover { color: var(--ark-ink); }
+  &.is-active { color: var(--ark-ink); border-bottom-color: var(--ark-signal); }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+}
+.ag-pane { padding: 20px; overflow: auto; flex: 1; }
+
+/* ============================================
+   Info
+   ============================================ */
+.ag-info {
+  border: 1px solid var(--ark-border);
+  &__row {
+    display: grid; grid-template-columns: 160px 1fr; gap: 16px;
+    padding: 12px 16px; border-bottom: 1px solid var(--ark-border);
+    &:last-child { border-bottom: none; }
+    label {
+      font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+      text-transform: uppercase; letter-spacing: .12em; color: #999; padding-top: 3px;
+    }
+    span { font-size: 13px; color: #333; line-height: 1.7; word-break: break-word; }
+  }
+}
+
+/* ============================================
+   Badges
+   ============================================ */
+.ag-badge {
+  display: inline-block; padding: 3px 12px; font-size: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 600; border: 1px solid;
+  &--active { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
+  &--paused { color: #7d6a16; background: #fdf7e4; border-color: #e0d29a; }
+  &--completed { color: #444; background: #f4f5f3; border-color: #d8dad7; }
+  &--archived { color: #777; background: #fafbfa; border-color: #e0e2df; }
+}
+
+/* ============================================
+   Buttons
+   ============================================ */
+.ag-btn {
+  all: unset; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 8px 18px; box-sizing: border-box;
+  white-space: nowrap;
+  font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
+
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent;
+    transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
+  }
+
+  &--sm { min-height: 30px; padding: 4px 10px; font-size: 11px; letter-spacing: .06em; }
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+    &:disabled { background: transparent; border-color: transparent; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+    &:active:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+    &:disabled { color: #c9cbc8; background: #e8eae7; border-color: #d6d8d5; &::before { background: transparent; } }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #c9aca9; background: #f8f4f3; border-color: #eadcd9; &::before { background: transparent; } }
+  }
+}
+.ag-w100 { width: 100%; }
+
+/* ============================================
+   Select / Input
+   ============================================ */
+.ag-select {
+  height: 36px; padding: 0 28px 0 10px; box-sizing: border-box; line-height: 1;
+  border: 1px solid #ccc; background: #fff;
+  font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em; color: #444;
+  cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+}
+.ag-input {
+  padding: 8px 12px; border: 1px solid #ccc; font-size: 13px; color: #333;
+  width: 100%; box-sizing: border-box; font-family: inherit;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+}
+
+/* ============================================
+   Sub tables (members / environments)
+   ============================================ */
+.ag-pane-head { display: flex; justify-content: flex-start; margin-bottom: 14px; }
+.ag-table-wrap { overflow-x: auto; }
+.ag-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  &--sub { min-width: 720px; }
+  thead { border-bottom: 2px solid var(--ark-ink); }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: middle; }
+}
+.ag-th {
+  font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; color: #999; font-weight: 600;
+  &--role { width: 110px; }
+  &--default { width: 140px; }
+  &--act { width: 110px; }
+}
+.ag-tr {
+  border-bottom: 1px solid #eee;
+  transition: background .1s;
+  &:hover { background: #f8fafa; }
+}
+.ag-td {
+  color: #444; line-height: 1.6;
+  &--mono { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; color: #666; word-break: break-all; }
+}
+
+/* ============================================
+   Knowledge base
+   ============================================ */
+.knowledge-base-layout { display: flex; flex-direction: column; gap: 16px; }
 .kb-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 16px;
-  background: $bg-subtle;
-  border-radius: $radius;
-  border: 1px solid $border;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; background: #fafaf8; border: 1px solid var(--ark-border);
+  flex-wrap: wrap; gap: 8px;
 }
-
 .kb-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: $text-secondary;
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: #888; flex-wrap: wrap;
 }
+.kb-char-count { font-weight: 700; color: var(--ark-ink); font-family: "Space Grotesk", system-ui, sans-serif; }
+.kb-update-info { color: #999; font-size: 12px; }
+.kb-toolbar-right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-.kb-char-count { font-weight: 500; color: $text-primary; }
-.kb-update-info { color: $text-secondary; }
-.kb-toolbar-right { display: flex; gap: 8px; align-items: center; }
-
-// ── Two-column wrapper ──
-
-.kb-content-wrapper {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
-
-// ── TOC Sidebar ──
+.kb-content-wrapper { display: flex; gap: 16px; align-items: flex-start; }
 
 .kb-toc-sidebar {
-  width: 200px;
-  min-width: 200px;
-  border: 1px solid $border;
-  border-radius: $radius;
-  background: $bg-card;
-  overflow: hidden;
-  position: sticky;
-  top: 8px;
-  max-height: calc(100vh - 200px);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
+  width: 210px; min-width: 210px; border: 1px solid var(--ark-border); background: #fff;
+  display: flex; flex-direction: column; flex-shrink: 0;
+  position: sticky; top: 8px; max-height: calc(100vh - 230px);
 }
-
 .kb-toc-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  color: $text-primary;
-  background: $bg-subtle;
-  border-bottom: 1px solid $border;
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; font-size: 11px; font-weight: 700;
+  font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--ark-ink); background: #fafaf8; border-bottom: 1px solid var(--ark-border); flex-shrink: 0;
 }
-
-.kb-toc-close { display: none; }
-
-.kb-toc-list {
-  overflow-y: auto;
-  flex: 1;
-  padding: 4px 0;
+.kb-toc-close {
+  all: unset; cursor: pointer; display: none;
+  width: 26px; height: 26px; align-items: center; justify-content: center;
+  font-size: 18px; color: #888; line-height: 1;
+  &:hover { color: var(--ark-ink); }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
 }
-
-.kb-toc-footer {
-  padding: 8px 10px;
-  border-top: 1px solid $border;
-  flex-shrink: 0;
-}
-
-.kb-add-section-btn {
-  width: 100%;
-  justify-content: center;
-  color: $primary;
-  font-size: 13px;
-}
-
+.kb-toc-list { overflow-y: auto; flex: 1; padding: 6px 0; }
+.kb-toc-footer { padding: 8px 10px; border-top: 1px solid var(--ark-border); flex-shrink: 0; }
 .kb-toc-item {
-  padding: 9px 14px 9px 16px;
-  font-size: 13px;
-  color: $text-secondary;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  border-left: 3px solid transparent;
-  line-height: 1.4;
-  &:hover { background: $primary-light; color: $primary; }
-  &.kb-toc-item-active { background: $primary-light; color: $primary; border-left-color: $primary; font-weight: 500; }
+  padding: 9px 14px 9px 16px; font-size: 13px; color: #666; cursor: pointer;
+  border-left: 3px solid transparent; line-height: 1.4;
+  transition: background .1s, color .1s;
+  &:hover { background: #f4f5f3; color: var(--ark-ink); }
+  &.kb-toc-item-active { background: #fbfbe8; color: var(--ark-ink); border-left-color: var(--ark-signal); font-weight: 600; }
 }
+.kb-toc-item-all { font-weight: 600; border-bottom: 1px solid var(--ark-border); margin-bottom: 2px; padding-bottom: 10px; }
+.kb-toc-item-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.kb-toc-item-all {
-  font-weight: 500;
-  border-bottom: 1px solid $border;
-  margin-bottom: 2px;
-  padding-bottom: 10px;
-}
+.kb-content-area { flex: 1; min-width: 0; max-height: calc(100vh - 250px); overflow-y: auto; }
+.kb-toc-toggle { display: none; margin-bottom: 10px; width: 100%; justify-content: flex-start; }
 
-.kb-toc-item-text {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-// ── Content area ──
-
-.kb-content-area {
-  flex: 1;
-  min-width: 0;
-  max-height: calc(100vh - 220px);
-  overflow-y: auto;
-}
-
-.kb-toc-toggle {
-  display: none;
-  margin-bottom: 10px;
-  width: 100%;
-  justify-content: flex-start;
-}
-
-// ── Section Cards (default block editor) ──
-
-.kb-blocks-area {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
+.kb-blocks-area { display: flex; flex-direction: column; gap: 16px; }
 .kb-section-card {
-  border: 1px solid $border;
-  border-radius: $radius;
-  background: $bg-card;
-  transition: border-color 0.2s, box-shadow 0.2s;
-
-  &:hover { border-color: darken($border, 10%); }
-  &.kb-section-editing {
-    border-color: $primary;
-    box-shadow: 0 0 0 2px rgba($primary, 0.15);
-  }
+  border: 1px solid var(--ark-border); background: #fff;
+  transition: border-color .15s;
+  &:hover { border-color: #c8cac8; }
+  &.kb-section-editing { border-color: var(--ark-signal); box-shadow: inset 0 3px 0 var(--ark-signal); }
 }
-
 .kb-section-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  background: $bg-subtle;
-  border-bottom: 1px solid $border;
-  border-radius: $radius $radius 0 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: #fafaf8; border-bottom: 1px solid var(--ark-border);
 }
-
 .kb-section-heading-icon { font-size: 14px; }
-.kb-section-heading-text {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  color: $text-primary;
-}
+.kb-section-heading-text { flex: 1; font-size: 14px; font-weight: 700; color: var(--ark-ink); }
+.kb-section-menu-btn { opacity: .45; &:hover { opacity: 1; } }
 
-.kb-section-menu-btn {
-  opacity: 0.4;
-  &:hover { opacity: 1; }
-}
+.kb-section-body { cursor: pointer; transition: background .15s; &:hover { background: #fafaf7; } }
+.kb-section-preview { padding: 16px 20px; min-height: 60px; font-size: 14px; line-height: 1.7; color: #333; }
 
-// Section body
-.kb-section-body {
-  cursor: pointer;
-  transition: background 0.15s;
-  &:hover { background: #fafbfc; }
-}
-
-.kb-section-preview {
-  padding: 16px 20px;
-  min-height: 60px;
-  font-size: 14px;
-  line-height: 1.7;
-  color: $text-primary;
-}
-
-// WYSIWYG editor
-.kb-wysiwyg-editor {
-  min-height: 150px;
-  padding: 16px 20px;
-  font-size: 14px;
-  line-height: 1.75;
-  color: $text-primary;
-  outline: none;
-  background: #fff;
-  &:focus { background: #fafbfc; }
-  &:empty::before {
-    content: attr(placeholder);
-    color: #c0c4cc;
-  }
-}
-
-// Format toolbar
 .kb-format-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 12px;
-  background: #fafbfc;
-  border-bottom: 1px solid $border;
-  flex-wrap: wrap;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-
-  .el-button {
-    min-width: 28px;
-    height: 28px;
-    font-size: 13px;
-    color: $text-secondary;
-    &:hover { color: $primary; background: $primary-light; }
-  }
+  display: flex; align-items: center; gap: 2px; padding: 6px 12px;
+  background: #fafaf8; border-bottom: 1px solid var(--ark-border); flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 10;
 }
+.kb-fmt-btn {
+  all: unset; cursor: pointer;
+  min-width: 30px; height: 28px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #666; border: 1px solid transparent;
+  &:hover { color: var(--ark-ink); background: #fff; border-color: var(--ark-border); }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: -2px; }
+}
+.kb-fmt-sep { width: 1px; height: 16px; background: var(--ark-border); margin: 0 6px; }
 
-// Edit actions
 .kb-section-edit-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: #fafbfc;
-  border-top: 1px solid $border;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: #fafaf8; border-top: 1px solid var(--ark-border);
 }
+.kb-section-edit-hint { font-size: 11px; color: #999; }
 
-.kb-section-edit-hint {
-  font-size: 11px;
-  color: $text-secondary;
-}
-
-// Add section block
-.kb-add-section-wrapper {
-  display: flex;
-  justify-content: center;
-  padding: 8px 0;
-}
-
+.kb-add-section-wrapper { display: flex; justify-content: center; padding: 8px 0; }
 .kb-add-section-block {
-  width: 100%;
-  border: 2px dashed $border;
-  border-radius: $radius;
-  padding: 14px;
-  font-size: 14px;
-  color: $primary;
-  background: transparent;
-  transition: all 0.2s;
-  &:hover {
-    border-color: $primary;
-    background: $primary-light;
-  }
+  width: 100%; min-height: 44px;
+  border: 1px dashed #c8cac8; color: #666; background: transparent;
+  &:hover { border-color: var(--ark-ink); color: var(--ark-ink); background: #fafaf7; }
 }
 
-// ── Split Pane (Global Edit Mode / Raw) ──
-
-.kb-editor-area {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.kb-split-pane {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  min-height: 420px;
-}
-
-.kb-pane {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid $border;
-  border-radius: $radius;
-  overflow: hidden;
-}
-
+.kb-editor-area { display: flex; flex-direction: column; gap: 12px; }
+.kb-split-pane { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; min-height: 420px; }
+.kb-pane { display: flex; flex-direction: column; border: 1px solid var(--ark-border); background: #fff; }
 .kb-pane-label {
-  padding: 8px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: $text-secondary;
-  background: $bg-subtle;
-  border-bottom: 1px solid $border;
-  flex-shrink: 0;
+  padding: 8px 14px; font-size: 11px; font-weight: 700;
+  font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em;
+  color: #999; background: #fafaf8; border-bottom: 1px solid var(--ark-border); flex-shrink: 0;
 }
-
 .kb-pane-left {
   .kb-textarea {
     flex: 1;
     :deep(.el-textarea__inner) {
-      height: 100%;
-      min-height: 380px;
-      border: none;
-      border-radius: 0;
-      resize: none;
-      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      font-size: 13px;
-      line-height: 1.7;
-      padding: 14px;
+      height: 100%; min-height: 380px; border-radius: 0; resize: none;
+      font-family: "IBM Plex Mono", Consolas, monospace;
+      font-size: 13px; line-height: 1.7; padding: 14px;
+      box-shadow: none;
       &:focus { box-shadow: none; }
     }
   }
 }
-
 .kb-pane-right { background: #fff; }
 
-// Markdown preview in cards (scoped)
+.kb-section-textarea {
+  :deep(.el-textarea__inner) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset;
+    font-family: inherit; font-size: 13px; line-height: 1.7;
+  }
+  :deep(.el-textarea__inner:focus) { box-shadow: 0 0 0 1px var(--ark-signal) inset; }
+}
+
+/* Markdown preview in cards (scoped) */
 .markdown-body {
   padding: 24px 28px;
-  font-size: 14px;
-  line-height: 1.75;
-  color: $text-primary;
-  word-wrap: break-word;
-  overflow-x: auto;
+  font-size: 14px; line-height: 1.75; color: #333;
+  word-wrap: break-word; overflow-x: auto;
 }
 
-// ── Empty state ──
-
-.kb-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: $text-secondary;
-  .kb-empty-icon { font-size: 48px; margin-bottom: 12px; }
-  p { margin: 0 0 16px 0; font-size: 14px; }
+/* Empty state */
+.ag-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 56px 20px; color: #999; text-align: center;
+  &__icon {
+    font-size: 22px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
+    letter-spacing: .2em; color: #ddd; margin-bottom: 14px;
+  }
+  p { margin: 0 0 16px; font-size: 14px; }
+  &__sub { display: flex; gap: 8px; margin-top: 12px; }
 }
 
-// ── Members & Environments ──
-
-.members-section, .environments-section {
-  padding: 20px 0;
+/* ============================================
+   Modal
+   ============================================ */
+.ag-modal {
+  position: fixed; inset: 0; background: rgba(4,6,8,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+  &__box {
+    background: #fff; width: 90%; max-width: 560px; max-height: 84vh;
+    display: flex; flex-direction: column; border: 1px solid #888;
+    &--sm { max-width: 480px; }
+  }
+  &__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: var(--ark-ink); color: #fff; flex-shrink: 0;
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
+  }
+  &__close {
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
+  &__body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
+  &__foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 24px; border-top: 1px solid var(--ark-border);
+    background: #fafaf8; flex-shrink: 0;
+  }
 }
 
-// ── Responsive ──
+.ag-form {
+  &__group {
+    display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px;
+    label {
+      font-weight: 600; font-size: 11px; color: #666;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+  }
+}
 
+/* ============================================
+   Motion
+   ============================================ */
+@keyframes ag-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-zone, .ag-btn, .ag-select, .ag-input, .ag-tr, .ag-tab, .kb-toc-item, .kb-section-card,
+  .kb-section-body, .kb-section-menu-btn, .kb-fmt-btn, .ag-modal__close {
+    transition: none !important; animation: none !important;
+  }
+  .ag-btn:active:not(:disabled) { transform: none; }
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 1024px) {
+  .ag-shell { padding: 16px 16px 0; }
+}
 @media (max-width: 768px) {
+  .ag-shell { padding: 12px 12px 0; }
+  .ag-head { flex-direction: column; align-items: flex-start; }
+  .ag-head__actions { width: 100%; }
+  .ag-head__actions .ag-btn { flex: 1; }
+  .ag-tabs { overflow-x: auto; }
+  .ag-pane { padding: 14px; }
+  .ag-info__row { grid-template-columns: 110px 1fr; }
   .kb-content-wrapper { flex-direction: column; }
   .kb-toc-toggle { display: inline-flex; }
   .kb-toc-sidebar {
     position: fixed; left: 0; top: 0; z-index: 1000;
     width: 260px; height: 100vh; max-height: 100vh;
-    border-radius: 0;
     transform: translateX(-100%);
-    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 0 0 rgba(0,0,0,0);
-    &.kb-toc-open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,0.12); }
+    transition: transform .25s ease;
+    box-shadow: none;
+    &.kb-toc-open { transform: translateX(0); box-shadow: 6px 0 20px rgba(0,0,0,.18); }
   }
   .kb-toc-close { display: inline-flex; }
   .kb-split-pane { grid-template-columns: 1fr; }
   .kb-toolbar { flex-direction: column; align-items: flex-start; }
   .kb-format-toolbar { gap: 0; }
+  .ag-modal__box { width: 95%; }
 }
 </style>
 
 <!-- Unscoped styles for v-html rendered markdown content -->
 <style lang="scss">
-// Design tokens (duplicated since unscoped can't access scoped vars)
-$primary: #667eea;
-$primary-light: #f0f2ff;
-$border: #e8ecf1;
-$text-primary: #1a1a2e;
-$text-secondary: #8b8fa3;
-$radius: 8px;
-$table-border: #d0d5dd;
-
+/* Endfield-styled markdown (rendered via v-html) */
 .markdown-body {
-  // ── Headings ──
   h1, h2, h3, h4, h5, h6 {
-    margin-top: 24px;
-    margin-bottom: 12px;
-    font-weight: 600;
-    line-height: 1.4;
-    color: $text-primary;
-
-    &:first-child {
-      margin-top: 0;
-    }
+    margin-top: 24px; margin-bottom: 12px;
+    font-weight: 700; line-height: 1.4; color: #191919;
+    &:first-child { margin-top: 0; }
   }
-
-  h1 { font-size: 1.6em; border-bottom: 2px solid $border; padding-bottom: 8px; }
-  h2 { font-size: 1.35em; border-bottom: 1px solid $border; padding-bottom: 6px; }
+  h1 { font-size: 1.6em; border-bottom: 2px solid #191919; padding-bottom: 8px; }
+  h2 { font-size: 1.35em; border-bottom: 1px solid #d8dad7; padding-bottom: 6px; }
   h3 { font-size: 1.18em; }
   h4 { font-size: 1.05em; }
 
-  // ── Paragraphs & Lists ──
-  p {
-    margin-top: 0;
-    margin-bottom: 12px;
-  }
+  p { margin-top: 0; margin-bottom: 12px; }
+  ul, ol { padding-left: 24px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
 
-  ul, ol {
-    padding-left: 24px;
-    margin-bottom: 12px;
-  }
-
-  li {
-    margin-bottom: 4px;
-  }
-
-  // ── Inline Code ──
   code {
-    padding: 2px 6px;
-    font-size: 0.88em;
-    background: #f0f0f5;
-    border-radius: 3px;
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-    color: #d63384;
+    padding: 2px 6px; font-size: .88em;
+    background: #eceeeb; color: #191919; border: 1px solid #d8dad7;
+    font-family: "IBM Plex Mono", Consolas, monospace;
   }
 
-  // ── Code Blocks ──
   pre {
-    padding: 14px 18px;
-    background: #1e1e2e;
-    border-radius: $radius;
-    overflow-x: auto;
-    margin-bottom: 14px;
-
+    padding: 14px 18px; background: #191919;
+    overflow-x: auto; margin-bottom: 14px;
     code {
-      padding: 0;
-      background: transparent;
-      color: #cdd6f4;
-      font-size: 0.85em;
-      line-height: 1.6;
+      padding: 0; background: transparent; color: #f2f2f0;
+      border: none; font-size: .85em; line-height: 1.6;
     }
   }
 
-  // ── Blockquote ──
   blockquote {
-    margin: 0 0 14px 0;
-    padding: 10px 16px;
-    border-left: 4px solid $primary;
-    background: $primary-light;
-    color: darken($primary, 15%);
-    border-radius: 0 $radius $radius 0;
-
-    p:last-child {
-      margin-bottom: 0;
-    }
+    margin: 0 0 14px; padding: 10px 16px;
+    border-left: 4px solid #fffa00; background: #fafaf7; color: #555;
+    p:last-child { margin-bottom: 0; }
   }
 
-  // ── Tables ──
   table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 16px;
-    font-size: 13px;
-    border: 1px solid $table-border;
-    border-radius: $radius;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    width: 100%; border-collapse: collapse; margin-bottom: 16px;
+    font-size: 13px; border: 1px solid #d0d2d0;
+  }
+  thead th, th {
+    background: #f2f2f0; color: #191919; font-weight: 700; font-size: 12.5px;
+    padding: 10px 14px; border: 1px solid #d0d2d0; text-align: left;
+  }
+  tbody td, td {
+    padding: 10px 14px; border: 1px solid #d0d2d0; color: #333; vertical-align: middle;
+  }
+  tbody tr, tr {
+    transition: background .1s;
+    &:nth-child(even) { background: #fcfcfb; }
+    &:hover { background: #f4f5f3; }
   }
 
-  thead th {
-    background: #f5f6fa;
-    color: $text-primary;
-    font-weight: 600;
-    font-size: 12.5px;
-    padding: 10px 14px;
-    border: 1px solid $table-border;
-    text-align: left;
-  }
+  hr { border: none; height: 1px; background: #d8dad7; margin: 20px 0; }
+  a { color: #191919; text-decoration: underline; text-underline-offset: 3px; &:hover { color: #666; } }
+  img { max-width: 100%; }
+}
 
-  tbody {
-    td {
-      padding: 10px 14px;
-      border: 1px solid $table-border;
-      color: $text-primary;
-      vertical-align: middle;
-
-      &:first-child {
-        font-weight: 600;
-        color: darken($primary, 5%);
-        background: #fafbff;
-        white-space: nowrap;
-      }
-    }
-
-    tr {
-      transition: background 0.1s ease;
-
-      &:nth-child(even) {
-        background: #fcfcfd;
-      }
-
-      &:hover {
-        background: #f3f4fa;
-      }
-    }
-  }
-
-  // Fallback: bare th/td (no thead/tbody)
-  th {
-    background: #f5f6fa;
-    color: $text-primary;
-    font-weight: 600;
-    font-size: 12.5px;
-    padding: 10px 14px;
-    border: 1px solid $table-border;
-    text-align: left;
-  }
-
-  td {
-    padding: 10px 14px;
-    border: 1px solid $table-border;
-    text-align: left;
-    vertical-align: middle;
-
-    &:first-child {
-      font-weight: 600;
-      color: darken($primary, 5%);
-      background: #fafbff;
-      white-space: nowrap;
-    }
-  }
-
-  tr {
-    transition: background 0.1s ease;
-
-    &:nth-child(even) {
-      background: #fcfcfd;
-    }
-
-    &:hover {
-      background: #f3f4fa;
-    }
-  }
-
-  // ── Misc ──
-  hr {
-    border: none;
-    height: 1px;
-    background: $border;
-    margin: 20px 0;
-  }
-
-  a {
-    color: $primary;
-    text-decoration: none;
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  img {
-    max-width: 100%;
-    border-radius: $radius;
-  }
+/* Endfield-styled section dropdown (teleported to body) */
+.ag-dropdown.el-dropdown__popper {
+  border-radius: 0; border: 1px solid #191919;
+}
+.ag-dropdown .el-dropdown-menu { padding: 4px 0; }
+.ag-dropdown .el-dropdown-menu__item {
+  font-size: 13px; color: #333; border-radius: 0;
+  &:hover, &:focus { background: #f4f5f3; color: #191919; }
+}
+.ag-dropdown .el-dropdown-menu__item .is-danger,
+.ag-dropdown .el-dropdown-menu__item .is-danger .el-icon {
+  color: #b03a35;
 }
 </style>

@@ -1,253 +1,210 @@
 <template>
-  <div class="task-detail">
-    <div class="page-header">
-      <div class="header-left">
-        <h2>{{ $t('taskDetail.title') }} <span v-if="task.title">- {{ task.title }}</span></h2>
-        <div class="task-info">
-          <span class="task-id">{{ $t('taskDetail.taskId') }}: {{ taskId }}</span>
-          <span class="task-status" :class="task.status">{{ getStatusText(task.status) }}</span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button
-          v-if="testCases.length > 0"
-          class="export-btn"
-          @click="exportToExcel"
-          :disabled="isExporting">
-          <span v-if="isExporting">{{ $t('taskDetail.exporting') }}</span>
-          <span v-else>{{ $t('taskDetail.exportBtn') }}</span>
-        </button>
-      </div>
-    </div>
+  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <!-- Grid -->
+    <div class="ag-grid" aria-hidden="true"></div>
 
-    <!-- 需求描述折叠卡片 -->
-    <div v-if="task.requirement_text" class="requirement-description-card">
-      <el-collapse>
-        <el-collapse-item name="requirement">
-          <template #title>
-            <div class="collapse-title">
-              <span class="title-text">{{ $t('taskDetail.requirementTitle') }}</span>
-              <span class="title-hint">{{ $t('taskDetail.requirementHint') }}</span>
-            </div>
-          </template>
-          <div class="requirement-content">
-            <div class="requirement-text">
-              {{ task.requirement_text }}
-            </div>
-            <div class="requirement-actions">
-              <el-button size="small" @click="copyRequirementText">
-                <el-icon><DocumentCopy /></el-icon>
-                {{ $t('taskDetail.copyRequirement') }}
-              </el-button>
-            </div>
+    <!-- ====== Zone A: Header ====== -->
+    <section class="ag-zone ag-zone--head">
+      <header class="ag-zone__bar">
+        <span class="ag-zone__kicker">TASK / DETAIL</span>
+        <span class="ag-zone__rule" aria-hidden="true"></span>
+        <span class="ag-zone__code">{{ taskId }}</span>
+      </header>
+      <div class="ag-head">
+        <div class="ag-head__main">
+          <h1 class="ag-head__title">{{ $t('taskDetail.title') }}<span v-if="task.title" class="ag-head__sub"> — {{ task.title }}</span></h1>
+          <div class="ag-head__meta">
+            <span class="ag-head__id">{{ $t('taskDetail.taskId') }}: {{ taskId }}</span>
+            <span class="ag-badge" :class="'ag-badge--' + task.status">{{ getStatusText(task.status) }}</span>
           </div>
-        </el-collapse-item>
-      </el-collapse>
-    </div>
-
-    <div v-if="isLoading" class="loading-state">
-      <p>{{ $t('taskDetail.loading') }}</p>
-    </div>
-
-    <div v-else-if="!task.task_id" class="error-state">
-      <h3>{{ $t('taskDetail.taskNotExist') }}</h3>
-      <router-link to="/ai-generation/generated-testcases">{{ $t('taskDetail.backToList') }}</router-link>
-    </div>
-
-    <div v-else class="task-content">
-      <!-- 批量操作区域 -->
-      <div class="batch-actions" v-if="testCases.length > 0">
-        <div class="selection-info">
-          <label class="select-all">
-            <input
-              type="checkbox"
-              :checked="isAllSelected"
-              @change="toggleSelectAll">
-            {{ $t('taskDetail.selectAll') }}
-          </label>
-          <span class="selected-count" v-if="selectedCases.length > 0">
-            {{ $t('taskDetail.selectedCount', { count: selectedCases.length }) }}
-          </span>
         </div>
-        <div class="batch-buttons">
+        <div class="ag-head__actions">
           <button
-            class="batch-adopt-btn"
-            :disabled="selectedCases.length === 0"
-            @click="batchAdopt">
-            {{ $t('taskDetail.batchAdopt', { count: selectedCases.length }) }}
-          </button>
-          <button
-            class="batch-discard-btn"
-            :disabled="selectedCases.length === 0"
-            @click="batchDiscard">
-            {{ $t('taskDetail.batchDiscard', { count: selectedCases.length }) }}
+            v-if="testCases.length > 0"
+            class="ag-btn ag-btn--ok"
+            @click="exportToExcel"
+            :disabled="isExporting">
+            {{ isExporting ? $t('taskDetail.exporting') : $t('taskDetail.exportBtn') }}
           </button>
         </div>
       </div>
+    </section>
 
-      <!-- 测试用例列表 -->
-      <div class="testcases-table" v-if="testCases.length > 0">
-        <div class="table-header">
-          <div class="header-cell checkbox-cell">{{ $t('taskDetail.tableSelect') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tableCaseId') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tableScenario') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tablePrecondition') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tableSteps') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tableExpected') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tablePriority') }}</div>
-          <div class="header-cell">{{ $t('taskDetail.tableActions') }}</div>
-        </div>
-        
-        <div class="table-body">
-          <div 
-            v-for="(testCase, index) in paginatedTestCases" 
-            :key="testCase.id || index"
-            class="table-row">
-            <div class="body-cell checkbox-cell">
-              <input 
-                type="checkbox" 
-                :value="testCase"
-                v-model="selectedCases"
-                @change="updateSelectAll">
-            </div>
-            <div class="body-cell">{{ testCase.caseId || `TC${String(index + 1).padStart(3, '0')}` }}</div>
-            <div class="body-cell">{{ testCase.scenario }}</div>
-            <div class="body-cell text-truncate">
-              {{ formatTextForList(testCase.precondition) }}
-            </div>
-            <div class="body-cell text-truncate">
-              {{ formatTextForList(testCase.steps) }}
-            </div>
-            <div class="body-cell text-truncate">
-              {{ formatTextForList(testCase.expected) }}
-            </div>
-            <div class="body-cell">
-              <span class="priority-tag" :class="testCase.priority?.toLowerCase()">{{ testCase.priority || 'P2' }}</span>
-            </div>
-            <div class="body-cell">
-              <div class="action-buttons">
-                <button class="view-btn" @click="viewCaseDetail(testCase, index)">{{ $t('taskDetail.viewDetail') }}</button>
-                <button class="adopt-btn" @click="adoptSingleCase(testCase, index)">{{ $t('taskDetail.adopt') }}</button>
-                <button class="discard-btn" @click="discardSingleCase(testCase, index)">{{ $t('taskDetail.discard') }}</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="empty-state">
-        <h3>{{ $t('taskDetail.emptyTitle') }}</h3>
-        <p>{{ $t('taskDetail.emptyHint') }}</p>
-      </div>
-
-      <!-- 分页 -->
-      <div v-if="testCases.length > 0" class="pagination-section">
-        <div class="pagination-info">
-          {{ $t('taskDetail.paginationInfo', { start: paginationStart, end: paginationEnd, total: testCases.length }) }}
-        </div>
-        <div class="pagination-controls">
-          <div class="page-size-selector">
-            <label>{{ $t('taskDetail.pageSizeLabel') }}</label>
-            <select v-model="pageSize" @change="currentPage = 1">
-              <option value="10">{{ $t('taskDetail.pageSizeOption', { size: 10 }) }}</option>
-              <option value="20">{{ $t('taskDetail.pageSizeOption', { size: 20 }) }}</option>
-              <option value="50">{{ $t('taskDetail.pageSizeOption', { size: 50 }) }}</option>
-            </select>
-          </div>
-          <div class="pagination-buttons">
-            <button :disabled="currentPage <= 1" @click="currentPage--">{{ $t('taskDetail.previousPage') }}</button>
-            <span class="current-page">{{ $t('taskDetail.currentPageInfo', { current: currentPage, total: totalPages }) }}</span>
-            <button :disabled="currentPage >= totalPages" @click="currentPage++">{{ $t('taskDetail.nextPage') }}</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 用例详情弹窗 -->
-    <div v-if="showCaseDetail" class="case-detail-modal">
-      <div class="modal-content" @click.stop>
-        <div class="modal-header">
-          <h3>{{ isEditing ? $t('taskDetail.modalEditTitle') : $t('taskDetail.modalViewTitle') }}</h3>
-          <button class="close-btn" @click="closeCaseDetail">×</button>
-        </div>
-
-        <!-- 查看模式 -->
-        <div v-if="!isEditing" class="modal-body">
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelCaseId') }}</label>
-            <span>{{ selectedCase.caseId || `TC${String(selectedCaseIndex + 1).padStart(3, '0')}` }}</span>
-          </div>
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelScenario') }}</label>
-            <p v-html="formatMarkdown(selectedCase.scenario)"></p>
-          </div>
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelPrecondition') }}</label>
-            <p v-html="formatMarkdown(selectedCase.precondition || $t('taskDetail.labelNone'))"></p>
-          </div>
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelSteps') }}</label>
-            <p class="test-steps" v-html="formatMarkdown(selectedCase.steps)"></p>
-          </div>
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelExpected') }}</label>
-            <p v-html="formatMarkdown(selectedCase.expected)"></p>
-          </div>
-          <div class="detail-item">
-            <label>{{ $t('taskDetail.labelPriority') }}</label>
-            <span class="priority-tag" :class="selectedCase.priority?.toLowerCase()">{{ selectedCase.priority || 'P2' }}</span>
-          </div>
-        </div>
-
-        <!-- 编辑模式 -->
-        <div v-else class="modal-body edit-mode">
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelCaseId') }}</label>
-            <span class="readonly-field">{{ editForm.caseId || `TC${String(selectedCaseIndex + 1).padStart(3, '0')}` }}</span>
-          </div>
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelScenario') }}</label>
-            <el-input v-model="editForm.scenario" type="textarea" :rows="2" :placeholder="$t('taskDetail.placeholderScenario')" />
-          </div>
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelPrecondition') }}</label>
-            <el-input v-model="editForm.precondition" type="textarea" :rows="3" :placeholder="$t('taskDetail.placeholderPrecondition')" />
-          </div>
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelSteps') }}</label>
-            <el-input v-model="editForm.steps" type="textarea" :rows="6" :placeholder="$t('taskDetail.placeholderSteps')" />
-          </div>
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelExpected') }}</label>
-            <el-input v-model="editForm.expected" type="textarea" :rows="4" :placeholder="$t('taskDetail.placeholderExpected')" />
-          </div>
-          <div class="form-item">
-            <label>{{ $t('taskDetail.labelPriority') }}</label>
-            <el-select v-model="editForm.priority" :placeholder="$t('taskDetail.placeholderPriority')">
-              <el-option label="P0" value="P0"></el-option>
-              <el-option label="P1" value="P1"></el-option>
-              <el-option label="P2" value="P2"></el-option>
-              <el-option label="P3" value="P3"></el-option>
-            </el-select>
-          </div>
-        </div>
-
-        <!-- 底部操作栏 -->
-        <div class="modal-footer">
-          <template v-if="!isEditing">
-            <button class="action-btn edit-btn" @click="startEdit">
-              <span>{{ $t('taskDetail.btnEdit') }}</span>
+    <!-- ====== Zone B: Requirement ====== -->
+    <section class="ag-zone ag-zone--req" v-if="task.requirement_text">
+      <details class="ag-req">
+        <summary class="ag-req__head">
+          <span class="ag-req__title">{{ $t('taskDetail.requirementTitle') }}</span>
+          <span class="ag-req__hint">{{ $t('taskDetail.requirementHint') }}</span>
+        </summary>
+        <div class="ag-req__body">
+          <div class="ag-req__text">{{ task.requirement_text }}</div>
+          <div class="ag-req__actions">
+            <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="copyRequirementText">
+              <el-icon><DocumentCopy /></el-icon>
+              {{ $t('taskDetail.copyRequirement') }}
             </button>
-            <button class="action-btn close-btn-footer" @click="closeCaseDetail">{{ $t('taskDetail.btnClose') }}</button>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ====== Zone C: Content ====== -->
+    <section class="ag-zone ag-zone--content">
+      <div v-if="isLoading" class="ag-empty">
+        <p>{{ $t('taskDetail.loading') }}</p>
+      </div>
+
+      <div v-else-if="!task.task_id" class="ag-empty">
+        <div class="ag-empty__icon">404</div>
+        <h3>{{ $t('taskDetail.taskNotExist') }}</h3>
+        <router-link to="/ai-generation/generated-testcases">{{ $t('taskDetail.backToList') }}</router-link>
+      </div>
+
+      <div v-else class="ag-content">
+        <!-- Batch bar -->
+        <div class="ag-batch" v-if="testCases.length > 0">
+          <div class="ag-batch__select">
+            <label class="ag-check">
+              <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll">
+              {{ $t('taskDetail.selectAll') }}
+            </label>
+            <span class="ag-batch__count" v-if="selectedCases.length > 0">
+              {{ $t('taskDetail.selectedCount', { count: selectedCases.length }) }}
+            </span>
+          </div>
+          <div class="ag-batch__actions">
+            <button class="ag-btn ag-btn--ok" :disabled="selectedCases.length === 0" @click="batchAdopt">
+              {{ $t('taskDetail.batchAdopt', { count: selectedCases.length }) }}
+            </button>
+            <button class="ag-btn ag-btn--danger" :disabled="selectedCases.length === 0" @click="batchDiscard">
+              {{ $t('taskDetail.batchDiscard', { count: selectedCases.length }) }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="ag-table-wrap" v-if="testCases.length > 0">
+          <table class="ag-table">
+            <thead>
+              <tr>
+                <th class="ag-th ag-th--check">{{ $t('taskDetail.tableSelect') }}</th>
+                <th class="ag-th ag-th--id">{{ $t('taskDetail.tableCaseId') }}</th>
+                <th class="ag-th ag-th--scenario">{{ $t('taskDetail.tableScenario') }}</th>
+                <th class="ag-th">{{ $t('taskDetail.tablePrecondition') }}</th>
+                <th class="ag-th">{{ $t('taskDetail.tableSteps') }}</th>
+                <th class="ag-th">{{ $t('taskDetail.tableExpected') }}</th>
+                <th class="ag-th ag-th--prio">{{ $t('taskDetail.tablePriority') }}</th>
+                <th class="ag-th ag-th--act">{{ $t('taskDetail.tableActions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(testCase, index) in paginatedTestCases" :key="testCase.id || index" class="ag-tr">
+                <td class="ag-td ag-td--check">
+                  <input type="checkbox" :value="testCase" v-model="selectedCases" @change="updateSelectAll">
+                </td>
+                <td class="ag-td ag-td--id">{{ testCase.caseId || `TC${String(index + 1).padStart(3, '0')}` }}</td>
+                <td class="ag-td ag-td--scenario">{{ testCase.scenario }}</td>
+                <td class="ag-td"><div class="ag-clamp">{{ formatTextForList(testCase.precondition) }}</div></td>
+                <td class="ag-td"><div class="ag-clamp">{{ formatTextForList(testCase.steps) }}</div></td>
+                <td class="ag-td"><div class="ag-clamp">{{ formatTextForList(testCase.expected) }}</div></td>
+                <td class="ag-td ag-td--prio">
+                  <span class="ag-prio" :class="'ag-prio--' + (testCase.priority || 'P2').toLowerCase()">{{ testCase.priority || 'P2' }}</span>
+                </td>
+                <td class="ag-td ag-td--act">
+                  <div class="ag-actions">
+                    <button class="ag-btn ag-btn--sm" @click="viewCaseDetail(testCase, index)">{{ $t('taskDetail.viewDetail') }}</button>
+                    <button class="ag-btn ag-btn--sm ag-btn--ok" @click="adoptSingleCase(testCase, index)">{{ $t('taskDetail.adopt') }}</button>
+                    <button class="ag-btn ag-btn--sm ag-btn--danger" @click="discardSingleCase(testCase, index)">{{ $t('taskDetail.discard') }}</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-else class="ag-empty">
+          <div class="ag-empty__icon">ARCHIVE</div>
+          <h3>{{ $t('taskDetail.emptyTitle') }}</h3>
+          <p>{{ $t('taskDetail.emptyHint') }}</p>
+        </div>
+
+        <!-- Pagination -->
+        <div class="ag-page" v-if="testCases.length > 0">
+          <span class="ag-page__info">
+            {{ $t('taskDetail.paginationInfo', { start: paginationStart, end: paginationEnd, total: testCases.length }) }}
+          </span>
+          <div class="ag-page__ctrls">
+            <div class="ag-page__size">
+              <span class="ag-page__label">{{ $t('taskDetail.pageSizeLabel') }}</span>
+              <select v-model="pageSize" @change="currentPage = 1" class="ag-select ag-select--sm">
+                <option value="10">{{ $t('taskDetail.pageSizeOption', { size: 10 }) }}</option>
+                <option value="20">{{ $t('taskDetail.pageSizeOption', { size: 20 }) }}</option>
+                <option value="50">{{ $t('taskDetail.pageSizeOption', { size: 50 }) }}</option>
+              </select>
+            </div>
+            <div class="ag-page__btns">
+              <button class="ag-btn ag-btn--sm" :disabled="currentPage <= 1" @click="currentPage--">{{ $t('taskDetail.previousPage') }}</button>
+              <span class="ag-page__current">{{ $t('taskDetail.currentPageInfo', { current: currentPage, total: totalPages }) }}</span>
+              <button class="ag-btn ag-btn--sm" :disabled="currentPage >= totalPages" @click="currentPage++">{{ $t('taskDetail.nextPage') }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== Modal: Case Detail ====== -->
+    <div v-if="showCaseDetail" class="ag-modal" @click.self="closeCaseDetail">
+      <div class="ag-modal__box">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">{{ isEditing ? 'CASE / EDIT' : 'CASE / DETAIL' }}</span>
+          <button class="ag-modal__close" @click="closeCaseDetail">×</button>
+        </header>
+
+        <!-- View mode -->
+        <div v-if="!isEditing" class="ag-modal__body">
+          <div class="ag-detail">
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelCaseId') }}</label><span>{{ selectedCase.caseId || `TC${String(selectedCaseIndex + 1).padStart(3, '0')}` }}</span></div>
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelScenario') }}</label><p v-html="formatMarkdown(selectedCase.scenario)"></p></div>
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelPrecondition') }}</label><p v-html="formatMarkdown(selectedCase.precondition || $t('taskDetail.labelNone'))"></p></div>
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelSteps') }}</label><div class="ag-code-block" v-html="formatMarkdown(selectedCase.steps)"></div></div>
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelExpected') }}</label><p v-html="formatMarkdown(selectedCase.expected)"></p></div>
+            <div class="ag-detail__row"><label>{{ $t('taskDetail.labelPriority') }}</label><span class="ag-prio" :class="'ag-prio--' + (selectedCase.priority || 'P2').toLowerCase()">{{ selectedCase.priority || 'P2' }}</span></div>
+          </div>
+        </div>
+
+        <!-- Edit mode -->
+        <div v-else class="ag-modal__body">
+          <div class="ag-form">
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelCaseId') }}</label><span class="ag-form__readonly">{{ editForm.caseId || `TC${String(selectedCaseIndex + 1).padStart(3, '0')}` }}</span></div>
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelScenario') }}</label><el-input v-model="editForm.scenario" type="textarea" :rows="2" :placeholder="$t('taskDetail.placeholderScenario')" /></div>
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelPrecondition') }}</label><el-input v-model="editForm.precondition" type="textarea" :rows="3" :placeholder="$t('taskDetail.placeholderPrecondition')" /></div>
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelSteps') }}</label><el-input v-model="editForm.steps" type="textarea" :rows="6" :placeholder="$t('taskDetail.placeholderSteps')" /></div>
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelExpected') }}</label><el-input v-model="editForm.expected" type="textarea" :rows="4" :placeholder="$t('taskDetail.placeholderExpected')" /></div>
+            <div class="ag-form__group"><label>{{ $t('taskDetail.labelPriority') }}</label>
+              <el-select v-model="editForm.priority" :placeholder="$t('taskDetail.placeholderPriority')">
+                <el-option label="P0" value="P0"></el-option>
+                <el-option label="P1" value="P1"></el-option>
+                <el-option label="P2" value="P2"></el-option>
+                <el-option label="P3" value="P3"></el-option>
+              </el-select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="ag-modal__foot">
+          <template v-if="!isEditing">
+            <button class="ag-btn ag-btn--ghost" @click="closeCaseDetail">{{ $t('taskDetail.btnClose') }}</button>
+            <button class="ag-btn ag-btn--ok" @click="startEdit">{{ $t('taskDetail.btnEdit') }}</button>
           </template>
           <template v-else>
-            <button class="action-btn save-btn" @click="saveEdit" :disabled="isSaving">
-              <span v-if="isSaving">{{ $t('taskDetail.btnSaveing') }}</span>
-              <span v-else>{{ $t('taskDetail.btnSave') }}</span>
+            <button class="ag-btn ag-btn--ghost" @click="cancelEdit" :disabled="isSaving">{{ $t('taskDetail.btnCancel') }}</button>
+            <button class="ag-btn ag-btn--ok" @click="saveEdit" :disabled="isSaving">
+              {{ isSaving ? $t('taskDetail.btnSaveing') : $t('taskDetail.btnSave') }}
             </button>
-            <button class="action-btn cancel-btn" @click="cancelEdit" :disabled="isSaving">{{ $t('taskDetail.btnCancel') }}</button>
           </template>
-        </div>
+        </footer>
       </div>
     </div>
   </div>
@@ -554,7 +511,8 @@ export default {
           {
             confirmButtonText: this.$t('taskDetail.btnConfirm'),
             cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
-            type: 'success'
+            type: 'success',
+            customClass: 'ag-confirm'
           }
         )
       } catch {
@@ -603,7 +561,8 @@ export default {
             confirmButtonText: this.$t('taskDetail.btnConfirm'),
             cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
             type: 'warning',
-            confirmButtonClass: 'el-button--danger'
+            confirmButtonClass: 'el-button--danger',
+            customClass: 'ag-confirm'
           }
         )
       } catch {
@@ -797,7 +756,8 @@ export default {
           {
             confirmButtonText: this.$t('taskDetail.btnConfirm'),
             cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
-            type: 'success'
+            type: 'success',
+            customClass: 'ag-confirm'
           }
         )
       } catch {
@@ -838,7 +798,8 @@ export default {
             confirmButtonText: this.$t('taskDetail.btnConfirm'),
             cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
             type: 'warning',
-            confirmButtonClass: 'el-button--danger'
+            confirmButtonClass: 'el-button--danger',
+            customClass: 'ag-confirm'
           }
         )
       } catch {
@@ -993,629 +954,470 @@ export default {
 }
 </script>
 
-<style scoped>
-.task-detail {
-  padding: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
-}
+<style scoped lang="scss">
+/* =============================================
+   Ark Moderate — Task Detail
+   ============================================= */
+.ag-shell {
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-border: #e4e4de;
 
-/* 需求描述折叠卡片 */
-.requirement-description-card {
-  margin-bottom: 20px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-}
-
-.collapse-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 500;
+  height: calc(100vh - 52px);
+  background: var(--ark-paper);
   position: relative;
-  padding-left: 20px;
+  padding: 24px 24px 0;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
 
-/* 隐藏左侧可能存在的Element Plus默认箭头 */
-.collapse-title::before {
-  content: none;
+/* Grid */
+.ag-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(0,0,0,.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.03) 1px, transparent 1px);
+  background-size: 72px 72px;
 }
 
-.title-icon {
-  font-size: 18px;
+/* ============================================
+   Zones
+   ============================================ */
+.ag-zone {
+  position: relative; z-index: 1;
+  background: #fff;
+  border: 1px solid var(--ark-border);
+  animation: ag-enter .35s ease-out both;
+
+  &--head { flex-shrink: 0; margin-bottom: 16px; }
+  &--req { flex-shrink: 0; margin-bottom: 16px; }
+  &--content {
+    flex: 1; min-height: 0; margin-bottom: 24px;
+    display: flex; flex-direction: column; overflow: auto;
+    animation-delay: .05s;
+  }
+  &__bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px 0;
+  }
+  &__kicker {
+    font-size: 10px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .16em; color: #888; white-space: nowrap;
+  }
+  &__rule { flex: 1; height: 1px; background: var(--ark-border); }
+  &__code {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .1em; color: #aaa; white-space: nowrap;
+  }
 }
 
-.title-text {
-  color: #303133;
-  font-weight: 600;
+/* ============================================
+   Header
+   ============================================ */
+.ag-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;
+  padding: 16px 20px 20px;
+  &__title {
+    margin: 0 0 12px; font-size: 24px; font-weight: 900;
+    color: var(--ark-ink); line-height: 1.3;
+    &::before {
+      content: ""; display: block; width: 44px; height: 4px;
+      background: var(--ark-signal); margin-bottom: 10px;
+    }
+  }
+  &__sub { font-weight: 500; color: #666; font-size: 17px; }
+  &__meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  &__id {
+    font-size: 12px; font-family: "IBM Plex Mono", Consolas, monospace;
+    color: #666; letter-spacing: .02em;
+  }
+  &__actions { display: flex; gap: 10px; flex-shrink: 0; }
 }
 
-.title-hint {
-  font-size: 13px;
-  color: #909399;
-  font-weight: normal;
+/* ============================================
+   Requirement
+   ============================================ */
+.ag-req {
+  &__head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px; cursor: pointer; list-style: none;
+    font-size: 14px; font-weight: 600; color: var(--ark-ink);
+    user-select: none; transition: background .12s;
+    &::-webkit-details-marker { display: none; }
+    &::after {
+      content: ""; margin-left: auto; flex-shrink: 0;
+      width: 0; height: 0;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+      border-top: 6px solid #999;
+      transition: transform .15s;
+    }
+    &:hover { background: #fafaf7; }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: -2px; }
+  }
+  &[open] .ag-req__head::after { transform: rotate(180deg); }
+  &__title { font-size: 14px; font-weight: 700; color: var(--ark-ink); }
+  &__hint { font-size: 12px; color: #999; font-weight: 400; }
+  &__body { padding: 4px 20px 18px; }
+  &__text {
+    background: var(--ark-paper); border-left: 3px solid var(--ark-signal);
+    padding: 14px 16px; font-size: 13px; line-height: 1.8; color: #444;
+    white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto;
+  }
+  &__actions { margin-top: 12px; display: flex; justify-content: flex-end; }
 }
 
-.requirement-content {
-  padding: 16px 0;
+/* ============================================
+   Content
+   ============================================ */
+.ag-content { display: flex; flex-direction: column; min-height: 0; }
+
+.ag-batch {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  padding: 14px 20px; border-bottom: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__select { display: flex; align-items: center; gap: 14px; }
+  &__actions { display: flex; gap: 8px; }
+  &__count {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #7d6a16; background: #fdf7e4; border: 1px solid #e0d29a;
+    padding: 2px 10px; letter-spacing: .05em;
+  }
+}
+.ag-check {
+  display: inline-flex; align-items: center; gap: 8px;
+  cursor: pointer; font-size: 13px; color: #444;
+  input {
+    accent-color: var(--ark-signal);
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
 }
 
-.requirement-text {
-  background: #f5f7fa;
-  border-radius: 6px;
-  padding: 16px;
-  line-height: 1.8;
-  color: #606266;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  max-height: 400px;
-  overflow-y: auto;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 14px;
-  border-left: 4px solid #409eff;
+/* ============================================
+   Table
+   ============================================ */
+.ag-table-wrap { flex: 1; overflow: visible; }
+.ag-table {
+  width: 100%; min-width: 1060px; border-collapse: collapse; font-size: 13px;
+  thead { border-bottom: 2px solid var(--ark-ink); }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: top; }
 }
-
-.requirement-actions {
-  margin-top: 12px;
-  display: flex;
-  justify-content: flex-end;
+.ag-th {
+  font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; color: #999; font-weight: 600;
+  &--check { width: 44px; text-align: center; }
+  &--id { width: 110px; }
+  &--scenario { min-width: 180px; }
+  &--prio { width: 84px; text-align: center; }
+  &--act { width: 220px; }
 }
-
-/* 自定义折叠面板样式 */
-.requirement-description-card :deep(.el-collapse) {
-  border: none;
-}
-
-.requirement-description-card :deep(.el-collapse-item__header) {
-  background: #fafafa;
-  border-bottom: 1px solid #e4e7ed;
-  padding: 16px 20px;
-  font-size: 15px;
-}
-
-/* 隐藏Element Plus默认的箭头图标 */
-.requirement-description-card :deep(.el-collapse-item__header .el-icon) {
-  display: none !important;
-}
-
-.requirement-description-card :deep(.el-collapse-item__arrow) {
-  display: none !important;
-}
-
-.requirement-description-card :deep(.el-collapse-item__wrap) {
-  border-bottom: none;
-}
-
-.requirement-description-card :deep(.el-collapse-item__content) {
-  padding: 0 20px 16px;
-}
-
-.page-header {
-  margin-bottom: 20px;
-  padding-bottom: 15px;
+.ag-tr {
   border-bottom: 1px solid #eee;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  transition: background .1s;
+  &:hover { background: #f8fafa; }
+}
+.ag-td {
+  color: #444; line-height: 1.6;
+  &--check {
+    text-align: center;
+    input {
+      accent-color: var(--ark-signal);
+      &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+    }
+  }
+  &--id { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; color: #666; white-space: nowrap; }
+  &--scenario { font-weight: 500; color: #222; }
+  &--prio { text-align: center; }
+  &--act { white-space: nowrap; }
+}
+.ag-clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: pre-wrap; line-height: 1.6;
+  word-break: break-word; max-width: 260px;
+}
+.ag-actions { display: flex; gap: 4px; flex-wrap: nowrap; }
+
+/* ============================================
+   Priority / Status
+   ============================================ */
+.ag-prio {
+  display: inline-block; padding: 2px 10px; font-size: 11px; font-weight: 700;
+  font-family: "Space Grotesk", system-ui, sans-serif; letter-spacing: .06em;
+  border: 1px solid; text-transform: uppercase;
+  &--p0, &--critical, &--最高 { color: #b03a35; background: #fdf0ef; border-color: #e8c4c1; }
+  &--p1, &--high, &--高 { color: #9a6a12; background: #fdf7e8; border-color: #e5d49a; }
+  &--p2, &--medium, &--中 { color: #555; background: #f4f5f3; border-color: #d8dad7; }
+  &--p3, &--low, &--低 { color: #777; background: #fafbfa; border-color: #e0e2df; }
+}
+.ag-badge {
+  display: inline-block; padding: 3px 12px; font-size: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 600; border: 1px solid;
+  &--pending { color: #666; background: #f4f5f3; border-color: #d8dad7; }
+  &--generating, &--reviewing { color: #7d6a16; background: #fdf7e4; border-color: #e0d29a; }
+  &--completed { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
+  &--failed { color: #b03a35; background: #fdf0ef; border-color: #e8c4c1; }
 }
 
-.header-left {
-  flex: 1;
+/* ============================================
+   Select
+   ============================================ */
+.ag-select {
+  height: 36px; padding: 0 28px 0 10px; box-sizing: border-box; line-height: 1;
+  border: 1px solid #ccc; background: #fff;
+  font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em; color: #444;
+  cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+  &--sm { height: 30px; padding: 0 24px 0 8px; font-size: 11px; }
 }
 
-.page-header h2 {
-  color: #2c3e50;
-  margin: 0 0 10px 0;
-}
-
-.task-info {
-  display: flex;
-  gap: 20px;
-  align-items: center;
-}
-
-.task-id {
-  color: #666;
-  font-family: monospace;
-}
-
-.task-status {
-  padding: 4px 12px;
-  border-radius: 4px;
-  font-size: 0.9rem;
-  font-weight: bold;
-}
-
-.task-status.completed {
-  background: #e8f5e8;
-  color: #388e3c;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.export-btn {
-  background: #27ae60;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: background 0.3s ease;
+/* ============================================
+   Buttons
+   ============================================ */
+.ag-btn {
+  all: unset; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 8px 18px; box-sizing: border-box;
   white-space: nowrap;
-}
+  font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
 
-.export-btn:hover:not(:disabled) {
-  background: #229954;
-}
-
-.export-btn:disabled {
-  background: #bdc3c7;
-  cursor: not-allowed;
-}
-
-.batch-actions {
-  background: white;
-  border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.selection-info {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.select-all {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.selected-count {
-  color: #3498db;
-  font-weight: bold;
-}
-
-.batch-buttons {
-  display: flex;
-  gap: 10px;
-}
-
-.batch-adopt-btn, .batch-discard-btn {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: all 0.2s ease;
-}
-
-.batch-adopt-btn {
-  background: #27ae60;
-  color: white;
-}
-
-.batch-adopt-btn:hover:not(:disabled) {
-  background: #229954;
-}
-
-.batch-discard-btn {
-  background: #e74c3c;
-  color: white;
-}
-
-.batch-discard-btn:hover:not(:disabled) {
-  background: #c0392b;
-}
-
-.batch-adopt-btn:disabled, .batch-discard-btn:disabled {
-  background: #bdc3c7;
-  cursor: not-allowed;
-}
-
-.testcases-table {
-  background: white;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.table-header {
-  display: grid;
-  grid-template-columns: 60px 120px 1fr 1fr 1fr 1fr 80px 150px;
-  background: #f8f9fa;
-  font-weight: bold;
-  color: #2c3e50;
-}
-
-.table-body .table-row {
-  display: grid;
-  grid-template-columns: 60px 120px 1fr 1fr 1fr 1fr 80px 150px;
-  border-bottom: 1px solid #eee;
-  transition: background 0.2s ease;
-}
-
-.table-row:hover {
-  background: #f8f9fa;
-}
-
-.header-cell, .body-cell {
-  padding: 16px 8px;
-  display: flex;
-  align-items: flex-start; /* 改为顶部对齐，避免内容被裁剪 */
-  border-right: 1px solid #eee;
-  word-break: break-word;
-  min-height: 60px;
-}
-
-/* 文本截断样式 */
-.text-truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  white-space: pre-wrap;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.checkbox-cell {
-  justify-content: center;
-}
-
-.header-cell:last-child, .body-cell:last-child {
-  border-right: none;
-}
-
-.priority-tag {
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: bold;
-}
-
-.priority-tag.low {
-  background: #e8f5e8;
-  color: #388e3c;
-}
-
-.priority-tag.p3 {
-  background: #e8f5e8;
-  color: #388e3c;
-}
-
-.priority-tag.medium {
-  background: #e3f2fd;
-  color: #1976d2;
-}
-
-.priority-tag.p2 {
-  background: #e3f2fd;
-  color: #1976d2;
-}
-
-.priority-tag.high {
-  background: #fff3e0;
-  color: #f57c00;
-}
-
-.priority-tag.p1 {
-  background: #fff3e0;
-  color: #f57c00;
-}
-
-.priority-tag.critical {
-  background: #ffebee;
-  color: #d32f2f;
-}
-
-.priority-tag.p0 {
-  background: #ffebee;
-  color: #d32f2f;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-
-.view-btn, .adopt-btn, .discard-btn {
-  padding: 4px 8px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  transition: all 0.2s ease;
-}
-
-.view-btn {
-  background: #3498db;
-  color: white;
-}
-
-.view-btn:hover {
-  background: #2980b9;
-}
-
-.adopt-btn {
-  background: #27ae60;
-  color: white;
-}
-
-.adopt-btn:hover {
-  background: #229954;
-}
-
-.discard-btn {
-  background: #e74c3c;
-  color: white;
-}
-
-.discard-btn:hover {
-  background: #c0392b;
-}
-
-.pagination-section {
-  margin-top: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: white;
-  padding: 15px;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.pagination-controls {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.page-size-selector {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pagination-buttons {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.pagination-buttons button {
-  padding: 6px 12px;
-  border: 1px solid #ddd;
-  background: white;
-  cursor: pointer;
-  border-radius: 4px;
-  transition: all 0.2s ease;
-}
-
-.pagination-buttons button:hover:not(:disabled) {
-  background: #f0f0f0;
-}
-
-.pagination-buttons button:disabled {
-  color: #ccc;
-  cursor: not-allowed;
-}
-
-.case-detail-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 12px;
-  max-width: 800px;
-  width: 90%;
-  max-height: 80vh;
-  overflow-y: auto;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 30px;
-  border-bottom: 1px solid #eee;
-}
-
-.modal-header h3 {
-  margin: 0;
-  color: #2c3e50;
-}
-
-.close-btn {
-  background: none;
-  border: none;
-  font-size: 1.5rem;
-  cursor: pointer;
-  color: #666;
-}
-
-.modal-body {
-  padding: 30px;
-}
-
-.detail-item {
-  margin-bottom: 20px;
-}
-
-.detail-item label {
-  font-weight: bold;
-  color: #2c3e50;
-  display: block;
-  margin-bottom: 8px;
-}
-
-.detail-item span, .detail-item p {
-  color: #666;
-  line-height: 1.6;
-}
-
-.test-steps {
-  white-space: pre-line;
-  background: #f8f9fa;
-  padding: 15px;
-  border-radius: 6px;
-  border-left: 4px solid #3498db;
-}
-
-.loading-state, .error-state, .empty-state {
-  text-align: center;
-  padding: 60px 20px;
-  color: #666;
-}
-
-.error-state h3, .empty-state h3 {
-  color: #2c3e50;
-  margin-bottom: 10px;
-}
-
-.error-state a {
-  color: #3498db;
-  text-decoration: none;
-}
-
-.error-state a:hover {
-  text-decoration: underline;
-}
-
-/* 编辑模式样式 */
-.edit-mode {
-  .form-item {
-    margin-bottom: 20px;
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent;
+    transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
   }
 
-  .form-item label {
-    font-weight: bold;
-    color: #2c3e50;
-    display: block;
-    margin-bottom: 8px;
+  &--sm { min-height: 30px; padding: 4px 10px; font-size: 11px; letter-spacing: .06em; }
+
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+    &:disabled { background: transparent; border-color: transparent; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+    &:active:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+    &:disabled { color: #c9cbc8; background: #e8eae7; border-color: #d6d8d5; &::before { background: transparent; } }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #c9aca9; background: #f8f4f3; border-color: #eadcd9; &::before { background: transparent; } }
+  }
+  &--warn {
+    color: #7d6a16; background: #fffdf4; border-color: #dccc8e;
+    &::before { background: #c8a821; }
+    &:hover:not(:disabled) { background: #faf3d8; border-color: #cdbb76; }
+    &:disabled { color: #b6ab7f; background: #f8f6ee; border-color: #e5dfc4; &::before { background: transparent; } }
   }
 
-  .readonly-field {
-    color: #666;
-    padding: 8px 12px;
-    background: #f5f5f5;
-    border-radius: 4px;
-    display: inline-block;
+  :deep(.el-icon) { font-size: 13px; }
+}
+
+/* ============================================
+   Pagination
+   ============================================ */
+.ag-page {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  padding: 14px 20px; border-top: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__info { font-size: 12px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; }
+  &__ctrls { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  &__size { display: flex; align-items: center; gap: 8px; }
+  &__label {
+    font-size: 11px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  &__btns { display: flex; align-items: center; gap: 8px; }
+  &__current {
+    font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #555; padding: 0 4px; white-space: nowrap;
   }
 }
 
-/* 底部操作栏 */
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 20px 30px;
-  border-top: 1px solid #eee;
-  background: #f9f9f9;
-  border-radius: 0 0 12px 12px;
+/* ============================================
+   Empty
+   ============================================ */
+.ag-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 64px 20px; text-align: center; color: #aaa;
+  &__icon {
+    font-size: 24px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
+    letter-spacing: .2em; color: #ddd; margin-bottom: 16px;
+  }
+  h3 { color: #666; margin: 0 0 8px; font-size: 16px; }
+  p { font-size: 13px; color: #aaa; margin: 0 0 8px; }
+  a { color: var(--ark-ink); text-decoration: underline; &:hover { color: #666; } }
 }
 
-.action-btn {
-  padding: 10px 20px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.3s;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* ============================================
+   Modal
+   ============================================ */
+.ag-modal {
+  position: fixed; inset: 0; background: rgba(4,6,8,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+  &__box {
+    background: #fff; width: 90%; max-width: 860px; max-height: 84vh;
+    display: flex; flex-direction: column; border: 1px solid #888;
+  }
+  &__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: var(--ark-ink); color: #fff; flex-shrink: 0;
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
+  }
+  &__close {
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
+  &__body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
+  &__foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 24px; border-top: 1px solid var(--ark-border);
+    background: #fafaf8; flex-shrink: 0;
+  }
 }
 
-.edit-btn {
-  background: #409eff;
-  color: white;
+/* Detail rows */
+.ag-detail {
+  &__row {
+    margin-bottom: 16px;
+    label {
+      display: block; font-weight: 600; font-size: 11px; color: #999; margin-bottom: 6px;
+      text-transform: uppercase; letter-spacing: .08em;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+    }
+    span, p { font-size: 13px; color: #333; line-height: 1.7; margin: 0; white-space: pre-wrap; word-break: break-word; }
+  }
+}
+.ag-code-block {
+  background: var(--ark-paper); padding: 14px 16px; border-left: 3px solid var(--ark-signal);
+  font-size: 13px; line-height: 1.7; white-space: pre-line;
 }
 
-.edit-btn:hover {
-  background: #66b1ff;
+/* Edit form */
+.ag-form {
+  display: flex; flex-direction: column; gap: 16px;
+  &__group {
+    display: flex; flex-direction: column; gap: 6px;
+    label {
+      font-weight: 600; font-size: 11px; color: #666;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+  }
+  &__readonly {
+    color: #666; padding: 8px 12px; background: #f4f5f3; border: 1px solid #e0e2df;
+    font-family: "IBM Plex Mono", Consolas, monospace; font-size: 13px;
+  }
+  :deep(.el-input__wrapper), :deep(.el-textarea__inner) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset; background: #fff;
+    font-family: inherit;
+  }
+  :deep(.el-input__wrapper.is-focus), :deep(.el-textarea__inner:focus) {
+    box-shadow: 0 0 0 1px var(--ark-signal) inset;
+  }
+  :deep(.el-input__inner) { font-family: inherit; }
+  :deep(.el-textarea__inner) { font-size: 13px; line-height: 1.7; }
 }
 
-.save-btn {
-  background: #67c23a;
-  color: white;
+/* ============================================
+   Motion
+   ============================================ */
+@keyframes ag-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
 }
 
-.save-btn:hover:not(:disabled) {
-  background: #85ce61;
+@media (prefers-reduced-motion: reduce) {
+  .ag-zone, .ag-btn, .ag-select, .ag-tr, .ag-req__head, .ag-req__head::after, .ag-modal__close {
+    transition: none !important; animation: none !important;
+  }
+  .ag-btn:active:not(:disabled) { transform: none; }
 }
 
-.save-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 1024px) {
+  .ag-shell { padding: 16px 16px 0; }
+  .ag-table { min-width: 960px; }
 }
-
-.cancel-btn {
-  background: #909399;
-  color: white;
-}
-
-.cancel-btn:hover:not(:disabled) {
-  background: #a6a9ad;
-}
-
-.close-btn-footer {
-  background: #e4e7ed;
-  color: #606266;
-}
-
-.close-btn-footer:hover {
-  background: #ecf5ff;
+@media (max-width: 768px) {
+  .ag-shell { padding: 12px 12px 0; }
+  .ag-head { flex-direction: column; }
+  .ag-head__actions { width: 100%; }
+  .ag-head__actions .ag-btn { flex: 1; }
+  .ag-batch { flex-direction: column; align-items: stretch; }
+  .ag-batch__actions { justify-content: flex-end; }
+  .ag-page { flex-direction: column; align-items: flex-start; }
+  .ag-page__ctrls { flex-direction: column; align-items: flex-start; width: 100%; }
+  .ag-modal__box { width: 95%; }
 }
 </style>
 
 <style>
-/* 全局样式：隐藏Element Plus折叠面板的默认箭头图标 */
-.requirement-description-card .el-collapse-item__header .el-icon {
-  display: none !important;
+/* Endfield-styled confirmation dialogs (rendered at body level) */
+.ag-confirm.el-message-box {
+  border-radius: 0; border: 1px solid #191919; padding: 20px 24px;
 }
-
-.requirement-description-card .el-collapse-item__arrow {
-  display: none !important;
+.ag-confirm .el-message-box__header { padding: 0 0 10px; }
+.ag-confirm .el-message-box__title {
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-weight: 700; color: #191919; font-size: 16px;
 }
-
-/* 针对Element Plus不同版本的箭头图标 */
-.requirement-description-card .el-collapse-item__header .el-collapse-item__arrow {
-  display: none !important;
+.ag-confirm .el-message-box__message { color: #555; line-height: 1.8; }
+.ag-confirm .el-message-box__btns {
+  padding: 14px 0 0; display: flex; justify-content: flex-end; gap: 8px;
 }
-
-.requirement-description-card .el-collapse-item__header .el-icon-arrow-right {
-  display: none !important;
+.ag-confirm .el-button {
+  border-radius: 0; font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
 }
-
-.requirement-description-card .el-collapse-item__header .el-icon-arrow-left {
-  display: none !important;
+.ag-confirm .el-button--primary {
+  background: #191919; border-color: #191919; color: #fff;
+}
+.ag-confirm .el-button--primary:hover,
+.ag-confirm .el-button--primary:focus {
+  background: #2e2e2e; border-color: #2e2e2e; color: #fff;
+}
+.ag-confirm .el-button--danger {
+  background: #b03a35; border-color: #b03a35; color: #fff;
+}
+.ag-confirm .el-button--danger:hover,
+.ag-confirm .el-button--danger:focus {
+  background: #c04840; border-color: #c04840; color: #fff;
+}
+.ag-confirm .el-button--default {
+  background: #fff; border-color: #c9cbc8; color: #191919;
+}
+.ag-confirm .el-button--default:hover,
+.ag-confirm .el-button--default:focus {
+  background: #eef0ed; border-color: #a9aca9; color: #191919;
 }
 </style>

@@ -678,6 +678,107 @@ class TestCaseGenerationTask(models.Model):
         return f"{self.title} - {self.get_status_display()}"
 
 
+def _resolve_screenshot_url_to_data(img):
+    """把多模态图片条目中的 screenshot_url 引用解析为 base64 data（调用模型前临时编码，不落库）。
+
+    返回 {'page', 'data', 'media_type'}；图片缺失/路径越界返回 None。
+    """
+    if not img or not isinstance(img, dict):
+        return None
+    if img.get('data'):
+        return dict(img)
+    url = img.get('screenshot_url')
+    if not url or not isinstance(url, str):
+        return None
+    if url.startswith(settings.MEDIA_URL):
+        rel = url[len(settings.MEDIA_URL):].lstrip('/')
+    else:
+        rel = url.lstrip('/')
+    if not rel or '\\' in rel:
+        return None
+    media_root = os.path.realpath(settings.MEDIA_ROOT)
+    full = os.path.realpath(os.path.join(media_root, rel))
+    try:
+        if os.path.commonpath([media_root, full]) != media_root:
+            return None
+    except ValueError:
+        return None
+    if not os.path.exists(full):
+        return None
+    import base64 as b64
+    with open(full, 'rb') as f:
+        data = b64.b64encode(f.read()).decode('utf-8')
+    ext = os.path.splitext(full)[1].lower()
+    media_type = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+    }.get(ext, 'image/jpeg')
+    return {'page': img.get('page'), 'data': data, 'media_type': media_type}
+
+
+# qwen3.7-plus（视觉）官方单图上限 1600 万像素；留 0.5M 边界，
+# 避免模型侧对边界图的自适应处理/文档口径差异导致误判。可自行调整。
+MAX_SINGLE_IMAGE_PIXELS = 16_000_000
+
+
+def _image_pixel_violations(page_images):
+    """解析每张图的实际像素数，返回超限列表 [(page, width, height, pixels)]。
+
+    只读取图片头部解析尺寸（不整图解码），解析失败/非图片则跳过，避免误拦截。
+    支持 {'raw': bytes} 与 {'data': base64} 两种图片条目。
+    """
+    from PIL import Image
+    import base64 as b64
+    import io
+
+    violations = []
+    for img in page_images or []:
+        if not isinstance(img, dict):
+            continue
+        raw = img.get('raw')
+        data = img.get('data')
+        try:
+            if raw is not None:
+                buf = io.BytesIO(raw)
+            elif data:
+                buf = io.BytesIO(b64.b64decode(data))
+            else:
+                continue
+            with Image.open(buf) as im:
+                w, h = im.size
+            pixels = w * h
+            if pixels > MAX_SINGLE_IMAGE_PIXELS:
+                violations.append((img.get('page', '?'), w, h, pixels))
+        except Exception:
+            logger.warning(
+                "[image_pixel_check] 无法解析图片尺寸，已跳过校验: page=%s",
+                img.get('page', '?'),
+            )
+            continue
+    return violations
+
+
+def check_image_pixel_limits(page_images):
+    """前置守卫：任何单张图超过模型上限时抛 ValueError，避免请求发出去后等模型拒绝。"""
+    violations = _image_pixel_violations(page_images)
+    if violations:
+        detail = '；'.join(
+            f'第{page}张 {w}×{h}（{pixels // 10000}万像素）'
+            for page, w, h, pixels in violations[:3]
+        )
+        if len(violations) > 3:
+            detail += f' 等共{len(violations)}张'
+        raise ValueError(
+            f'有{len(violations)}张图片超过模型单图上限'
+            f'（{MAX_SINGLE_IMAGE_PIXELS // 10000}万像素）：{detail}。'
+            f'请压缩图片后重试'
+        )
+
+
 class AIModelService:
     """AI模型服务类"""
 
@@ -762,6 +863,9 @@ class AIModelService:
         """
         if not extractor_config.supports_vision:
             raise ValueError("extractor 模型不支持多模态，请勾选「支持多模态」")
+
+        # 单张图像素前置守卫：超限直接报错，避免发请求后等模型拒绝
+        check_image_pixel_limits(page_images)
 
         system_prompt = extractor_prompt.content
 
@@ -1355,6 +1459,9 @@ class AIModelService:
                 f"不支持多模态视觉识别，请使用支持视觉的模型进行需求澄清"
             )
 
+        # 单张图像素前置守卫：超限直接报错，避免发请求后等模型拒绝
+        check_image_pixel_limits(page_images)
+
         system_prompt = clarifier_prompt.content
 
         # 构建多模态消息
@@ -1818,6 +1925,9 @@ class AIModelService:
         Returns:
             OpenAI格式的messages列表
         """
+        # 单张图像素前置守卫：超限直接报错，避免发请求后等模型拒绝
+        check_image_pixel_limits(page_images)
+
         content_blocks = []
 
         # 知识背景（如果有，放在最前面）
@@ -1909,8 +2019,22 @@ class AIModelService:
                 f"不支持多模态视觉识别，请勾选「支持多模态」后重试"
             )
 
-        # 构建多模态消息
-        page_images = task.page_images_base64 or []
+        # 构建多模态消息：screenshot_url 引用在此临时解析为 base64（不落库）
+        page_images = []
+        missing = 0
+        for img in (task.page_images_base64 or []):
+            resolved = _resolve_screenshot_url_to_data(img)
+            if resolved:
+                page_images.append(resolved)
+            else:
+                missing += 1
+        if not page_images:
+            raise ValueError('多模态图片全部缺失，无法生成：请重新选择画布后重试')
+        if missing:
+            logger.warning(
+                f"[generate_test_cases_multimodal] {missing} 张截图缺失，已跳过"
+                f"（共 {len(task.page_images_base64 or [])} 张）"
+            )
         messages = AIModelService.build_multimodal_messages(
             task.requirement_text,
             page_images,

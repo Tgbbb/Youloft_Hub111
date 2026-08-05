@@ -1,7 +1,10 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 import json
+from apps.projects.models import Project
 
 User = get_user_model()
 
@@ -22,6 +25,10 @@ class UiProject(models.Model):
     end_date = models.DateField(null=True, blank=True, verbose_name='结束日期')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_ui_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='ui_projects', verbose_name='团队成员')
+    main_project = models.OneToOneField(
+        Project, on_delete=models.CASCADE,
+        related_name='ui_project', verbose_name='主项目'
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
@@ -1073,6 +1080,10 @@ class MidsceneProject(models.Model):
                                              help_text='iOS应用Bundle Identifier，如 com.example.app')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='midscene_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='midscene_member_projects', verbose_name='团队成员')
+    main_project = models.OneToOneField(
+        Project, on_delete=models.CASCADE,
+        related_name='midscene_project', verbose_name='主项目'
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
@@ -1285,3 +1296,17 @@ class MidsceneExecutionRecord(models.Model):
         if self.total_steps == 0:
             return 0
         return round((self.passed_steps / self.total_steps) * 100, 2)
+
+
+# ============================================================
+# 信号：删除执行记录时同步清理截图目录
+# ============================================================
+
+@receiver(post_delete, sender=MidsceneExecutionRecord)
+def cleanup_midscene_execution_media(sender, instance, **kwargs):
+    """删除执行记录时清理 media/midscene/{id}/ 截图，防止磁盘无限增长"""
+    try:
+        from .midscene_runner import delete_execution_media
+        delete_execution_media(instance.id)
+    except Exception:
+        pass

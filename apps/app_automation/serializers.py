@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from rest_framework import serializers
 from django.utils import timezone
+from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
     AppProject,
     AppTestConfig,
@@ -21,7 +22,7 @@ from .models import (
 
 # ========== 项目管理序列化器 ==========
 
-class AppProjectSerializer(serializers.ModelSerializer):
+class AppProjectSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     """APP项目序列化器 - 列表/详情"""
     owner_name = serializers.SerializerMethodField()
     member_count = serializers.SerializerMethodField()
@@ -46,21 +47,21 @@ class AppProjectSerializer(serializers.ModelSerializer):
         return obj.test_suites.count()
 
 
-class AppProjectCreateSerializer(serializers.ModelSerializer):
+class AppProjectCreateSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     """APP项目创建序列化器"""
     class Meta:
         model = AppProject
-        fields = ('name', 'description', 'status', 'start_date', 'end_date', 'members')
+        fields = ('name', 'description', 'status', 'start_date', 'end_date', 'members', 'main_project')
         extra_kwargs = {
             'members': {'required': False},
         }
 
 
-class AppProjectUpdateSerializer(serializers.ModelSerializer):
+class AppProjectUpdateSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     """APP项目更新序列化器"""
     class Meta:
         model = AppProject
-        fields = ('name', 'description', 'status', 'start_date', 'end_date', 'members')
+        fields = ('name', 'description', 'status', 'start_date', 'end_date', 'members', 'main_project')
 
 
 # ========== 配置序列化器 ==========

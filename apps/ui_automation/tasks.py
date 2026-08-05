@@ -48,6 +48,10 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution = MidsceneExecutionRecord.objects.get(id=execution_id)
         midscene_case = execution.midscene_case
 
+        if execution.status == 'stopped':
+            logger.info(f'[Task] 执行记录 {execution_id} 已在启动前被停止，跳过执行')
+            return 'stopped'
+
         if not midscene_case:
             raise ValueError('执行记录没有关联的测试用例')
 
@@ -115,7 +119,9 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
 
         # ---- 保存结果 ----
         execution.refresh_from_db()
-        execution.status = result['status']
+        if result['status'] != 'stopped':
+            # 用户手动停止时保留 stopped 状态，避免被覆盖为 passed/failed
+            execution.status = result['status']
         execution.finished_at = timezone.now()
         if execution.started_at:
             execution.duration = (execution.finished_at - execution.started_at).total_seconds()
@@ -142,10 +148,13 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
             midscene_case.save(update_fields=['replay_data'])
             logger.info(f'[Task] 回放数据已保存到用例 {midscene_case.id}（共{len(existing[:3])}条）')
 
-        _send_progress_update(
-            execution.id, result['status'], 100,
-            f"执行完成: {result['passedSteps']}/{result['totalSteps']} 通过"
-        )
+        if result['status'] == 'stopped':
+            _send_progress_update(execution.id, 'stopped', execution.progress or 0, '用户已停止执行')
+        else:
+            _send_progress_update(
+                execution.id, result['status'], 100,
+                f"执行完成: {result['passedSteps']}/{result['totalSteps']} 通过"
+            )
 
     except Exception as e:
         logger.error(f'Midscene 执行失败: {e}', exc_info=True)

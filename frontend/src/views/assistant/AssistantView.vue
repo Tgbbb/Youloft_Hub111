@@ -1,5 +1,5 @@
 <template>
-  <div class="assistant-layout">
+  <div class="assistant-layout" data-ark-theme="endfield" data-ark-depth="moderate">
     <!-- 左侧侧边栏 -->
     <div class="sidebar">
       <div class="new-chat-btn-wrapper">
@@ -65,6 +65,7 @@
                 :placeholder="$t('assistant.selectProject')"
                 size="default"
                 class="welcome-select"
+                popper-class="ag-dropdown"
                 @change="onProjectChange"
               >
                 <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
@@ -86,7 +87,7 @@
               <input ref="fileInput" type="file" hidden @change="onFileChange" />
               <el-popover placement="top" :width="260" trigger="click">
                 <template #reference>
-                  <el-button circle :icon="MagicStick" :disabled="sending" />
+                  <el-button class="ag-ibtn" :icon="MagicStick" :disabled="sending" />
                 </template>
                 <div class="skill-popover">
                   <div class="skill-pop-title">选择 Skill</div>
@@ -98,8 +99,8 @@
                   </div>
                 </div>
               </el-popover>
-              <el-button circle :icon="Link" @click="$refs.fileInput.click()" :disabled="sending" />
-              <el-button type="primary" circle :icon="Promotion"
+              <el-button class="ag-ibtn" :icon="Link" @click="$refs.fileInput.click()" :disabled="sending" />
+              <el-button type="primary" class="ag-ibtn ag-ibtn--ok" :icon="Promotion"
                 :disabled="(!inputMessage.trim() && uploadedFiles.length === 0) || sending"
                 @click="sendMessage" />
             </div>
@@ -136,53 +137,70 @@
           </div>
 
           <!-- 弹窗 -->
-          <el-dialog v-model="showSkillImport" title="导入 Skill" width="420px" :close-on-click-modal="false">
-            <el-upload ref="skillUploadRef" drag :auto-upload="false" accept=".zip" :limit="1"
-                       :on-change="onSkillFileChange" :file-list="skillFileList">
-              <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-              <div class="el-upload__text">拖拽或点击上传 Skill 包 (.zip)</div>
-              <div class="el-upload__tip">包含 SKILL.md 的 zip 压缩包</div>
-            </el-upload>
-            <template #footer>
-              <el-button @click="showSkillImport = false; skillFileList = []">取消</el-button>
-              <el-button type="primary" @click="doImportSkill" :loading="importingSkill">导入</el-button>
-            </template>
-          </el-dialog>
-
-          <el-dialog v-model="showMCPDialog" title="MCP 服务器管理" width="520px" :close-on-click-modal="false">
-            <div class="mcp-section">
-              <div class="mcp-section-title">独立 MCP 服务器</div>
-              <div v-if="mcpServers.standalone && mcpServers.standalone.length > 0">
-                <div v-for="srv in mcpServers.standalone" :key="srv.name" class="mcp-item">
-                  <div class="mcp-item-info">
-                    <span class="mcp-item-name">{{ srv.name }}</span>
-                    <span class="mcp-item-cmd">{{ srv.command || srv.type }}</span>
-                  </div>
-                  <el-switch :model-value="srv.enabled" size="small" @change="toggleMCPServer(srv.name, $event)" />
-                </div>
+          <div v-if="showSkillImport" class="ag-modal" @click.self="showSkillImport = false; skillFileList = []">
+            <div class="ag-modal__box ag-modal__box--sm">
+              <header class="ag-modal__head">
+                <span class="ag-modal__kicker">SKILL / IMPORT</span>
+                <button class="ag-modal__close" @click="showSkillImport = false; skillFileList = []">×</button>
+              </header>
+              <div class="ag-modal__body">
+                <el-upload ref="skillUploadRef" drag :auto-upload="false" accept=".zip" :limit="1"
+                           :on-change="onSkillFileChange" :file-list="skillFileList">
+                  <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+                  <div class="el-upload__text">拖拽或点击上传 Skill 包 (.zip)</div>
+                  <div class="el-upload__tip">包含 SKILL.md 的 zip 压缩包</div>
+                </el-upload>
               </div>
-              <div v-else class="mcp-empty">暂无独立 MCP 服务器</div>
-              <el-divider />
-              <div class="mcp-section-title">Skill 内嵌 MCP</div>
-              <div v-if="mcpServers.embedded && mcpServers.embedded.length > 0">
-                <div v-for="srv in mcpServers.embedded" :key="srv.name" class="mcp-item">
-                  <div class="mcp-item-info">
-                    <span class="mcp-item-name">{{ srv.name }}</span>
-                    <span class="mcp-item-cmd">{{ srv.skill_name }} / {{ srv.command || srv.type }}</span>
-                  </div>
-                  <el-tag size="small" :type="srv.enabled ? 'success' : 'info'">{{ srv.enabled ? '启用' : '禁用' }}</el-tag>
-                </div>
-              </div>
-              <div v-else class="mcp-empty">Skill 中暂无 MCP 配置</div>
-              <el-divider />
-              <div class="mcp-add-form">
-                <div class="mcp-section-title">添加 MCP 服务器</div>
-                <el-input v-model="mcpForm.name" placeholder="名称" size="small" style="margin-bottom:8px" />
-                <el-input v-model="mcpForm.command" placeholder="npx -y @scope/server-name 或 https://..." size="small" style="margin-bottom:8px" />
-                <el-button size="small" type="primary" @click="addMCPServer" :loading="addingMCP">添加</el-button>
-              </div>
+              <footer class="ag-modal__foot">
+                <button class="ag-btn ag-btn--ghost" @click="showSkillImport = false; skillFileList = []">取消</button>
+                <button class="ag-btn ag-btn--ok" @click="doImportSkill" :disabled="importingSkill">{{ importingSkill ? '处理中…' : '导入' }}</button>
+              </footer>
             </div>
-          </el-dialog>
+          </div>
+
+          <div v-if="showMCPDialog" class="ag-modal" @click.self="showMCPDialog = false">
+            <div class="ag-modal__box">
+              <header class="ag-modal__head">
+                <span class="ag-modal__kicker">AGENT / MCP</span>
+                <button class="ag-modal__close" @click="showMCPDialog = false">×</button>
+              </header>
+              <div class="ag-modal__body">
+                <div class="mcp-section">
+                  <div class="mcp-section-title">独立 MCP 服务器</div>
+                  <div v-if="mcpServers.standalone && mcpServers.standalone.length > 0">
+                    <div v-for="srv in mcpServers.standalone" :key="srv.name" class="mcp-item">
+                      <div class="mcp-item-info">
+                        <span class="mcp-item-name">{{ srv.name }}</span>
+                        <span class="mcp-item-cmd">{{ srv.command || srv.type }}</span>
+                      </div>
+                      <el-switch :model-value="srv.enabled" size="small" @change="toggleMCPServer(srv.name, $event)" />
+                    </div>
+                  </div>
+                  <div v-else class="mcp-empty">暂无独立 MCP 服务器</div>
+                  <div class="mcp-divider" aria-hidden="true"></div>
+                  <div class="mcp-section-title">Skill 内嵌 MCP</div>
+                  <div v-if="mcpServers.embedded && mcpServers.embedded.length > 0">
+                    <div v-for="srv in mcpServers.embedded" :key="srv.name" class="mcp-item">
+                      <div class="mcp-item-info">
+                        <span class="mcp-item-name">{{ srv.name }}</span>
+                        <span class="mcp-item-cmd">{{ srv.skill_name }} / {{ srv.command || srv.type }}</span>
+                      </div>
+                      <span class="ag-mcp-state" :class="srv.enabled ? 'on' : 'off'">{{ srv.enabled ? '启用' : '禁用' }}</span>
+                    </div>
+                  </div>
+                  <div v-else class="mcp-empty">Skill 中暂无 MCP 配置</div>
+                  <div class="mcp-divider" aria-hidden="true"></div>
+                  <div class="mcp-section-title">添加 MCP 服务器</div>
+                  <input v-model="mcpForm.name" class="ag-input" placeholder="名称" />
+                  <input v-model="mcpForm.command" class="ag-input" placeholder="npx -y @scope/server-name 或 https://..." />
+                  <button class="ag-btn ag-btn--ok" @click="addMCPServer" :disabled="addingMCP">{{ addingMCP ? '处理中…' : '添加' }}</button>
+                </div>
+              </div>
+              <footer class="ag-modal__foot">
+                <button class="ag-btn ag-btn--ghost" @click="showMCPDialog = false">关闭</button>
+              </footer>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -192,10 +210,10 @@
           <div class="chat-header-left">
             <span class="chat-time" v-if="currentSession">{{ formatDate(currentSession.updated_at) }}</span>
             <el-select v-model="selectedProjectId" :placeholder="$t('assistant.selectProject')"
-                       size="small" class="header-project-select" @change="onProjectChange">
+                       size="small" class="header-project-select" popper-class="ag-dropdown" @change="onProjectChange">
               <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-button @click="showFilePanel = true; loadFiles()" size="small" :icon="Folder" circle
+            <el-button @click="showFilePanel = true; loadFiles()" size="small" :icon="Folder" class="ag-ibtn ag-ibtn--sm"
                        style="margin-left: auto;" />
           </div>
         </div>
@@ -247,7 +265,7 @@
             <input ref="fileInput2" type="file" hidden @change="onFileChange" />
             <el-popover placement="top" :width="260" trigger="click">
               <template #reference>
-                <el-button class="upload-btn" style="right:80px" circle :icon="MagicStick" :disabled="sending" />
+                <el-button class="upload-btn" style="right:80px" :icon="MagicStick" :disabled="sending" />
               </template>
               <div class="skill-popover">
                 <div class="skill-pop-title">选择 Skill</div>
@@ -258,8 +276,8 @@
                 </div>
               </div>
             </el-popover>
-            <el-button class="upload-btn" circle :icon="Link" @click="$refs.fileInput2.click()" :disabled="sending" />
-            <el-button type="primary" class="send-btn"
+            <el-button class="upload-btn" :icon="Link" @click="$refs.fileInput2.click()" :disabled="sending" />
+            <el-button type="primary" class="send-btn ag-ibtn ag-ibtn--ok"
               :disabled="(!inputMessage.trim() && uploadedFiles.length === 0) || sending"
               @click="sendMessage">
               <el-icon><Promotion /></el-icon>
@@ -269,35 +287,45 @@
         </div>
 
         <!-- File Panel Dialog -->
-        <el-dialog v-model="showFilePanel" title="文件管理" width="480px" :close-on-click-modal="true">
-          <div v-if="sessionFiles.uploads.length + sessionFiles.outputs.length === 0" style="text-align:center;color:#bbb;padding:20px;">
-            暂无文件，上传文件或让 Agent 生成后即可在此管理
+        <div v-if="showFilePanel" class="ag-modal" @click.self="showFilePanel = false">
+          <div class="ag-modal__box ag-modal__box--md">
+            <header class="ag-modal__head">
+              <span class="ag-modal__kicker">AGENT / FILES</span>
+              <button class="ag-modal__close" @click="showFilePanel = false">×</button>
+            </header>
+            <div class="ag-modal__body">
+              <div v-if="sessionFiles.uploads.length + sessionFiles.outputs.length === 0" class="ag-modal__empty">
+                暂无文件，上传文件或让 Agent 生成后即可在此管理
+              </div>
+              <template v-else>
+                <div v-if="sessionFiles.uploads.length > 0">
+                  <h4 class="ag-file-group">📤 用户上传</h4>
+                  <div v-for="f in sessionFiles.uploads" :key="f.id" class="file-item">
+                    <el-icon><Document /></el-icon>
+                    <span class="file-name">{{ f.file_name }}</span>
+                    <span class="file-size">{{ formatSize(f.file_size) }}</span>
+                    <span class="file-time">{{ formatDate(f.created_at) }}</span>
+                    <button class="ag-btn ag-btn--sm ag-btn--danger" @click="deleteFile(f.id)">删除</button>
+                  </div>
+                </div>
+                <div v-if="sessionFiles.outputs.length > 0" style="margin-top:16px;">
+                  <h4 class="ag-file-group">📥 Agent 产出</h4>
+                  <div v-for="f in sessionFiles.outputs" :key="f.id" class="file-item">
+                    <el-icon><Document /></el-icon>
+                    <span class="file-name">{{ f.file_name }}</span>
+                    <span class="file-size">{{ formatSize(f.file_size) }}</span>
+                    <span class="file-time">{{ formatDate(f.created_at) }}</span>
+                    <button class="ag-btn ag-btn--sm" @click="window.open(downloadUrl(f.id), '_blank')">下载</button>
+                    <button class="ag-btn ag-btn--sm ag-btn--danger" @click="deleteFile(f.id)">删除</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <footer class="ag-modal__foot">
+              <button class="ag-btn ag-btn--ghost" @click="showFilePanel = false">关闭</button>
+            </footer>
           </div>
-          <template v-else>
-            <div v-if="sessionFiles.uploads.length > 0">
-              <h4 style="font-size:13px;color:#666;margin:0 0 8px;">📤 用户上传</h4>
-              <div v-for="f in sessionFiles.uploads" :key="f.id" class="file-item">
-                <el-icon><Document /></el-icon>
-                <span class="file-name">{{ f.file_name }}</span>
-                <span class="file-size">{{ formatSize(f.file_size) }}</span>
-                <span class="file-time">{{ formatDate(f.created_at) }}</span>
-                <el-button size="small" text type="danger" :icon="Delete" @click="deleteFile(f.id)" />
-              </div>
-            </div>
-            <div v-if="sessionFiles.outputs.length > 0" style="margin-top:16px;">
-              <h4 style="font-size:13px;color:#666;margin:0 0 8px;">📥 Agent 产出</h4>
-              <div v-for="f in sessionFiles.outputs" :key="f.id" class="file-item">
-                <el-icon><Document /></el-icon>
-                <span class="file-name">{{ f.file_name }}</span>
-                <span class="file-size">{{ formatSize(f.file_size) }}</span>
-                <span class="file-time">{{ formatDate(f.created_at) }}</span>
-                <el-button size="small" text type="primary" :icon="Download"
-                  @click="window.open(downloadUrl(f.id), '_blank')">下载</el-button>
-                <el-button size="small" text type="danger" :icon="Delete" @click="deleteFile(f.id)" />
-              </div>
-            </div>
-          </template>
-        </el-dialog>
+        </div>
       </div>
     </div>
   </div>
@@ -642,19 +670,25 @@ onMounted(async () => {
 // Endfield Moderate — Agent Chat Shell
 // white/charcoal/signal-yellow
 // ====================================
-$bg-rail: #191919;
-$bg-page: #f5f5f0;
+$bg-rail: var(--ark-ink);
+$bg-page: var(--ark-paper);
 $bg-surface: #ffffff;
-$text-primary: #191919;
+$text-primary: var(--ark-ink);
 $text-secondary: #6b6b6b;
 $text-rail: rgba(255,255,255,.55);
 $text-rail-dim: rgba(255,255,255,.35);
-$accent: #fffa00;
-$rule: 1px solid #e0e0dc;
+$accent: var(--ark-signal);
+$rule: 1px solid var(--ark-border);
 $rule-dark: 1px solid rgba(255,255,255,.06);
 
 .assistant-layout {
-  display: flex; height: 100vh; background: $bg-page; overflow: hidden;
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-border: #e4e4de;
+
+  display: flex; height: calc(100vh - 52px); background: $bg-page; overflow: hidden;
 }
 
 // ====== Left Rail ======
@@ -852,5 +886,178 @@ $rule-dark: 1px solid rgba(255,255,255,.06);
   .file-size { color: #999; font-size: 11px; }
   .file-time { color: #bbb; font-size: 11px; }
 }
+
+// ====== Shared Ark components ======
+.ag-ibtn {
+  width: 34px; height: 34px; padding: 0; border-radius: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  &--sm { width: 30px; height: 30px; }
+  &--ok { background: var(--ark-ink); border-color: var(--ark-ink); color: #fff;
+    &:hover { background: #2e2e2e; border-color: #2e2e2e; color: #fff; } }
+}
+.input-actions .el-button { border-radius: 2px; }
+.upload-btn, .send-btn { border-radius: 2px; }
+
+.ag-input {
+  padding: 8px 12px; border: 1px solid #ccc; font-size: 13px; color: #333;
+  width: 100%; box-sizing: border-box; font-family: inherit;
+  &:focus { outline: none; border-color: var(--ark-ink); }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+}
+.mcp-add-form {
+  margin-top: 4px;
+  .ag-input { margin-bottom: 8px; }
+}
+.mcp-divider { height: 1px; background: var(--ark-border); margin: 14px 0; }
+.ag-mcp-state {
+  display: inline-block; padding: 2px 10px; font-size: 11px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .06em; border: 1px solid;
+  &.on { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
+  &.off { color: #777; background: #f4f5f3; border-color: #d8dad7; }
+}
+.ag-file-group { font-size: 12px; font-weight: 700; color: #666; margin: 0 0 8px; letter-spacing: .04em; }
+
+.welcome-select :deep(.el-input__wrapper),
+.header-project-select :deep(.el-input__wrapper) {
+  border-radius: 0; box-shadow: 0 0 0 1px #ccc inset;
+  &:focus-within { box-shadow: 0 0 0 1px var(--ark-signal) inset; }
+}
+
+// ====== Buttons ======
+.ag-btn {
+  all: unset; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; padding: 7px 16px; box-sizing: border-box;
+  white-space: nowrap;
+  font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
+
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent; transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
+  }
+
+  &--sm { min-height: 28px; padding: 3px 9px; font-size: 11px; letter-spacing: .05em; }
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+  }
+}
+
+// ====== Modal ======
+.ag-modal {
+  position: fixed; inset: 0; background: rgba(4,6,8,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+  &__box {
+    background: #fff; width: 90%; max-width: 600px; max-height: 84vh;
+    display: flex; flex-direction: column; border: 1px solid #888;
+    &--sm { max-width: 460px; }
+    &--md { max-width: 560px; }
+  }
+  &__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: var(--ark-ink); color: #fff; flex-shrink: 0;
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
+  }
+  &__close {
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
+  &__body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
+  &__foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 24px; border-top: 1px solid var(--ark-border);
+    background: #fafaf8; flex-shrink: 0;
+  }
+  &__empty { text-align: center; color: #999; padding: 24px 0; font-size: 13px; line-height: 1.7; }
+}
+
+// Skill upload inside modal
+.ag-modal__body :deep(.el-upload-dragger) {
+  border-radius: 0; border: 1px dashed #c9cbc8; background: #fff; padding: 30px 20px;
+  &:hover { border-color: var(--ark-ink); }
+}
+.ag-modal__body :deep(.el-upload__text) { color: #666; font-size: 13px; }
+.ag-modal__body :deep(.el-upload__tip) { color: #999; font-size: 12px; }
+.ag-modal__body :deep(.el-icon--upload) { color: #999; }
+
+// ====== Focus states ======
+.session-item:focus-visible,
+.skill-chip:focus-visible,
+.skills-import:focus-visible,
+.user-info:focus-visible,
+.remove-file:focus-visible {
+  outline: 2px solid var(--ark-signal); outline-offset: 1px;
+}
+.session-item, .skill-chip, .skills-import, .user-info { outline-offset: -2px; }
+
+// ====== Motion ======
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+// ====== Responsive ======
+@media (max-width: 1024px) {
+  .sidebar { width: 220px; }
+}
+@media (max-width: 768px) {
+  .assistant-layout { flex-direction: column; }
+  .sidebar {
+    width: 100%; height: auto; max-height: 42vh;
+    border-right: none; border-bottom: $rule-dark;
+  }
+  .history-list { flex: 0 0 auto; min-height: 0; }
+  .session-scroll-area { display: flex; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+  .session-item { flex-shrink: 0; width: 220px; }
+  .welcome-content { max-width: 100%; }
+  .message-bubble { max-width: 88%; }
+  .tool-line { margin: 2px 8px; }
+  .chat-footer { padding: 10px 12px; }
+  .chat-header { padding: 0 12px; }
+  .messages-container { padding: 14px 12px; }
+}
 @keyframes rotating { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+</style>
+
+<!-- Unscoped styles for teleported Element Plus dropdown poppers -->
+<style lang="scss">
+.ag-dropdown.el-popper { border-radius: 0; border-color: #191919; }
+.ag-dropdown .el-select-dropdown {
+  border-radius: 0; border-color: #191919; box-shadow: none;
+}
+.ag-dropdown .el-select-dropdown__item {
+  border-radius: 0; font-size: 13px; color: #333; height: 34px; line-height: 34px;
+}
+.ag-dropdown .el-select-dropdown__item:hover { background: #f4f5f3; color: #191919; }
+.ag-dropdown .el-select-dropdown__item.is-selected { color: #191919; font-weight: 700; }
 </style>

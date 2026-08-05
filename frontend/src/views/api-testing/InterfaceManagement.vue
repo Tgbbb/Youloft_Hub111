@@ -1,40 +1,71 @@
 <template>
   <div class="interface-management">
+    <!-- Page head: editorial title + live status strip -->
+    <header class="ef-page-head">
+      <div class="ef-page-head__title">
+        <p class="ef-kicker">FIELD OPERATIONS / INTERFACE CATALOG</p>
+        <h1 class="ef-page-title">{{ $t('menu.interfaceManagement') }}</h1>
+        <span class="ef-rule" aria-hidden="true"></span>
+      </div>
+      <div class="ef-page-head__status">
+        <div class="ef-status-item">
+          <span class="ef-status-label">PROJECT</span>
+          <span class="ef-status-value">{{ currentProjectName }}</span>
+        </div>
+        <div class="ef-status-item">
+          <span class="ef-status-label">ENV</span>
+          <span class="ef-status-value">{{ currentEnvName || $t('apiTesting.common.noEnvironment') }}</span>
+        </div>
+        <div class="ef-status-item">
+          <span class="ef-status-label">REQUESTS</span>
+          <span class="ef-status-value">{{ requestCount }}</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Charcoal utility dock: project switch, search, primary actions -->
+    <div class="ef-dock">
+      <el-select
+        v-model="selectedProject"
+        :placeholder="$t('apiTesting.common.selectProject')"
+        @change="onProjectChange"
+        class="ef-dock__project"
+      >
+        <el-option
+          v-for="project in projects"
+          :key="project.id"
+          :label="project.name"
+          :value="project.id"
+        />
+      </el-select>
+      <el-input
+        v-model="searchKeyword"
+        :placeholder="$t('apiTesting.interface.searchInterface')"
+        size="small"
+        clearable
+        @input="onSearchDebounced"
+        @keyup.enter="onSearch(searchKeyword)"
+        class="ef-dock__search"
+      >
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
+      <div class="ef-dock__actions">
+        <el-button class="ef-dock-btn" size="small" @click="openCreateCollectionDialog" :title="$t('apiTesting.interface.createCollection')">
+          <el-icon><Folder /></el-icon>
+          <span>{{ $t('apiTesting.interface.createCollection') }}</span>
+        </el-button>
+        <el-button type="primary" class="ef-dock-btn ef-dock-btn--primary" size="small" @click="createEmptyRequest" :title="$t('apiTesting.interface.addInterface')">
+          <el-icon><Plus /></el-icon>
+          <span>{{ $t('apiTesting.interface.addInterface') }}</span>
+        </el-button>
+      </div>
+    </div>
+
     <div class="interface-layout">
       <!-- 左侧集合树 -->
       <div class="sidebar">
-        <div class="sidebar-header">
-          <el-select v-model="selectedProject" :placeholder="$t('apiTesting.common.selectProject')" @change="onProjectChange" style="width: 100%;">
-            <el-option
-              v-for="project in projects"
-              :key="project.id"
-              :label="project.name"
-              :value="project.id"
-            />
-          </el-select>
-          <div class="header-actions">
-            <el-input
-              v-model="searchKeyword"
-              :placeholder="$t('apiTesting.interface.searchInterface')"
-              size="small"
-              clearable
-              @input="onSearchDebounced"
-              @keyup.enter="onSearch(searchKeyword)"
-              style="flex: 1; min-width: 0;"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-            <el-button type="primary" size="small" @click="openCreateCollectionDialog" :title="$t('apiTesting.interface.createCollection')">
-              <el-icon><Folder /></el-icon>
-            </el-button>
-            <el-button type="success" size="small" @click="createEmptyRequest" :title="$t('apiTesting.interface.addInterface')">
-              <el-icon><Plus /></el-icon>
-            </el-button>
-          </div>
-        </div>
-
         <div class="collection-tree" v-show="!searchKeyword || searchKeyword.trim() === ''">
           <el-tree
             ref="treeRef"
@@ -49,7 +80,7 @@
             @node-collapse="onNodeCollapse"
           >
             <template #default="{ node, data }">
-              <div class="tree-node">
+              <div class="tree-node" :class="{ 'tree-node--active': selectedRequest && selectedRequest.id === data.id }">
                 <el-icon v-if="data.type === 'collection'">
                   <Folder />
                 </el-icon>
@@ -78,31 +109,31 @@
               </div>
             </template>
           </el-tree>
+        </div>
 
-          <!-- 搜索结果 -->
-          <div v-if="filteredCollections.length > 0" class="search-results">
-            <div class="search-results-header">
-              <span>{{ $t('apiTesting.interface.searchResults', { count: filteredCollections.length }) }}</span>
-              <el-button size="small" text @click="clearSearch">
-                <el-icon><Close /></el-icon>
-              </el-button>
-            </div>
-            <div class="search-results-list">
-              <div
-                v-for="item in filteredCollections"
-                :key="item.id"
-                class="search-result-item"
-                @click="selectSearchResult(item)"
-              >
-                <el-icon><Document /></el-icon>
-                <div class="search-result-content">
-                  <div class="search-result-name">{{ item.name }}</div>
-                  <div class="search-result-url">{{ item.url }}</div>
-                </div>
-                <el-tag v-if="item.matchType === 'name'" type="primary" size="small">{{ $t('apiTesting.interface.name') }}</el-tag>
-                <el-tag v-else-if="item.matchType === 'method'" type="warning" size="small">{{ $t('apiTesting.interface.method') }}</el-tag>
-                <el-tag v-else type="success" size="small">{{ $t('apiTesting.interface.url') }}</el-tag>
+        <!-- 搜索结果 -->
+        <div v-if="filteredCollections.length > 0" class="search-results">
+          <div class="search-results-header">
+            <span>{{ $t('apiTesting.interface.searchResults', { count: filteredCollections.length }) }}</span>
+            <el-button size="small" text @click="clearSearch">
+              <el-icon><Close /></el-icon>
+            </el-button>
+          </div>
+          <div class="search-results-list">
+            <div
+              v-for="item in filteredCollections"
+              :key="item.id"
+              class="search-result-item"
+              @click="selectSearchResult(item)"
+            >
+              <el-icon><Document /></el-icon>
+              <div class="search-result-content">
+                <div class="search-result-name">{{ item.name }}</div>
+                <div class="search-result-url">{{ item.url }}</div>
               </div>
+              <el-tag v-if="item.matchType === 'name'" type="primary" size="small">{{ $t('apiTesting.interface.name') }}</el-tag>
+              <el-tag v-else-if="item.matchType === 'method'" type="warning" size="small">{{ $t('apiTesting.interface.method') }}</el-tag>
+              <el-tag v-else type="success" size="small">{{ $t('apiTesting.interface.url') }}</el-tag>
             </div>
           </div>
         </div>
@@ -749,7 +780,7 @@
     </div>
 
     <!-- 创建集合对话框 -->
-    <el-dialog v-model="showCreateCollectionDialog" :title="$t('apiTesting.interface.createCollection')" :close-on-click-modal="false" :close-on-press-escape="false" :modal="true" :destroy-on-close="false" width="500px">
+    <el-dialog v-model="showCreateCollectionDialog" class="ef-dialog" modal-class="ef-modal" :title="$t('apiTesting.interface.createCollection')" :close-on-click-modal="false" :close-on-press-escape="false" :modal="true" :destroy-on-close="false" width="500px">
       <el-form ref="collectionFormRef" :model="collectionForm" :rules="collectionRules" label-width="100px">
         <el-form-item :label="$t('apiTesting.interface.collectionName')" prop="name">
           <el-input v-model="collectionForm.name" :placeholder="$t('apiTesting.interface.inputCollectionName')" />
@@ -776,7 +807,7 @@
     </el-dialog>
 
     <!-- 编辑集合对话框 -->
-    <el-dialog v-model="showEditCollectionDialog" :title="$t('apiTesting.interface.editCollection')" :close-on-click-modal="false" width="500px">
+    <el-dialog v-model="showEditCollectionDialog" class="ef-dialog" modal-class="ef-modal" :title="$t('apiTesting.interface.editCollection')" :close-on-click-modal="false" width="500px">
       <el-form ref="editCollectionFormRef" :model="editCollectionForm" :rules="collectionRules" label-width="100px">
         <el-form-item :label="$t('apiTesting.interface.collectionName')" prop="name">
           <el-input v-model="editCollectionForm.name" :placeholder="$t('apiTesting.interface.inputCollectionName')" />
@@ -818,6 +849,8 @@
 
     <!-- 变量助手对话框 -->
     <el-dialog
+      class="ef-dialog"
+      modal-class="ef-modal"
       :close-on-press-escape="false"
       :modal="true"
       :destroy-on-close="false"
@@ -859,6 +892,8 @@
 
     <!-- CURL导入对话框 -->
     <el-dialog
+      class="ef-dialog"
+      modal-class="ef-modal"
       v-model="showCurlImportDialog"
       :title="$t('apiTesting.interface.importCurlCommand')"
       width="800px"
@@ -878,6 +913,8 @@
 
     <!-- 代码生成对话框 -->
     <el-dialog
+      class="ef-dialog"
+      modal-class="ef-modal"
       v-model="showCodeGenerateDialog"
       :title="$t('apiTesting.interface.generateCode')"
       width="900px"
@@ -973,6 +1010,27 @@ const currentHeaders = ref({})
 
 const searchKeyword = ref('')
 const filteredCollections = ref([])
+
+// Page-head status strip (real data)
+const currentProjectName = computed(() => {
+  const project = projects.value.find(item => item.id === selectedProject.value)
+  return project ? project.name : '—'
+})
+const currentEnvName = computed(() => {
+  const env = environments.value.find(item => item.id === selectedEnvironment.value)
+  return env ? env.name : ''
+})
+const requestCount = computed(() => {
+  const walk = (nodes) => {
+    let count = 0
+    nodes.forEach(node => {
+      if (node.type === 'request') count += 1
+      if (node.children && node.children.length) count += walk(node.children)
+    })
+    return count
+  }
+  return walk(collections.value)
+})
 
 const treeProps = {
   children: 'children',
@@ -1654,6 +1712,7 @@ const sendRequest = async () => {
               data: JSON.parse(rawBody.value)
             }
           } catch (e) {
+            ElMessage.warning('JSON解析失败，已按原始文本发送')
             bodyData = {
               type: 'raw',
               data: rawBody.value
@@ -1738,6 +1797,7 @@ const saveRequest = async () => {
               data: JSON.parse(rawBody.value)
             }
           } catch (e) {
+            ElMessage.warning('JSON解析失败，已按原始文本保存')
             bodyData = {
               type: 'raw',
               data: rawBody.value
@@ -1825,6 +1885,7 @@ const onBodyTypeChange = () => {
             data: JSON.parse(rawBody.value)
           }
         } catch (e) {
+          ElMessage.warning('JSON解析失败，已按原始文本保存')
           selectedRequest.value.body = {
             type: 'raw',
             data: rawBody.value
@@ -2677,1619 +2738,1095 @@ const useLocalVariableCategories = () => {
 </script>
 
 <style scoped>
+/* ============================================================
+   Endfield / moderate - Interface Management
+   Field engineering system: pale rail + charcoal dock +
+   signal-yellow wedges over a paper field.
+   Clean-room CSS from Ark UI skill guidance (no copied assets).
+   ============================================================ */
+
 .interface-management {
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #f5f7fa;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f2f2f0;
+  color: #191919;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ef-ink: #191919;
+  --ef-paper: #f2f2f0;
+  --ef-signal: #fffa00;
+  --ef-state: #00ffa2;
+  --ef-muted: #8a8a86;
+  --ef-line: #dcdcd7;
+  --ef-line-strong: #c9c9c3;
+  --ef-line-soft: #f0f0ec;
+  --ef-rail: #fafaf8;
+  --ef-surface: #ffffff;
+  --ef-dock: #191919;
+  --ef-font-tech: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --ef-font-display: "Arial Narrow", "Roboto Condensed", "DIN Condensed", sans-serif;
+  --ef-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+/* ---------- Page head ---------- */
+.ef-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 24px 14px;
+  background: #f2f2f0;
+  border-bottom: 1px solid var(--ef-line);
+  flex-shrink: 0;
+}
+.ef-page-head__title { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ef-kicker {
+  margin: 0;
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+}
+.ef-page-title {
+  margin: 0;
+  font-family: var(--ef-font-display);
+  font-size: 30px;
+  line-height: .95;
+  letter-spacing: -.02em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ef-ink);
+}
+.ef-rule {
+  display: block;
+  width: 120px;
+  height: 4px;
+  background: var(--ef-signal);
+  clip-path: polygon(0 0, 100% 0, 96% 100%, 0 100%);
+}
+.ef-page-head__status {
+  display: flex;
+  border: 1px solid var(--ef-line-strong);
+  background: var(--ef-rail);
+  flex-shrink: 0;
+}
+.ef-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 14px;
+  min-width: 96px;
+  border-right: 1px solid var(--ef-line);
+}
+.ef-status-item:last-child { border-right: none; }
+.ef-status-label {
+  font-family: var(--ef-font-tech);
+  font-size: 9px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+}
+.ef-status-value {
+  font-family: var(--ef-font-tech);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ef-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Charcoal utility dock ---------- */
+.ef-dock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 24px;
+  background: var(--ef-dock);
+  position: relative;
+  z-index: 6;
+  flex-shrink: 0;
+}
+.ef-dock__project { width: 220px; flex-shrink: 0; }
+.ef-dock__search { flex: 1; min-width: 160px; }
+.ef-dock__actions { display: flex; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.ef-dock-btn {
+  height: 30px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,.28);
+  background: transparent;
+  color: rgba(255,255,255,.85);
+  font-size: 12px;
+}
+.ef-dock-btn:hover {
+  border-color: var(--ef-signal);
+  color: var(--ef-signal);
+  background: rgba(255,250,0,.06);
+}
+
+/* Dock controls - dark variants (in-page DOM) */
+.ef-dock :deep(.el-select__wrapper),
+.ef-dock :deep(.el-input__wrapper) {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 2px;
+  box-shadow: none;
+  min-height: 30px;
+}
+.ef-dock :deep(.el-select__wrapper.is-focused),
+.ef-dock :deep(.el-input__wrapper.is-focus) {
+  border-color: var(--ef-signal);
+  background: rgba(255,255,255,.1);
+}
+.ef-dock :deep(.el-input__inner),
+.ef-dock :deep(.el-select__selected-item),
+.ef-dock :deep(.el-select__placeholder) {
+  color: rgba(255,255,255,.9);
+  font-size: 12px;
+}
+.ef-dock :deep(.el-input__inner::placeholder) { color: rgba(255,255,255,.35); }
+.ef-dock :deep(.el-input__prefix),
+.ef-dock :deep(.el-select__caret) { color: rgba(255,255,255,.5); }
+
+/* ---------- Layout: pale rail + field ---------- */
 .interface-layout {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
-
-/* 左侧边栏 */
 .sidebar {
   width: 300px;
-  border-right: 1px solid #e4e7ed;
-  background: #ffffff;
-  overflow: visible;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.05);
-}
-
-.sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: stretch;
+  background: var(--ef-rail);
+  border-right: 1px solid var(--ef-line-strong);
   position: relative;
-  background: #f8f9fa;
+  overflow: hidden;
 }
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.header-actions .el-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.header-actions .el-button {
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.header-actions .el-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
 .collection-tree {
   flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 8px;
 }
 
-/* 树节点样式 */
+/* ---------- Collection tree ---------- */
+.collection-tree :deep(.el-tree) {
+  background: transparent;
+  color: var(--ef-ink);
+  font-size: 13px;
+}
+.collection-tree :deep(.el-tree-node__content) {
+  height: 32px;
+  border-left: 2px solid transparent;
+}
+.collection-tree :deep(.el-tree-node__content:hover) {
+  background: rgba(25,25,25,.05);
+}
+.collection-tree :deep(.el-tree-node__expand-icon) { color: var(--ef-muted); }
+.collection-tree :deep(.el-tree-node__expand-icon.is-leaf) { color: transparent; }
 .tree-node {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1;
-  padding: 4px 0;
+  min-width: 0;
+  padding: 4px 2px;
 }
-
-.tree-node .el-icon {
-  font-size: 16px;
-  color: #606266;
-}
-
+.tree-node .el-icon { font-size: 15px; color: var(--ef-muted); }
+.tree-node--active .el-icon { color: var(--ef-ink); }
 .node-label {
   flex: 1;
-  font-size: 14px;
-  color: #303133;
-  transition: color 0.2s;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ef-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.tree-node--active .node-label { font-weight: 700; }
+.node-edit { flex: 1; }
 
-.tree-node:hover .node-label {
-  color: #409eff;
-}
-
-.node-edit {
-  flex: 1;
-}
-
-.node-edit .el-input {
-  font-size: 14px;
-}
-
-/* 方法标签样式 */
+/* Method chips */
 .method-tag {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  color: white;
-  font-weight: bold;
+  font-family: var(--ef-font-tech);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  display: inline-block;
-  min-width: 40px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: #fff;
+  min-width: 42px;
   text-align: center;
+  flex-shrink: 0;
 }
+.method-tag.get { background: #3b82f6; }
+.method-tag.post { background: #16a34a; }
+.method-tag.put { background: #d97706; }
+.method-tag.delete { background: #dc2626; }
+.method-tag.patch { background: #0d9488; }
+.method-tag.head { background: #7c3aed; }
+.method-tag.options { background: #0891b2; }
+.method-tag.connect { background: #57534e; }
+.method-tag.trace { background: #c2410c; }
 
-.method-tag.get {
-  background-color: #61affe;
-}
-
-.method-tag.post {
-  background-color: #49cc90;
-}
-
-.method-tag.put {
-  background-color: #fca130;
-}
-
-.method-tag.delete {
-  background-color: #f93e3e;
-}
-
-.method-tag.patch {
-  background-color: #50e3c2;
-}
-
-.method-tag.head {
-  background-color: #9013fe;
-}
-
-.method-tag.options {
-  background-color: #0ebeff;
-}
-
-.method-tag.connect {
-  background-color: #7f8c8d;
-}
-
-.method-tag.trace {
-  background-color: #e67e22;
-}
-
-/* 搜索结果 */
+/* ---------- Search results ---------- */
 .search-results {
   position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-  z-index: 1000;
-  max-height: 400px;
-  overflow: auto;
-  margin-top: 8px;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--ef-surface);
+  border: 1px solid var(--ef-line-strong);
+  box-shadow: 0 8px 24px rgba(25,25,25,.12);
+  max-height: calc(100% - 16px);
 }
-
 .search-results-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e4e7ed;
-  background: #f8f9fa;
-  font-weight: 500;
-  color: #303133;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ef-line);
+  background: var(--ef-rail);
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
 }
-
-.search-results-list {
-  padding: 8px 0;
-}
-
+.search-results-list { overflow-y: auto; }
 .search-result-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 10px 12px;
   cursor: pointer;
-  transition: background 0.2s;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid var(--ef-line-soft);
+  transition: background .15s ease;
 }
-
-.search-result-item:hover {
-  background: #ecf5ff;
-}
-
-.search-result-content {
-  flex: 1;
-  min-width: 0;
-}
-
+.search-result-item:last-child { border-bottom: none; }
+.search-result-item:hover { background: rgba(255,250,0,.14); }
+.search-result-content { flex: 1; min-width: 0; }
 .search-result-name {
-  font-weight: 500;
-  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ef-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 4px;
 }
-
 .search-result-url {
-  font-size: 12px;
-  color: #909399;
+  font-size: 11px;
+  font-family: var(--ef-font-tech);
+  color: var(--ef-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-top: 2px;
 }
 
-/* 右侧主内容 */
+/* ---------- Main field with engineering grid ---------- */
 .main-content {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
-  background: #f8f9fa;
+  position: relative;
+  background-image:
+    linear-gradient(rgba(25,25,25,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(25,25,25,.035) 1px, transparent 1px);
+  background-size: 64px 64px;
 }
-
 .empty-state {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fafafa;
 }
+.empty-state :deep(.el-empty__description p) {
+  color: var(--ef-muted);
+  font-size: 13px;
+}
+.empty-state :deep(.el-empty__image) { opacity: .55; }
 
+/* ---------- Request detail ---------- */
 .request-detail {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 24px;
-  gap: 20px;
+  overflow: hidden;
+  background: var(--ef-surface);
 }
 
-/* 请求头部 */
+/* Request header: charcoal dock with yellow baseline */
 .request-header {
-  margin-bottom: 0;
-  padding: 24px;
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e9ecef;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  transition: box-shadow 0.2s ease;
-}
-
-.request-header:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-}
-
-.request-line {
+  flex-shrink: 0;
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  background: var(--ef-dock);
+  color: #ffffff;
+  border-bottom: 3px solid var(--ef-signal);
 }
+.request-line { display: flex; gap: 8px; align-items: center; }
 
-/* 方法选择器样式 */
-.method-select {
-  width: 120px;
+.method-select { width: 108px; flex-shrink: 0; }
+.method-select :deep(.el-select__wrapper) {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.22);
+  border-left: 3px solid var(--ef-muted);
+  border-radius: 2px;
+  box-shadow: none;
+  min-height: 32px;
 }
-
-.method-select :deep(.el-select) {
-  border-radius: 6px;
+.method-select :deep(.el-select__selected-item),
+.method-select :deep(.el-select__placeholder) {
+  color: #ffffff;
+  font-family: var(--ef-font-tech);
+  font-weight: 700;
+  letter-spacing: .08em;
 }
+.method-select :deep(.el-select__caret) { color: rgba(255,255,255,.55); }
+.method-select.get :deep(.el-select__wrapper) { border-left-color: #3b82f6; }
+.method-select.post :deep(.el-select__wrapper) { border-left-color: #16a34a; }
+.method-select.put :deep(.el-select__wrapper) { border-left-color: #d97706; }
+.method-select.delete :deep(.el-select__wrapper) { border-left-color: #dc2626; }
+.method-select.patch :deep(.el-select__wrapper) { border-left-color: #0d9488; }
+.method-select.head :deep(.el-select__wrapper) { border-left-color: #7c3aed; }
+.method-select.options :deep(.el-select__wrapper) { border-left-color: #0891b2; }
+.method-select.connect :deep(.el-select__wrapper) { border-left-color: #57534e; }
+.method-select.trace :deep(.el-select__wrapper) { border-left-color: #c2410c; }
 
-/* 为不同方法的选择器添加颜色 */
-.method-select.get :deep(.el-select .el-input__wrapper) {
-  background-color: #61affe !important;
-  color: white !important;
-  border-color: #61affe !important;
+.url-input { flex: 1; min-width: 0; }
+.url-input :deep(.el-input__wrapper),
+.env-select :deep(.el-input__wrapper),
+.url-input :deep(.el-input-group__prepend) {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 2px;
+  box-shadow: none;
+  min-height: 32px;
 }
-
-.method-select.post :deep(.el-select .el-input__wrapper) {
-  background-color: #49cc90 !important;
-  color: white !important;
-  border-color: #49cc90 !important;
+.url-input :deep(.el-input__inner) {
+  color: #ffffff;
+  font-family: var(--ef-font-tech);
+  font-size: 13px;
 }
+.url-input :deep(.el-input__inner::placeholder) { color: rgba(255,255,255,.4); }
+.env-select { width: 150px; flex-shrink: 0; }
+.env-select :deep(.el-input__inner),
+.env-select :deep(.el-select__selected-item),
+.env-select :deep(.el-select__placeholder) { color: rgba(255,255,255,.85); font-size: 12px; }
 
-.method-select.put :deep(.el-select .el-input__wrapper) {
-  background-color: #fca130 !important;
-  color: white !important;
-  border-color: #fca130 !important;
-}
-
-.method-select.delete :deep(.el-select .el-input__wrapper) {
-  background-color: #f93e3e !important;
-  color: white !important;
-  border-color: #f93e3e !important;
-}
-
-.method-select.patch :deep(.el-select .el-input__wrapper) {
-  background-color: #50e3c2 !important;
-  color: white !important;
-  border-color: #50e3c2 !important;
-}
-
-.method-select.head :deep(.el-select .el-input__wrapper) {
-  background-color: #9013fe !important;
-  color: white !important;
-  border-color: #9013fe !important;
-}
-
-.method-select.options :deep(.el-select .el-input__wrapper) {
-  background-color: #0ebeff !important;
-  color: white !important;
-  border-color: #0ebeff !important;
-}
-
-.method-select.connect :deep(.el-select .el-input__wrapper) {
-  background-color: #7f8c8d !important;
-  color: white !important;
-  border-color: #7f8c8d !important;
-}
-
-.method-select.trace :deep(.el-select .el-input__wrapper) {
-  background-color: #e67e22 !important;
-  color: white !important;
-  border-color: #e67e22 !important;
-}
-
-/* 方法选择器通用样式 */
-.method-select :deep(.el-select .el-input__inner) {
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-select__icon) {
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-select__selected-item),
-.method-select :deep(.el-select .el-select__selected-item span),
-.method-select :deep(.el-select .el-select__placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-input__wrapper .el-select__placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-input__wrapper .el-input__inner::placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-input__wrapper .el-input__inner::-webkit-input-placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-input__wrapper .el-input__inner::-moz-placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-.method-select :deep(.el-select .el-input__wrapper .el-input__inner:-ms-input-placeholder) {
-  background-color: transparent !important;
-  color: white !important;
-}
-
-/* 方法选择器下拉菜单样式 */
-.method-select :deep(.el-select-dropdown) {
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.method-select :deep(.el-select-dropdown__item) {
-  padding: 8px 16px;
-  border-radius: 4px;
-}
-
-.method-select :deep(.el-select-dropdown__item:hover) {
-  background-color: #f0f0f0;
-}
-
-.method-select :deep(.el-select-dropdown__item.selected) {
-  background-color: #ecf5ff;
-  color: #409eff;
-}
-
-/* 为不同方法的下拉选项添加颜色 */
-.method-select :deep(.el-select-dropdown__item[class*="method-"]) {
-  position: relative;
-}
-
-.method-select :deep(.el-select-dropdown__item[class*="method-"])::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  border-radius: 0 4px 4px 0;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-get::before) {
-  background-color: #61affe;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-post::before) {
-  background-color: #49cc90;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-put::before) {
-  background-color: #fca130;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-delete::before) {
-  background-color: #f93e3e;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-patch::before) {
-  background-color: #50e3c2;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-head::before) {
-  background-color: #9013fe;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-options::before) {
-  background-color: #0ebeff;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-connect::before) {
-  background-color: #7f8c8d;
-}
-
-.method-select :deep(.el-select-dropdown__item.method-trace::before) {
-  background-color: #e67e22;
-}
-
-.url-input {
-  flex: 1;
-  min-width: 200px;
-}
-
-.url-input .el-input {
-  border-radius: 6px;
-}
-
-.env-select {
-  width: 160px;
-}
-
-.env-select .el-select {
-  border-radius: 6px;
-}
-
-.send-button {
-  width: 100px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 0.2s ease;
-  background: #5046e5;
-  border: none;
-}
-
-.send-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(80, 70, 229, 0.4);
-  background: #4338ca;
-}
-
-/* 请求元数据 */
 .request-meta {
   display: flex;
-  gap: 12px;
   align-items: center;
-  flex-wrap: wrap;
+  gap: 10px;
 }
-
-.name-input {
-  flex: 1;
-  min-width: 200px;
+.name-input { flex: 1; min-width: 0; }
+.name-input :deep(.el-input__wrapper) {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255,255,255,.28);
+  border-radius: 0;
+  box-shadow: none;
 }
-
-.name-input .el-input {
-  border-radius: 6px;
+.name-input :deep(.el-input__inner) {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
 }
-
+.name-input :deep(.el-input__inner::placeholder) { color: rgba(255,255,255,.4); }
 .action-buttons {
   display: flex;
+  align-items: center;
   gap: 8px;
-  align-items: center;
-}
-
-.action-buttons .el-button {
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.action-buttons .el-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
-.action-buttons .el-dropdown {
-  border-radius: 6px;
-}
-
-/* 标签页内容 */
-.tab-content {
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 10px;
-  padding: 24px;
-  margin-bottom: 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-/* 响应区域 */
-.response-section {
-  background: white;
-  border: 1px solid #e9ecef;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  transition: box-shadow 0.2s ease;
-}
-
-.response-section:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-}
-
-.response-header {
-  padding: 20px 24px;
-  background: #f8f9fa;
-  border-bottom: 1px solid #e9ecef;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.response-header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.response-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.response-time {
-  font-size: 14px;
-  color: #606266;
-  font-weight: 500;
-  background: #e9ecef;
-  padding: 4px 12px;
-  border-radius: 16px;
-}
-
-/* 响应体 */
-.response-body {
-  padding: 24px;
-  min-height: 400px;
-  max-height: 600px;
-  overflow: auto;
-  background: #f8f9fa;
-  border-radius: 10px;
-  margin: 20px;
-  border: 1px solid #e9ecef;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.response-actions {
-  margin-bottom: 16px;
-}
-
-.response-actions .el-button-group {
-  border-radius: 8px;
-  overflow: hidden;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.response-actions .el-button {
-  border-radius: 0;
-  transition: all 0.2s ease;
-  background: transparent;
-  border: none;
-  color: #666;
-}
-
-.response-actions .el-button:hover {
-  background: #f5f7fa;
-  color: #5046e5;
-}
-
-.response-content {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 14px;
-  line-height: 1.6;
-  color: #303133;
-  background: white;
-  padding: 20px 20px 20px 20px;
-  border-radius: 8px;
-  border: 1px solid #e9ecef;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
-/* 响应头 */
-.response-headers {
-  padding: 24px;
-  background: #f8f9fa;
-  border-radius: 10px;
-  margin: 20px;
-  border: 1px solid #e9ecef;
-  max-height: 80vh;
-  overflow: auto;
-}
-
-.header-row {
-  padding: 8px 0;
-  border-bottom: 1px solid #e9ecef;
-}
-
-.header-row:last-child {
-  border-bottom: none;
-}
-
-/* 代码编辑器 */
-.code-editor {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 14px;
-  line-height: 1.6;
-  background: #f8f9fa;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
-  padding: 16px;
-  min-height: 200px;
-  resize: vertical;
-  transition: all 0.2s ease;
-}
-
-.code-editor:focus {
-  outline: none;
-  border-color: #5046e5;
-  box-shadow: 0 0 0 2px rgba(80, 70, 229, 0.2);
-}
-
-.code-generate {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 14px;
-  line-height: 1.6;
-  background: #f8f9fa;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
-  padding: 16px;
-  min-height: 300px;
-  resize: vertical;
-}
-
-/* 上下文菜单 */
-.context-menu {
-  position: fixed;
-  z-index: 1000;
-  background: white;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 8px 0;
-  min-width: 140px;
-  list-style: none;
-  margin: 0;
-}
-
-.context-menu li {
-  padding: 10px 16px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-size: 14px;
-  color: #303133;
-}
-
-.context-menu li:hover {
-  background: #f5f3ff;
-  color: #5046e5;
-  font-weight: 500;
-}
-
-/* 脚本编辑器容器 */
-.script-editor-container {
-  position: relative;
-}
-
-.script-editor-container .el-input {
-  border-radius: 6px;
-}
-
-.script-editor-container .el-input__textarea {
-  min-height: 200px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-/* 脚本按钮 */
-.script-buttons {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: flex;
-  gap: 6px;
-  z-index: 10;
-  background: white;
-  border-radius: 8px;
-  padding: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.script-buttons .el-button {
-  border-radius: 6px;
-  font-size: 11px;
-  padding: 4px 10px;
-  transition: all 0.2s ease;
-  background: transparent;
-  border: none;
-}
-
-.script-buttons .el-button:hover {
-  transform: none;
-  box-shadow: none;
-  background: #f5f7fa;
-}
-
-.script-factory-btn {
-  color: #10b981;
-}
-
-.script-factory-btn:hover {
-  background: #ecfdf5;
-}
-
-.script-variable-btn {
-  color: #5046e5;
-}
-
-.script-variable-btn:hover {
-  background: #f5f3ff;
-}
-
-/* Raw 选项 */
-.raw-options {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  background: white;
-  border-radius: 8px;
-  padding: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.raw-options .el-select {
-  width: 150px;
-  border-radius: 6px;
-}
-
-.raw-options .el-button {
-  border-radius: 6px;
-  font-size: 11px;
-  padding: 4px 10px;
-  transition: all 0.2s ease;
-  background: transparent;
-  border: none;
-}
-
-.raw-options .el-button:hover {
-  transform: none;
-  box-shadow: none;
-  background: #f5f7fa;
-}
-
-.data-factory-btn {
-  background-color: #409eff !important;
-  border-color: #409eff !important;
-  color: white !important;
-}
-
-.data-factory-btn:hover {
-  background-color: #66b1ff !important;
-  border-color: #66b1ff !important;
-}
-
-.variable-helper-btn {
-  background-color: #67c23a !important;
-  border-color: #67c23a !important;
-  color: white !important;
-}
-
-.variable-helper-btn:hover {
-  background-color: #5daf34 !important;
-  border-color: #5daf34 !important;
-}
-
-.raw-body {
-  border-radius: 6px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-/* 断言编辑器 */
-.assertions-editor {
-  padding: 20px;
-  background: #f8f9fa;
-  border-radius: 12px;
-  border: 1px solid #e9ecef;
-}
-
-.assertions-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #e9ecef;
-}
-
-.assertions-header .el-button {
-  border-radius: 8px;
-  background: #5046e5;
-  border: none;
-  font-weight: 500;
-  transition: all 0.2s ease;
-}
-
-.assertions-header .el-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(80, 70, 229, 0.4);
-  background: #4338ca;
-}
-
-.assertions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* 断言项 */
-.assertion-item {
-  background: white;
-  border: 1px solid #e9ecef;
-  border-radius: 10px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-  transition: all 0.2s ease;
-}
-
-.assertion-item:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-  border-color: #dee2e6;
-}
-
-.assertion-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.assertion-name {
-  flex: 1;
-  margin-right: 12px;
-  border-radius: 6px;
-}
-
-.assertion-config {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.assertion-config .el-select {
-  width: 200px;
-  border-radius: 6px;
-}
-
-.assertion-params {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.assertion-input {
-  margin-bottom: 12px;
-  border-radius: 6px;
-}
-
-/* 标签页按钮 */
-.tab-buttons {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-
-.tab-button {
-  padding: 10px 20px;
-  border: 1px solid #e4e7ed;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-size: 14px;
-  color: #606266;
-}
-
-.tab-button.active {
-  background: #409eff;
-  color: white;
-  border-color: #409eff;
-  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.3);
-}
-
-.tab-button:hover:not(.active) {
-  border-color: #c6e2ff;
-  color: #409eff;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-/* 表单行 */
-.form-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.form-label {
-  width: 100px;
-  font-weight: 500;
-  color: #303133;
   flex-shrink: 0;
 }
-
-.form-input {
-  flex: 1;
-  min-width: 200px;
+.action-buttons :deep(.el-button) {
+  border-radius: 2px;
+  border-color: rgba(255,255,255,.3);
+  background: transparent;
+  color: rgba(255,255,255,.85);
+}
+.action-buttons :deep(.el-button:hover) {
+  border-color: var(--ef-signal);
+  color: var(--ef-signal);
 }
 
-.form-input .el-input {
-  border-radius: 6px;
+/* ---------- Element Plus retheme inside the page ---------- */
+:deep(.el-input__wrapper),
+:deep(.el-textarea__inner) {
+  background: var(--ef-surface);
+  box-shadow: 0 0 0 1px var(--ef-line-strong) inset;
+  border-radius: 2px;
 }
-
-/* 字符串构建器 */
-.string-builder {
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  overflow: hidden;
-  background: white;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+:deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--ef-ink) inset; }
+:deep(.el-input__inner) { color: var(--ef-ink); font-size: 13px; }
+:deep(.el-select__wrapper) {
+  background: var(--ef-surface);
+  box-shadow: 0 0 0 1px var(--ef-line-strong) inset;
+  border-radius: 2px;
+  min-height: 30px;
 }
-
-.string-builder-header {
-  padding: 12px 16px;
-  background: #f8f9fa;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+:deep(.el-select__wrapper.is-focused) { box-shadow: 0 0 0 1px var(--ef-ink) inset; }
+:deep(.el-textarea__inner:focus) { box-shadow: 0 0 0 1px var(--ef-ink) inset; }
+:deep(.el-button) { border-radius: 2px; }
+:deep(.el-button--primary) {
+  background: var(--ef-ink);
+  border-color: var(--ef-ink);
+  color: #ffffff;
 }
-
-.string-builder-body {
-  padding: 16px;
-  min-height: 120px;
-  background: white;
+:deep(.el-button--primary:hover) {
+  background: #3a3a3a;
+  border-color: #3a3a3a;
+  color: var(--ef-signal);
 }
-
-.string-builder-footer {
-  padding: 12px 16px;
-  background: #f8f9fa;
-  border-top: 1px solid #e4e7ed;
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
+:deep(.el-button--primary.is-plain) {
+  background: transparent;
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
 }
-
-.string-builder-footer .el-button {
-  border-radius: 6px;
+:deep(.el-button--primary.is-plain:hover) {
+  background: rgba(255,250,0,.12);
+  border-color: var(--ef-signal);
+  color: var(--ef-ink);
 }
-
-/* 变量助手 */
-.variable-assistant {
-  position: relative;
+:deep(.el-button--danger) {
+  background: transparent;
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
 }
-
-.variable-popup {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  width: 450px;
-  max-height: 500px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  margin-top: 8px;
+:deep(.el-button--danger:hover) {
+  background: rgba(220,38,38,.08);
+  border-color: #b91c1c;
+  color: #b91c1c;
 }
-
-.variable-header {
-  padding: 16px 20px;
-  background: #f8f9fa;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+:deep(.el-button--success) {
+  background: transparent;
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
 }
-
-.variable-header h3 {
-  margin: 0;
-  font-size: 16px;
+:deep(.el-button--success:hover) {
+  background: rgba(22,163,74,.1);
+  border-color: #15803d;
+  color: #15803d;
+}
+:deep(.el-button--warning) {
+  background: transparent;
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
+}
+:deep(.el-button--warning:hover) {
+  background: rgba(217,119,6,.1);
+  border-color: #b45309;
+  color: #b45309;
+}
+:deep(.el-button--info) {
+  background: transparent;
+  border-color: var(--ef-line-strong);
+  color: var(--ef-muted);
+}
+:deep(.el-button--info:hover) {
+  border-color: var(--ef-signal);
+  color: var(--ef-ink);
+}
+:deep(.el-button--primary.is-link) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ef-ink);
   font-weight: 600;
-  color: #303133;
 }
+:deep(.el-button--primary.is-link:hover) {
+  color: var(--ef-ink);
+  background: rgba(255,250,0,.18);
+  border-color: transparent;
+}
+:deep(.el-tag) {
+  border-radius: 2px;
+  font-family: var(--ef-font-tech);
+  letter-spacing: .04em;
+}
+:deep(.el-tag--primary) { background: rgba(25,25,25,.08); border-color: transparent; color: var(--ef-ink); }
+:deep(.el-tag--success) { background: rgba(22,163,74,.12); border-color: transparent; color: #15803d; }
+:deep(.el-tag--warning) { background: rgba(217,119,6,.12); border-color: transparent; color: #b45309; }
+:deep(.el-tag--danger) { background: rgba(220,38,38,.12); border-color: transparent; color: #b91c1c; }
+:deep(.el-tag--info) { background: rgba(25,25,25,.08); border-color: transparent; color: var(--ef-muted); }
 
-.variable-content {
+/* ---------- Tabs ---------- */
+.request-tabs {
   flex: 1;
-  overflow: auto;
-}
-
-.variable-categories {
-  padding: 16px;
-}
-
-.variable-category {
-  margin-bottom: 24px;
-}
-
-.variable-category-title {
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #303133;
-  font-size: 14px;
-  border-bottom: 1px solid #e4e7ed;
-  padding-bottom: 6px;
-}
-
-.variable-list {
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  background: var(--ef-surface);
 }
-
-.variable-item {
-  padding: 14px;
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.variable-item:hover {
-  background: #ecf5ff;
-  border-color: #c6e2ff;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.variable-name {
-  font-weight: 500;
-  margin-bottom: 6px;
-  color: #303133;
-}
-
-.variable-syntax {
-  font-size: 12px;
-  color: #909399;
-  font-family: 'Courier New', Courier, monospace;
-  margin-bottom: 6px;
-  background: white;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid #e4e7ed;
-}
-
-.variable-desc {
-  font-size: 12px;
-  color: #606266;
-  margin-bottom: 4px;
-}
-
-.variable-example {
-  font-size: 12px;
-  color: #67c23a;
-  font-family: 'Courier New', Courier, monospace;
-  margin-top: 4px;
-  background: #f0f9eb;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid #c2e7b0;
-}
-
-/* JSONPath 部分 */
-.jsonpath-extractor {
-  margin-top: 16px;
-  padding: 16px;
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-}
-
-.jsonpath-input {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-
-.jsonpath-input .el-input {
-  flex: 1;
-  border-radius: 6px;
-}
-
-.jsonpath-result {
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  padding: 12px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 14px;
-  min-height: 80px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
-  overflow: auto;
-}
-
-/* 状态徽章 */
-.status-badge {
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-weight: 500;
-}
-
-.status-badge.success {
-  background: #f0f9eb;
-  color: #67c23a;
-}
-
-.status-badge.warning {
-  background: #fdf6ec;
-  color: #e6a23c;
-}
-
-.status-badge.danger {
-  background: #fef0f0;
-  color: #f56c6c;
-}
-
-.status-badge.info {
-  background: #ecf5ff;
-  color: #409eff;
-}
-
-/* 断言结果 */
-.assertions-results {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 16px;
-}
-
-.assertion-result-item {
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  padding: 16px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
-  transition: all 0.2s ease;
-}
-
-.assertion-result-item.passed {
-  border-left: 4px solid #67c23a;
-}
-
-.assertion-result-item.failed {
-  border-left: 4px solid #f56c6c;
-}
-
-.assertion-result-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.assertion-result-details {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-left: 20px;
-}
-
-.result-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.result-row .label {
-  width: 80px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #606266;
-  flex-shrink: 0;
-}
-
-.result-row .value {
-  flex: 1;
-  font-size: 14px;
-  color: #303133;
-  font-family: 'Courier New', Courier, monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.result-row .value.error {
-  color: #f56c6c;
-}
-
-/* WebSocket 相关 */
-.message-container {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.message-input-section {
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  padding: 20px;
-}
-
-.message-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 16px;
-}
-
-.message-actions .el-button {
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.message-actions .el-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
-.websocket-response-section {
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  padding: 20px;
-}
-
-.websocket-response-section h3 {
-  margin-top: 0;
-  margin-bottom: 16px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.websocket-messages {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: 400px;
-  overflow: auto;
-  padding: 10px;
-  background: white;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-}
-
-.websocket-message-item {
-  padding: 12px;
-  border-radius: 6px;
-  border: 1px solid #e4e7ed;
-  background: white;
-}
-
-.websocket-message-item.sent {
-  border-left: 4px solid #409eff;
-  background: #ecf5ff;
-}
-
-.websocket-message-item.received {
-  border-left: 4px solid #67c23a;
-  background: #f0f9eb;
-}
-
-.websocket-message-item.connected {
-  border-left: 4px solid #67c23a;
-  background: #f0f9eb;
-}
-
-.websocket-message-item.info {
-  border-left: 4px solid #909399;
-  background: #f5f7fa;
-}
-
-.websocket-message-item.error {
-  border-left: 4px solid #f56c6c;
-  background: #fef0f0;
-}
-
-.message-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-
-.message-type {
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 10px;
-}
-
-.message-type.sent {
-  background: #d9ecff;
-  color: #409eff;
-}
-
-.message-type.received {
-  background: #e8f5e8;
-  color: #67c23a;
-}
-
-.message-type.connected {
-  background: #e8f5e8;
-  color: #67c23a;
-}
-
-.message-type.info {
-  background: #f0f2f5;
-  color: #909399;
-}
-
-.message-type.error {
-  background: #fde2e2;
-  color: #f56c6c;
-}
-
-.message-time {
-  color: #909399;
-}
-
-.message-content {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.uploaded-file {
-  margin-top: 12px;
-  padding: 8px 12px;
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-/* 响应式设计 */
-@media (max-width: 768px) {
-  .interface-layout {
-    flex-direction: column;
-  }
-
-  .sidebar {
-    width: 100%;
-    max-height: 300px;
-    border-right: none;
-    border-bottom: 1px solid #e4e7ed;
-  }
-
-  .request-line {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .method-select,
-  .url-input,
-  .env-select,
-  .send-button {
-    width: 100%;
-  }
-
-  .form-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .form-label {
-    width: 100%;
-    margin-bottom: 8px;
-  }
-
-  .script-buttons {
-    position: static;
-    margin-top: 12px;
-    justify-content: flex-end;
-  }
-
-  .request-meta {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .name-input {
-    width: 100%;
-  }
-
-  .action-buttons {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .tab-buttons {
-    justify-content: flex-start;
-  }
-
-  .tab-button {
-    padding: 8px 16px;
-    font-size: 13px;
-  }
-
-  .raw-options {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .raw-options .el-select {
-    width: 100%;
-  }
-
-  .raw-options .el-button {
-    width: 100%;
-  }
-}
-
-/* 滚动条样式 */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
-}
-
-/* 覆盖方法标签样式 */
-.method-tag {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  color: white;
-  font-weight: bold;
+.request-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 16px; }
+.request-tabs :deep(.el-tabs__nav-wrap::after) { background: var(--ef-line); height: 1px; }
+.request-tabs :deep(.el-tabs__item) {
+  height: 40px;
+  line-height: 40px;
+  font-family: var(--ef-font-tech);
+  font-size: 11px;
+  letter-spacing: .08em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  display: inline-block;
-  min-width: 40px;
+  color: var(--ef-muted);
+}
+.request-tabs :deep(.el-tabs__item.is-active) { color: var(--ef-ink); font-weight: 700; }
+.request-tabs :deep(.el-tabs__active-bar) { background: var(--ef-signal); height: 2px; }
+.request-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+/* ---------- Body / scripts / assertions / websocket panels ---------- */
+.body-container { display: flex; flex-direction: column; gap: 12px; }
+.raw-options { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.raw-body :deep(.el-textarea__inner),
+.script-editor-container :deep(.el-textarea__inner) {
+  font-family: var(--ef-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  border-radius: 2px;
+}
+.script-editor-container { display: flex; flex-direction: column; gap: 8px; }
+.script-buttons { display: flex; gap: 8px; }
+.data-factory-btn {
+  background-color: var(--ef-ink);
+  border-color: var(--ef-ink);
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 2px;
+}
+.data-factory-btn:hover {
+  background-color: #2c2c2c;
+  border-color: var(--ef-signal);
+  color: var(--ef-signal);
+}
+.variable-helper-btn {
+  background-color: transparent;
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
+  font-weight: 600;
+  border-radius: 2px;
+}
+.variable-helper-btn:hover {
+  background-color: rgba(255,250,0,.16);
+  border-color: var(--ef-ink);
+  color: var(--ef-ink);
+}
+.data-factory-btn:focus-visible,
+.variable-helper-btn:focus-visible {
+  outline: 2px solid var(--ef-signal);
+  outline-offset: 1px;
+}
+.body-container :deep(.el-radio) { margin-right: 14px; }
+.body-container :deep(.el-radio__label) {
+  font-family: var(--ef-font-tech);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+}
+.body-container :deep(.el-radio__input.is-checked .el-radio__inner) { background: var(--ef-ink); border-color: var(--ef-ink); }
+.body-container :deep(.el-radio__input.is-checked + .el-radio__label) { color: var(--ef-ink); font-weight: 700; }
+
+.assertions-editor { display: flex; flex-direction: column; gap: 12px; }
+.assertions-list { display: flex; flex-direction: column; gap: 10px; }
+.assertion-item {
+  border: 1px solid var(--ef-line);
+  background: var(--ef-rail);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.assertion-header { display: flex; gap: 8px; align-items: center; }
+.assertion-name { flex: 1; }
+.assertion-config { display: flex; flex-direction: column; gap: 8px; }
+.assertion-params { display: flex; flex-direction: column; gap: 8px; }
+.no-assertions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px;
+  border: 1px dashed var(--ef-line-strong);
+  color: var(--ef-muted);
   text-align: center;
 }
+.no-assertions p { margin: 0; }
 
-.method-tag.get {
-  background-color: #61affe !important;
+.message-container { display: flex; flex-direction: column; gap: 16px; }
+.message-input-section { display: flex; flex-direction: column; gap: 10px; }
+.message-actions { display: flex; gap: 8px; }
+.websocket-response-section { border-top: 1px solid var(--ef-line); padding-top: 12px; }
+.websocket-response-section h3 {
+  margin: 0 0 10px;
+  font-family: var(--ef-font-display);
+  font-size: 14px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.websocket-messages { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+.websocket-message-item {
+  border-left: 3px solid var(--ef-muted);
+  background: var(--ef-rail);
+  padding: 8px 10px;
+}
+.websocket-message-item.sent { border-left-color: var(--ef-ink); }
+.websocket-message-item.received { border-left-color: var(--ef-signal); }
+.websocket-message-item.connected { border-left-color: var(--ef-state); }
+.websocket-message-item.info { border-left-color: #0891b2; }
+.websocket-message-item.error { border-left-color: #dc2626; }
+.message-header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.message-type {
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+}
+.message-type.sent { color: var(--ef-ink); font-weight: 700; }
+.message-type.received { color: #8a6d00; font-weight: 700; }
+.message-type.connected { color: #0a7a4f; }
+.message-type.error { color: #b91c1c; }
+.message-type.info { color: #0e7490; }
+.message-time { font-family: var(--ef-font-tech); font-size: 10px; color: var(--ef-muted); }
+.message-content pre {
+  margin: 0;
+  font-family: var(--ef-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.uploaded-file { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.message-container :deep(.el-upload-dragger) {
+  background: var(--ef-surface);
+  border: 1px dashed var(--ef-line-strong);
+  border-radius: 2px;
+  transition: border-color .15s ease, background .15s ease;
+}
+.message-container :deep(.el-upload-dragger:hover) {
+  border-color: var(--ef-ink);
+  background: rgba(255,250,0,.08);
+}
+.message-container :deep(.el-upload-dragger .el-icon--upload) {
+  color: var(--ef-ink);
+}
+.message-container :deep(.el-upload__text) {
+  color: var(--ef-muted);
+  font-family: var(--ef-font-tech);
+  font-size: 12px;
+  letter-spacing: .04em;
 }
 
-.method-tag.post {
-  background-color: #49cc90 !important;
+/* ---------- Response section ---------- */
+.response-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 46%;
+  background: var(--ef-rail);
+  border-top: 1px solid var(--ef-line-strong);
+}
+.response-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ef-line);
+}
+.response-header h3 {
+  margin: 0;
+  font-family: var(--ef-font-display);
+  font-size: 14px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.response-info { display: flex; align-items: center; gap: 8px; }
+.response-time { font-family: var(--ef-font-tech); font-size: 12px; color: var(--ef-muted); }
+.response-section :deep(.el-tabs__header) { margin: 0; padding: 0 16px; }
+.response-section :deep(.el-tabs__nav-wrap::after) { background: var(--ef-line); height: 1px; }
+.response-section :deep(.el-tabs__item) {
+  height: 34px;
+  line-height: 34px;
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+}
+.response-section :deep(.el-tabs__item.is-active) { color: var(--ef-ink); font-weight: 700; }
+.response-section :deep(.el-tabs__active-bar) { background: var(--ef-signal); height: 2px; }
+.response-section :deep(.el-tabs__content) { overflow: auto; }
+.response-body { display: flex; flex-direction: column; }
+.response-actions { padding: 10px 16px 0; }
+.response-content {
+  padding: 12px 16px;
+  font-family: var(--ef-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ef-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+.response-headers { padding: 10px 16px; }
+.header-row { padding: 6px 0; border-bottom: 1px solid var(--ef-line-soft); font-size: 12px; }
+.header-row:last-child { border-bottom: none; }
+.header-row strong { color: var(--ef-ink); }
+.jsonpath-extractor { margin: 10px 16px 0; border: 1px dashed var(--ef-line-strong); padding: 10px; background: var(--ef-surface); }
+.jsonpath-input :deep(.el-input__wrapper) { border-radius: 2px; }
+.jsonpath-result { margin-top: 8px; padding: 8px 10px; background: rgba(25,25,25,.05); font-family: var(--ef-font-mono); font-size: 12px; }
+.assertions-results { padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+.assertion-result-item { border-left: 3px solid var(--ef-muted); background: var(--ef-surface); padding: 10px 12px; }
+.assertion-result-item.passed { border-left-color: var(--ef-state); }
+.assertion-result-item.failed { border-left-color: #dc2626; }
+.assertion-result-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.assertion-result-header .assertion-name { font-weight: 600; font-size: 13px; }
+.assertion-result-details { display: flex; flex-direction: column; gap: 4px; }
+.result-row { display: flex; gap: 8px; font-size: 12px; }
+.result-row .label {
+  color: var(--ef-muted);
+  min-width: 52px;
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding-top: 1px;
+}
+.result-row .value { color: var(--ef-ink); word-break: break-all; }
+.result-row .value.error { color: #b91c1c; }
+
+/* ---------- Key-value editor alignment ---------- */
+:deep(.key-value-editor .header) {
+  font-family: var(--ef-font-tech);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ef-muted);
+  border-bottom: 1px solid var(--ef-line);
+  padding-bottom: 8px;
+}
+:deep(.key-value-editor .row) { border-bottom: 1px solid var(--ef-line-soft); padding: 6px 0; }
+:deep(.key-value-editor .row:last-child) { border-bottom: none; }
+:deep(.key-value-editor .footer) { padding-top: 8px; }
+:deep(.key-value-editor .el-checkbox__inner) {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--ef-ink);
+  border-radius: 0;
+  background: #ffffff;
+  transition: background .15s ease, border-color .15s ease;
+}
+:deep(.key-value-editor .el-checkbox__input:hover .el-checkbox__inner) { border-color: var(--ef-ink); }
+:deep(.key-value-editor .el-checkbox.is-checked .el-checkbox__inner) {
+  background: var(--ef-signal);
+  border-color: var(--ef-signal);
+}
+:deep(.key-value-editor .el-checkbox.is-checked .el-checkbox__inner::after) { border-color: var(--ef-ink); }
+:deep(.key-value-editor .el-checkbox__input.is-focus .el-checkbox__inner) {
+  border-color: var(--ef-signal);
+  outline: 1px solid rgba(255, 250, 0, .45);
+  outline-offset: 1px;
 }
 
-.method-tag.put {
-  background-color: #fca130 !important;
+/* ---------- Context menu ---------- */
+.context-menu {
+  position: fixed;
+  z-index: 3000;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--ef-dock);
+  border: 1px solid rgba(255,255,255,.12);
+  min-width: 150px;
+  color: rgba(255,255,255,.85);
+}
+.context-menu li {
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.context-menu li:hover {
+  background: rgba(255,250,0,.1);
+  border-left-color: var(--ef-signal);
+  color: var(--ef-signal);
 }
 
-.method-tag.delete {
-  background-color: #f93e3e !important;
+/* ---------- Hero control overrides (after generic retheme) ---------- */
+.ef-dock .ef-dock-btn--primary {
+  background: var(--ef-signal);
+  border-color: var(--ef-signal);
+  color: var(--ef-ink);
+  font-weight: 700;
+}
+.ef-dock .ef-dock-btn--primary:hover {
+  background: var(--ef-surface);
+  border-color: #ffffff;
+  color: var(--ef-ink);
+}
+.request-header .send-button.el-button--primary {
+  position: relative;
+  background: var(--ef-ink);
+  border: 1px solid var(--ef-signal);
+  color: var(--ef-signal);
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+.request-header .send-button.el-button--primary::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 4px;
+  background: var(--ef-signal);
+}
+.request-header .send-button.el-button--primary:hover {
+  background: #2c2c2c;
+  color: #ffffff;
+}
+.request-header .send-button.el-button--primary:deep(.el-icon) { color: var(--ef-signal); }
+.request-header .send-button.el-button--info {
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.3);
+  color: rgba(255,255,255,.85);
+}
+.request-header .send-button.el-button--info:hover {
+  border-color: var(--ef-signal);
+  color: var(--ef-signal);
 }
 
-.method-tag.patch {
-  background-color: #50e3c2 !important;
+/* ---------- Reveal motion ---------- */
+.ef-page-head,
+.ef-dock,
+.sidebar,
+.request-detail {
+  animation: ef-wipe-in .6s cubic-bezier(.22,.8,.2,1) both;
+}
+.ef-dock { animation-delay: .06s; }
+.sidebar { animation-delay: .12s; }
+.request-detail { animation-delay: .18s; }
+@keyframes ef-wipe-in {
+  from { clip-path: inset(0 100% 0 0); transform: translateX(-8px); }
+  to { clip-path: inset(0); transform: none; }
 }
 
-.method-tag.head {
-  background-color: #9013fe !important;
+/* ---------- Scrollbars ---------- */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--ef-line-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ef-muted);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
-.method-tag.options {
-  background-color: #0ebeff !important;
+/* ---------- Visible focus ---------- */
+:focus-visible {
+  outline: 2px solid var(--ef-signal);
+  outline-offset: 2px;
+}
+:deep(.el-input__wrapper:focus-visible),
+:deep(.el-textarea__inner:focus-visible),
+:deep(.el-select__wrapper:focus-visible),
+:deep(.el-tree-node__content:focus-visible) {
+  outline: 2px solid var(--ef-signal);
+  outline-offset: 1px;
 }
 
-.method-tag.connect {
-  background-color: #7f8c8d !important;
+/* ---------- Responsive: shell adaptation ---------- */
+@media (max-width: 1280px) {
+  .sidebar { width: 260px; }
+  .ef-dock__project { width: 180px; }
+}
+@media (max-width: 1024px) {
+  .sidebar { width: 240px; }
+  .env-select { width: 120px; }
+}
+@media (max-width: 768px), (orientation: portrait) {
+  .ef-page-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px 14px 12px;
+  }
+  .ef-page-head__status { width: 100%; }
+  .ef-status-item { flex: 1; min-width: 0; }
+  .ef-dock { flex-wrap: wrap; padding: 10px 14px; }
+  .ef-dock__project { width: 100%; }
+  .ef-dock__search { flex: 1 1 100%; }
+  .ef-dock__actions { margin-left: 0; width: 100%; }
+  .ef-dock__actions .ef-dock-btn { flex: 1; }
+  .interface-layout { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    height: 34vh;
+    min-height: 200px;
+    border-right: none;
+    border-bottom: 1px solid var(--ef-line-strong);
+  }
+  .request-line { flex-wrap: wrap; }
+  .method-select { width: 96px; }
+  .env-select { width: 110px; }
+  .url-input { flex: 1 1 100%; order: 3; }
+  .request-meta { flex-wrap: wrap; }
+  .action-buttons { width: 100%; flex-wrap: wrap; }
+  .response-section { max-height: 40%; }
 }
 
-.method-tag.trace {
-  background-color: #e67e22 !important;
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .ef-page-head,
+  .ef-dock,
+  .sidebar,
+  .request-detail,
+  .search-result-item,
+  .context-menu li {
+    animation: none !important;
+    transition: none !important;
+  }
 }
+</style>
 
-/* 覆盖方法选择器样式 */
-.method-select.get :deep(.el-select .el-input__wrapper) {
-  background-color: #61affe !important;
-  color: white !important;
-  border-color: #61affe !important;
+<style>
+/* ============================================================
+   Endfield / moderate - teleported surfaces
+   Dialogs and select poppers are moved to <body> by Element Plus,
+   so they cannot be reached from the scoped block above.
+   ============================================================ */
+.ef-modal {
+  background: rgba(25, 25, 25, .5) !important;
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
 }
-
-.method-select.post :deep(.el-select .el-input__wrapper) {
-  background-color: #49cc90 !important;
-  color: white !important;
-  border-color: #49cc90 !important;
+.ef-dialog {
+  border-radius: 2px;
+  border: 1px solid #c9c9c3;
+  box-shadow: 12px 12px 0 rgba(25, 25, 25, .08);
+  background: #fafaf8;
+  color: #191919;
+  overflow: hidden;
 }
-
-.method-select.put :deep(.el-select .el-input__wrapper) {
-  background-color: #fca130 !important;
-  color: white !important;
-  border-color: #fca130 !important;
+.ef-dialog .el-dialog__header {
+  margin: 0;
+  padding: 14px 18px;
+  background: #191919;
+  color: #ffffff;
+  border-bottom: 2px solid #fffa00;
 }
-
-.method-select.delete :deep(.el-select .el-input__wrapper) {
-  background-color: #f93e3e !important;
-  color: white !important;
-  border-color: #f93e3e !important;
+.ef-dialog .el-dialog__title {
+  font-family: "Arial Narrow", "Roboto Condensed", "DIN Condensed", sans-serif;
+  font-size: 16px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #ffffff;
 }
-
-.method-select.patch :deep(.el-select .el-input__wrapper) {
-  background-color: #50e3c2 !important;
-  color: white !important;
-  border-color: #50e3c2 !important;
+.ef-dialog .el-dialog__headerbtn { top: 14px; }
+.ef-dialog .el-dialog__headerbtn .el-dialog__close { color: rgba(255, 255, 255, .6); }
+.ef-dialog .el-dialog__headerbtn:hover .el-dialog__close { color: #fffa00; }
+.ef-dialog .el-dialog__body { padding: 16px 18px; }
+.ef-dialog .el-dialog__footer {
+  padding: 10px 18px 14px;
+  border-top: 1px solid #dcdcd7;
+  text-align: right;
 }
-
-.method-select.head :deep(.el-select .el-input__wrapper) {
-  background-color: #9013fe !important;
-  color: white !important;
-  border-color: #9013fe !important;
+.ef-dialog .el-form-item__label {
+  font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #8a8a86;
 }
-
-.method-select.options :deep(.el-select .el-input__wrapper) {
-  background-color: #0ebeff !important;
-  color: white !important;
-  border-color: #0ebeff !important;
+.ef-dialog .el-input__wrapper,
+.ef-dialog .el-textarea__inner,
+.ef-dialog .el-select__wrapper {
+  background: #ffffff;
+  box-shadow: 0 0 0 1px #c9c9c3 inset;
+  border-radius: 2px;
 }
-
-.method-select.connect :deep(.el-select .el-input__wrapper) {
-  background-color: #7f8c8d !important;
-  color: white !important;
-  border-color: #7f8c8d !important;
+.ef-dialog .el-input__wrapper.is-focus,
+.ef-dialog .el-select__wrapper.is-focused,
+.ef-dialog .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px #191919 inset;
 }
-
-.method-select.trace :deep(.el-select .el-input__wrapper) {
-  background-color: #e67e22 !important;
-  color: white !important;
-  border-color: #e67e22 !important;
+.ef-dialog .el-button { border-radius: 2px; }
+.ef-dialog .el-button--primary {
+  background: #191919;
+  border-color: #191919;
+  color: #ffffff;
 }
-
-/* 覆盖方法选择器通用样式 */
-.method-select :deep(.el-select .el-input__inner) {
-  color: white !important;
+.ef-dialog .el-button--primary:hover {
+  background: #2c2c2c;
+  color: #fffa00;
 }
-
-.method-select :deep(.el-select .el-select__icon) {
-  color: white !important;
+.ef-dialog .el-button:focus-visible,
+.ef-dialog .el-input__wrapper:focus-visible,
+.ef-dialog .el-textarea__inner:focus-visible,
+.ef-dialog .el-select__wrapper:focus-visible {
+  outline: 2px solid #fffa00;
+  outline-offset: 1px;
 }
-
-.method-select :deep(.el-select .el-select__selected-item),
-.method-select :deep(.el-select .el-select__selected-item span),
-.method-select :deep(.el-select .el-select__placeholder) {
-  background-color: transparent !important;
-  color: white !important;
+.ef-dialog .el-table {
+  --el-table-border-color: #dcdcd7;
+  --el-table-header-bg-color: #f2f2f0;
+  --el-table-header-text-color: #191919;
+  --el-table-row-hover-bg-color: rgba(255, 250, 0, .10);
+  --el-table-text-color: #191919;
+  font-size: 12px;
 }
+.ef-dialog .el-table th.el-table__cell { font-weight: 700; }
+.ef-dialog .el-tabs__item {
+  font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #8a8a86;
+}
+.ef-dialog .el-tabs__item.is-active { color: #191919; font-weight: 700; }
+.ef-dialog .el-tabs__active-bar { background: #fffa00; height: 2px; }
+.ef-dialog .el-tabs__nav-wrap::after { background: #dcdcd7; }
 
+/* Method select dropdown popper */
+.method-select-dropdown { border-radius: 2px; }
+.method-select-dropdown .el-select-dropdown__item {
+  font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: .08em;
+  font-size: 12px;
+}
+.method-select-dropdown .el-select-dropdown__item.hover,
+.method-select-dropdown .el-select-dropdown__item:hover {
+  background: rgba(255, 250, 0, .16);
+}
+.method-select-dropdown .el-select-dropdown__item.is-selected,
+.method-select-dropdown .el-select-dropdown__item.selected {
+  color: #191919;
+  font-weight: 800;
+}
+.method-select-dropdown .el-select-dropdown__item:focus-visible {
+  outline: 2px solid #fffa00;
+  outline-offset: -2px;
+}
 </style>

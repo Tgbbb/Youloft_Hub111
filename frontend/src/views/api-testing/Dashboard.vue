@@ -71,12 +71,12 @@
         </div>
         <div v-else class="activities-list">
           <div v-for="log in operationLogs" :key="log.id" class="activity-item">
-            <div class="activity-icon">
-              <el-icon v-if="log.operation_type === 'create'" color="#52c41a"><Plus /></el-icon>
-              <el-icon v-else-if="log.operation_type === 'edit'" color="#1890ff"><Edit /></el-icon>
-              <el-icon v-else-if="log.operation_type === 'delete'" color="#ff4d4f"><Delete /></el-icon>
-              <el-icon v-else-if="log.operation_type === 'execute'" color="#722ed1"><VideoPlay /></el-icon>
-              <el-icon v-else color="#666"><Operation /></el-icon>
+            <div class="activity-icon" :class="'activity-icon--' + (log.operation_type || 'other')">
+              <el-icon v-if="log.operation_type === 'create'"><Plus /></el-icon>
+              <el-icon v-else-if="log.operation_type === 'edit'"><Edit /></el-icon>
+              <el-icon v-else-if="log.operation_type === 'delete'"><Delete /></el-icon>
+              <el-icon v-else-if="log.operation_type === 'execute'"><VideoPlay /></el-icon>
+              <el-icon v-else><Operation /></el-icon>
             </div>
             <div class="activity-content">
               <div class="activity-description">{{ log.description }}</div>
@@ -302,6 +302,24 @@ onMounted(() => {
 <style scoped>
 .dashboard-container {
   width: 100%;
+  padding: 20px;
+  background: #f2f2f0;
+  color: #191919;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ef-ink: #191919;
+  --ef-paper: #f2f2f0;
+  --ef-signal: #fffa00;
+  --ef-state: #00ffa2;
+  --ef-muted: #8a8a86;
+  --ef-line: #dcdcd7;
+  --ef-line-strong: #c9c9c3;
+  --ef-line-soft: #f0f0ec;
+  --ef-rail: #fafaf8;
+  --ef-surface: #ffffff;
+  --ef-dock: #191919;
+  --ef-font-tech: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --ef-font-display: "Arial Narrow", "Roboto Condensed", "DIN Condensed", sans-serif;
+  --ef-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 .stats-section {
@@ -321,13 +339,27 @@ onMounted(() => {
 .stat-icon {
   width: 60px;
   height: 60px;
-  border-radius: 50%;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-right: 20px;
   color: white;
   font-size: 24px;
+  background-color: var(--ef-ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+  position: relative;
+}
+
+.stat-icon::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  background: var(--ef-signal);
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
 }
 
 .stat-icon :deep(.el-icon) {
@@ -343,20 +375,11 @@ onMounted(() => {
   height: 60%;
 }
 
-.stat-icon.bg-blue {
-  background-color: #1890ff;
-}
-
-.stat-icon.bg-green {
-  background-color: #52c41a;
-}
-
-.stat-icon.bg-purple {
-  background-color: #722ed1;
-}
-
+.stat-icon.bg-blue,
+.stat-icon.bg-green,
+.stat-icon.bg-purple,
 .stat-icon.bg-orange {
-  background-color: #fa8c16;
+  background-color: var(--ef-ink);
 }
 
 .stat-info {
@@ -365,14 +388,19 @@ onMounted(() => {
 
 .stat-value {
   font-size: 28px;
-  font-weight: bold;
-  color: #1a1a1a;
+  font-weight: 700;
+  color: var(--ef-ink);
+  font-family: var(--ef-font-display);
+  letter-spacing: .02em;
   margin-bottom: 5px;
 }
 
 .stat-label {
-  font-size: 14px;
-  color: #666;
+  font-size: 12px;
+  color: var(--ef-muted);
+  font-family: var(--ef-font-tech);
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .content-section {
@@ -401,28 +429,32 @@ onMounted(() => {
 .action-item {
   text-align: center;
   padding: 15px 10px;
-  border-radius: 8px;
-  background-color: #f9f9f9;
+  border-radius: 2px;
+  background-color: var(--ef-surface);
+  border: 1px solid var(--ef-line);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background-color .15s ease, border-color .15s ease, transform .15s ease;
 }
 
 .action-item:hover {
-  background-color: #f0f0f0;
+  background-color: rgba(255, 250, 0, .10);
+  border-color: var(--ef-ink);
   transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 0 rgba(25, 25, 25, .08);
 }
 
 .action-item .action-icon {
   margin: 0 auto 15px;
   width: 50px;
   height: 50px;
-  border-radius: 50%;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
   font-size: 24px;
+  background-color: var(--ef-ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
 }
 
 .action-icon :deep(.el-icon) {
@@ -438,34 +470,20 @@ onMounted(() => {
   height: 60%;
 }
 
-.action-icon.bg-blue {
-  background-color: #1890ff;
-}
-
-.action-icon.bg-green {
-  background-color: #52c41a;
-}
-
-.action-icon.bg-cyan {
-  background-color: #13c2c2;
-}
-
-.action-icon.bg-purple {
-  background-color: #722ed1;
-}
-
-.action-icon.bg-orange {
-  background-color: #fa8c16;
-}
-
+.action-icon.bg-blue,
+.action-icon.bg-green,
+.action-icon.bg-cyan,
+.action-icon.bg-purple,
+.action-icon.bg-orange,
 .action-icon.bg-indigo {
-  background-color: #597ef7;
+  background-color: var(--ef-ink);
 }
 
 .action-label {
-  font-size: 16px;
-  color: #333;
-  font-weight: 500;
+  font-size: 14px;
+  color: var(--ef-ink);
+  font-weight: 600;
+  letter-spacing: .04em;
 }
 
 .features-section {
@@ -473,10 +491,25 @@ onMounted(() => {
 }
 
 .section-title {
-  font-size: 24px;
-  font-weight: bold;
+  font-size: 20px;
+  font-weight: 700;
   margin-bottom: 20px;
-  color: #1a1a1a;
+  color: var(--ef-ink);
+  font-family: var(--ef-font-display);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  position: relative;
+  padding-bottom: 8px;
+}
+
+.section-title::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 36px;
+  height: 3px;
+  background: var(--ef-signal);
 }
 
 .feature-card {
@@ -488,14 +521,20 @@ onMounted(() => {
 .feature-icon {
   width: 80px;
   height: 80px;
-  border-radius: 50%;
-  background-color: #f0f0f0;
+  border-radius: 2px;
+  background-color: var(--ef-surface);
+  border: 1px solid var(--ef-line-strong);
   display: flex;
   align-items: center;
   justify-content: center;
   margin: 0 auto 20px;
   font-size: 36px;
-  color: #1890ff;
+  color: var(--ef-ink);
+  transition: border-color .15s ease, color .15s ease;
+}
+
+.feature-card:hover .feature-icon {
+  border-color: var(--ef-signal);
 }
 
 .feature-icon :deep(.el-icon) {
@@ -512,15 +551,18 @@ onMounted(() => {
 }
 
 .feature-title {
-  font-size: 18px;
-  font-weight: bold;
+  font-size: 16px;
+  font-weight: 700;
   margin-bottom: 10px;
-  color: #1a1a1a;
+  color: var(--ef-ink);
+  font-family: var(--ef-font-display);
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .feature-description {
-  font-size: 14px;
-  color: #666;
+  font-size: 13px;
+  color: var(--ef-muted);
   line-height: 1.6;
 }
 
@@ -532,7 +574,7 @@ onMounted(() => {
   display: flex;
   align-items: flex-start;
   padding: 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--ef-line-soft);
 }
 
 .activity-item:last-child {
@@ -542,14 +584,21 @@ onMounted(() => {
 .activity-icon {
   width: 32px;
   height: 32px;
-  border-radius: 50%;
-  background-color: #f5f5f5;
+  border-radius: 2px;
+  background-color: var(--ef-rail);
+  border: 1px solid var(--ef-line-strong);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-right: 12px;
   flex-shrink: 0;
 }
+
+.activity-icon--create :deep(.el-icon) { color: #16a34a; }
+.activity-icon--edit :deep(.el-icon) { color: #3b82f6; }
+.activity-icon--delete :deep(.el-icon) { color: #dc2626; }
+.activity-icon--execute :deep(.el-icon) { color: #722ed1; }
+.activity-icon--other :deep(.el-icon) { color: var(--ef-muted); }
 
 .activity-icon :deep(.el-icon) {
   width: 100%;
@@ -571,7 +620,7 @@ onMounted(() => {
 
 .activity-description {
   font-size: 14px;
-  color: #333;
+  color: var(--ef-ink);
   margin-bottom: 4px;
   word-break: break-all;
 }
@@ -580,7 +629,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   font-size: 12px;
-  color: #999;
+  color: var(--ef-muted);
 }
 
 .activity-user {
@@ -588,7 +637,44 @@ onMounted(() => {
 }
 
 .activity-time {
-  color: #bbb;
+  color: var(--ef-muted);
+  font-family: var(--ef-font-tech);
+}
+
+/* ---------- Element Plus cards & empty states ---------- */
+.dashboard-container :deep(.el-card) {
+  border-radius: 2px;
+  border-color: var(--ef-line-strong);
+  background: var(--ef-rail);
+  --el-card-border-color: var(--ef-line-strong);
+  --el-card-bg-color: var(--ef-rail);
+  --el-card-hover-border: var(--ef-ink);
+  --el-card-hover-shadow: 4px 4px 0 rgba(25, 25, 25, .06);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.dashboard-container :deep(.el-card.is-hover-shadow:hover) {
+  border-color: var(--ef-ink);
+  box-shadow: 4px 4px 0 rgba(25, 25, 25, .06);
+}
+.dashboard-container :deep(.el-card__header) {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--ef-line);
+  font-family: var(--ef-font-display);
+  font-size: 14px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ef-ink);
+  font-weight: 700;
+}
+.dashboard-container :deep(.el-card__body) { padding: 18px; }
+.dashboard-container :deep(.el-empty__description) { color: var(--ef-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .action-item,
+  .feature-icon,
+  .dashboard-container :deep(.el-card) {
+    transition: none;
+  }
 }
 
 @media screen and (max-width: 1920px) {

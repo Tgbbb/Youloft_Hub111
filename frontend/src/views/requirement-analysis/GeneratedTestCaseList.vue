@@ -1,5 +1,5 @@
 <template>
-  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="complex">
+  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
     <!-- Grid -->
     <div class="ag-grid" aria-hidden="true"></div>
 
@@ -45,7 +45,7 @@
           <button v-if="selectedTasks.length > 0" class="ag-btn ag-btn--danger" @click="batchDeleteTasks" :disabled="isDeleting">
             {{ isDeleting ? $t('generatedTestCases.deleting') : $t('generatedTestCases.batchDelete', { count: selectedTasks.length }) }}
           </button>
-          <button class="ag-btn" @click="loadTasks" :disabled="isLoading">
+          <button class="ag-btn ag-btn--ghost" @click="loadTasks" :disabled="isLoading">
             {{ isLoading ? $t('generatedTestCases.loading') : $t('generatedTestCases.refresh') }}
           </button>
         </div>
@@ -183,7 +183,7 @@
             </div>
             <div class="ag-form__actions">
               <button type="button" class="ag-btn ag-btn--ok" @click="confirmAdopt" :disabled="isAdopting">{{ isAdopting ? $t('generatedTestCases.adopting') : $t('generatedTestCases.confirmAdopt') }}</button>
-              <button type="button" class="ag-btn" @click="closeAdoptModal">{{ $t('generatedTestCases.cancel') }}</button>
+              <button type="button" class="ag-btn ag-btn--ghost" @click="closeAdoptModal">{{ $t('generatedTestCases.cancel') }}</button>
             </div>
           </form>
         </div>
@@ -241,7 +241,7 @@ export default {
 
 <style scoped lang="scss">
 /* =============================================
-   Ark Complex — Generated Test Cases
+   Ark Moderate — Generated Test Cases
    ============================================= */
 .ag-shell {
   --ark-ink: #191919;
@@ -333,20 +333,30 @@ export default {
    Select / Input
    ============================================ */
 .ag-select {
-  padding: 7px 28px 7px 10px; border: 1px solid #ccc; background: #fff;
+  height: 36px; padding: 0 28px 0 10px; box-sizing: border-box; line-height: 1;
+  border: 1px solid #ccc; background: #fff;
   font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
   text-transform: uppercase; letter-spacing: .04em; color: #444;
   cursor: pointer; appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 10px center;
   &:focus { outline: none; border-color: #fffa00; }
-  &--sm { padding: 5px 24px 5px 8px; font-size: 11px; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+  &--sm { height: 30px; padding: 0 24px 0 8px; font-size: 11px; }
 }
 .ag-input {
   padding: 8px 12px; border: 1px solid #ccc; font-size: 13px; color: #333; width: 100%; box-sizing: border-box;
   &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
   &--mono { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 13px; line-height: 1.7; }
-  &--sm { width: 48px; padding: 5px 6px; text-align: center; font-size: 12px; border: 1px solid #ccc; }
+  &--sm {
+    width: 52px; height: 30px; padding: 0 6px; box-sizing: border-box; line-height: 1;
+    text-align: center; font-size: 12px;
+    font-family: "Space Grotesk", system-ui, sans-serif; appearance: textfield;
+    &:focus { outline: none; border-color: #fffa00; }
+    &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+    &::-webkit-outer-spin-button, &::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  }
 }
 textarea.ag-input { resize: vertical; font-family: inherit; }
 
@@ -355,18 +365,56 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
    ============================================ */
 .ag-btn {
   all: unset; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 8px 16px; font-size: 12px;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 8px 18px; box-sizing: border-box;
+  white-space: nowrap;
+  font-size: 12px; font-weight: 600;
   font-family: "Space Grotesk", system-ui, sans-serif;
-  text-transform: uppercase; letter-spacing: .06em;
-  color: #555; background: #f0f2f2; border: 1px solid #d0d2d2;
-  transition: all .12s;
-  &:hover:not(:disabled) { background: #e4e6e6; border-color: #bbb; }
-  &:disabled { opacity: .35; cursor: not-allowed; }
-  &--sm { padding: 4px 10px; font-size: 11px; }
-  &--ok { color: #16803a; background: #e0f5e8; border-color: #b8dcc4; &:hover:not(:disabled) { background: #c8edcf; } }
-  &--danger { color: #c03939; background: #fef0f0; border-color: #f0c8c8; &:hover:not(:disabled) { background: #fce4e4; } }
-  &--warn { color: #8a6d14; background: #fefae0; border-color: #e8d888; &:hover:not(:disabled) { background: #fcf2c0; } }
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
+
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent;
+    transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
+  }
+
+  &--sm { min-height: 30px; padding: 4px 10px; font-size: 11px; letter-spacing: .06em; }
+
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+    &:disabled { background: transparent; border-color: transparent; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+    &:active:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+    &:disabled { color: #c9cbc8; background: #e8eae7; border-color: #d6d8d5; &::before { background: transparent; } }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #c9aca9; background: #f8f4f3; border-color: #eadcd9; &::before { background: transparent; } }
+  }
+  &--warn {
+    color: #7d6a16; background: #fffdf4; border-color: #dccc8e;
+    &::before { background: #c8a821; }
+    &:hover:not(:disabled) { background: #faf3d8; border-color: #cdbb76; }
+    &:disabled { color: #b6ab7f; background: #f8f6ee; border-color: #e5dfc4; &::before { background: transparent; } }
+  }
 }
 
 /* ============================================
@@ -390,6 +438,9 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
   &--time { width: 150px; }
   &--act { width: 220px; }
 }
+.ag-th--check input:focus-visible {
+  outline: 2px solid #fffa00; outline-offset: 1px;
+}
 .ag-tr {
   border-bottom: 1px solid #eee;
   transition: background .1s;
@@ -399,14 +450,14 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
 }
 .ag-td {
   color: #444;
-  &--check { text-align: center; input { accent-color: #fffa00; } }
+  &--check { text-align: center; input { accent-color: #fffa00; &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; } } }
   &--num { text-align: right; color: #aaa; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; }
   &--id { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; color: #666; }
   &--req { font-weight: 500; color: #222; min-width: 240px; max-width: 320px; white-space: normal; word-break: break-word; }
   &--status { text-align: center; }
   &--count { text-align: center; }
   &--time { color: #888; font-size: 12px; }
-  &--act { display: flex; gap: 4px; }
+  &--act { display: flex; gap: 4px; flex-wrap: nowrap; }
 }
 
 /* ============================================
@@ -436,8 +487,14 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
   padding: 14px 20px; flex-wrap: wrap; gap: 12px;
   &__info { font-size: 12px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; }
   &__ctrls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  &__btns { display: flex; align-items: center; gap: 2px; }
-  &__num.is-active { background: #fffa00; color: #191919; border-color: #fffa00; }
+  &__btns { display: flex; align-items: center; gap: 4px; }
+  &__num {
+    min-width: 32px;
+    &.is-active {
+      color: #fff; background: var(--ark-ink); border-color: var(--ark-ink); font-weight: 700;
+      &::before { background: var(--ark-signal); }
+    }
+  }
   &__dots { padding: 0 4px; color: #ccc; }
   &__jump { display: flex; align-items: center; gap: 4px; }
 }
@@ -474,8 +531,12 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
     text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
   }
   &__close {
-    all: unset; cursor: pointer; font-size: 22px; color: rgba(255,255,255,.5); line-height: 1;
-    &:hover { color: #fff; }
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
   }
   &__body { padding: 20px 24px 24px; }
 }
@@ -503,6 +564,14 @@ textarea.ag-input { resize: vertical; font-family: inherit; }
   &__actions { display: flex; gap: 12px; justify-content: flex-end; padding-top: 16px; border-top: 1px solid #eee; margin-top: 16px; }
 }
 .ag-req { color: #e04040; }
+
+/* ============================================
+   Reduced Motion
+   ============================================ */
+@media (prefers-reduced-motion: reduce) {
+  .ag-btn, .ag-select, .ag-input, .ag-modal__close, .ag-tr { transition: none !important; }
+  .ag-btn:active:not(:disabled) { transform: none; }
+}
 
 /* ============================================
    Responsive

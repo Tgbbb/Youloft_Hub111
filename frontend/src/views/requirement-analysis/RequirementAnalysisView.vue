@@ -1,7 +1,6 @@
 <template>
-  <div class="ef-root" data-ark-theme="endfield" data-ark-depth="maximal">
+  <div class="ef-root" data-ark-theme="endfield" data-ark-depth="moderate">
     <div class="ef-grid" aria-hidden="true"></div>
-    <div class="ef-grid__diag" aria-hidden="true"></div>
 
     <!-- ======== Config Guide Modal ======== -->
     <div v-if="showConfigGuide && !checkingConfig" class="ef-modal" @click.self="showConfigGuide = false" :key="modalKey">
@@ -38,11 +37,26 @@
 
     <!-- ======== Stage ======== -->
     <div class="ef-stage">
-      <!-- ---- Output Mode (pre-generation) ---- -->
-      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults">
-        
+      <!-- ======== Identity / page header ======== -->
+      <header class="ef-identity">
+        <span class="ef-identity__wedge" aria-hidden="true"></span>
+        <div class="ef-identity__titleblock">
+          <p class="ef-identity__kicker">AI GENERATION / 01</p>
+          <h1 class="ef-identity__title">{{ $t('menu.aiCaseGeneration') }}</h1>
+          <p class="ef-identity__sub">REQUIREMENT ANALYSIS · 需求分析</p>
+        </div>
+      </header>
+      <!-- ---- Side rail: output mode + system status ---- -->
+      <aside class="ef-side" v-if="!isGenerating && !showResults && !showClarificationPanel">
+      <div class="ef-section ef-section--mode">
+        <div class="ef-section__head">
+          <div class="ef-section__titles">
+            <p class="ef-section__kicker">OUTPUT MODE</p>
+            <h2 class="ef-section__label">输出模式</h2>
+          </div>
+          <span class="ef-section__rule" aria-hidden="true"></span>
+        </div>
         <div class="ef-section__body">
-          <p class="ef-section__label">输出模式</p>
           <div class="ef-mode-row">
             <label class="ef-mode" :class="{ 'is-on': globalOutputMode === 'stream' }">
               <input type="radio" v-model="globalOutputMode" value="stream" hidden>
@@ -59,15 +73,43 @@
           </div>
         </div>
       </div>
+      <div class="ef-status" aria-label="系统状态">
+        <div class="ef-status__head">
+          <p class="ef-status__kicker">SYSTEM STATUS</p>
+          <h2 class="ef-status__title">系统状态</h2>
+        </div>
+        <div class="ef-status__rows">
+          <div class="ef-status__row">
+            <span class="ef-status__label">AI 配置</span>
+            <span class="ef-status__value" :class="configReady ? 'is-ok' : 'is-warn'">
+              <i class="ef-status__dot" aria-hidden="true"></i>{{ configReady ? 'READY' : 'REQUIRED' }}
+            </span>
+          </div>
+          <div class="ef-status__row">
+            <span class="ef-status__label">当前任务</span>
+            <span class="ef-status__value" :class="currentTaskId ? 'is-live' : ''">
+              <i class="ef-status__dot" aria-hidden="true"></i>{{ currentTaskId ? currentTaskId.substring(0, 8) : 'IDLE' }}
+            </span>
+          </div>
+        </div>
+      </div>
+      </aside>
 
       <!-- ---- Input Zone ---- -->
-      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults && !showClarificationPanel">
-        
+      <div class="ef-section ef-section--input" v-if="!isGenerating && !showResults && !showClarificationPanel">
+        <div class="ef-section__head">
+          <span class="ef-section__num" aria-hidden="true">01</span>
+          <div class="ef-section__titles">
+            <p class="ef-section__kicker">INPUT SOURCE</p>
+            <h2 class="ef-section__label">输入来源</h2>
+          </div>
+          <span class="ef-section__rule" aria-hidden="true"></span>
+        </div>
         <div class="ef-section__body">
-          <p class="ef-section__label">输入来源</p>
           <div class="ef-tabs">
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'modao' }" @click="manualTab = 'modao'">墨刀</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'input' }" @click="manualTab = 'input'">手动</button>
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'doc' }" @click="manualTab = 'doc'">文档上传</button>
           </div>
 
           <!-- Modao -->
@@ -159,6 +201,40 @@
             </div>
           </div>
 
+          <!-- Document upload -->
+          <div v-if="manualTab === 'doc'" class="ef-tab-body">
+            <div class="ef-dropzone"
+              @drop.prevent="handleDrop" @dragover.prevent="isDragOver = true"
+              @dragleave.prevent="isDragOver = false" :class="{ 'is-over': isDragOver }">
+              <div v-if="!selectedFile">
+                <span class="ef-dropzone__icon">文档</span>
+                <p>拖拽 PDF、Word、TXT 或图片到此处</p>
+                <div class="ef-dropzone__btns">
+                  <input type="file" ref="fileInput" @change="handleFileSelect" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" hidden>
+                  <input type="file" ref="folderInput" @change="handleFileSelect" webkitdirectory hidden>
+                  <button class="ef-btn" @click="$refs.fileInput.click()">文件</button>
+                  <button class="ef-btn" @click="$refs.folderInput.click()">文件夹</button>
+                </div>
+              </div>
+              <div v-else class="ef-dropzone__file">
+                <span>{{ selectedFile.name }}</span>
+                <span class="ef-dropzone__size">{{ formatFileSize(selectedFile.size) }}</span>
+                <span class="ef-dropzone__more" v-if="selectedFiles.length > 1">+{{ selectedFiles.length - 1 }}</span>
+                <button class="ef-btn ef-btn--text" @click="removeFile">移除</button>
+              </div>
+            </div>
+            <div v-if="selectedFile" class="ef-fields" style="margin-top:20px">
+              <div class="ef-field"><label>标题</label><input v-model="documentTitle" class="ef-input" /></div>
+              <div class="ef-field"><label>项目</label><select v-model="selectedProject" class="ef-select" @change="onDocProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+              <div class="ef-field" v-show="selectedProject"><label>版本</label><select v-model="selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(selectedVersionIds, 'doc')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+              <div class="ef-field" v-show="selectedVersionIds && selectedVersionIds.length > 0"><label>模块</label><select v-model="docSelectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in docModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
+            </div>
+            <div class="ef-actions" v-if="selectedFile">
+              <label class="ef-check" v-if="isMultimodalFile"><input type="checkbox" v-model="enableMultimodal"><span>{{ $t('requirementAnalysis.enableMultimodal') }}</span></label>
+              <button class="ef-btn ef-btn--signal" @click="generateFromDocument" :disabled="isGenerating">{{ isGenerating ? $t('requirementAnalysis.generating') : $t('requirementAnalysis.generateButton') }}</button>
+            </div>
+          </div>
+
           <!-- Extract (hidden tab, functional) -->
           <div v-if="manualTab === 'extract'" class="ef-tab-body">
             <div class="ef-fields">
@@ -174,49 +250,17 @@
           </div>
         </div>
       </div>
-
-
-      <!-- ---- Document Upload ---- -->
-      <div class="ef-section ef-section--alt" v-if="!isGenerating && !showResults && !showClarificationPanel">
-        <div class="ef-section__body">
-          <p class="ef-section__label">文档上传</p>
-          <div class="ef-dropzone"
-            @drop.prevent="handleDrop" @dragover.prevent="isDragOver = true"
-            @dragleave.prevent="isDragOver = false" :class="{ 'is-over': isDragOver }">
-            <div v-if="!selectedFile">
-              <span class="ef-dropzone__icon">文档</span>
-              <p>拖拽 PDF、Word、TXT 或图片到此处</p>
-              <div class="ef-dropzone__btns">
-                <input type="file" ref="fileInput" @change="handleFileSelect" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" hidden>
-                <input type="file" ref="folderInput" @change="handleFileSelect" webkitdirectory hidden>
-                <button class="ef-btn" @click="$refs.fileInput.click()">文件</button>
-                <button class="ef-btn" @click="$refs.folderInput.click()">文件夹</button>
-              </div>
-            </div>
-            <div v-else class="ef-dropzone__file">
-              <span>{{ selectedFile.name }}</span>
-              <span class="ef-dropzone__size">{{ formatFileSize(selectedFile.size) }}</span>
-              <span class="ef-dropzone__more" v-if="selectedFiles.length > 1">+{{ selectedFiles.length - 1 }}</span>
-              <button class="ef-btn ef-btn--text" @click="removeFile">移除</button>
-            </div>
-          </div>
-          <div v-if="selectedFile" class="ef-fields" style="margin-top:20px">
-            <div class="ef-field"><label>标题</label><input v-model="documentTitle" class="ef-input" /></div>
-            <div class="ef-field"><label>项目</label><select v-model="selectedProject" class="ef-select" @change="onDocProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
-            <div class="ef-field" v-show="selectedProject"><label>版本</label><select v-model="selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(selectedVersionIds, 'doc')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
-            <div class="ef-field" v-show="selectedVersionIds && selectedVersionIds.length > 0"><label>模块</label><select v-model="docSelectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in docModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
-          </div>
-          <div class="ef-actions" v-if="selectedFile">
-            <label class="ef-check" v-if="isMultimodalFile"><input type="checkbox" v-model="enableMultimodal"><span>{{ $t('requirementAnalysis.enableMultimodal') }}</span></label>
-            <button class="ef-btn ef-btn--signal" @click="generateFromDocument" :disabled="isGenerating">{{ isGenerating ? $t('requirementAnalysis.generating') : $t('requirementAnalysis.generateButton') }}</button>
-          </div>
-        </div>
-      </div>
-
       <!-- ---- Clarification ---- -->
       <div class="ef-section ef-section--clarify" v-if="showClarificationPanel">
+        <div class="ef-section__head">
+          <span class="ef-section__num" aria-hidden="true">02</span>
+          <div class="ef-section__titles">
+            <p class="ef-section__kicker">CLARIFICATION</p>
+            <h2 class="ef-section__label">需求澄清</h2>
+          </div>
+          <span class="ef-section__rule" aria-hidden="true"></span>
+        </div>
         <div class="ef-section__body">
-          <p class="ef-section__label">需求澄清</p>
           <div v-if="isClarifying" class="ef-wait"><span class="ef-wait__dot"></span>分析中...</div>
           <div v-else-if="clarificationQuestions.length === 0" class="ef-wait">✓ 未发现歧义</div>
           <div v-else class="ef-questions">
@@ -237,10 +281,21 @@
 
       <!-- ---- Generation / Results ---- -->
       <div class="ef-section ef-section--results" v-if="isGenerating || showResults">
+        <div class="ef-section__head">
+          <span class="ef-section__num" aria-hidden="true">03</span>
+          <div class="ef-section__titles">
+            <p class="ef-section__kicker">GENERATION</p>
+            <h2 class="ef-section__label">{{ isGenerating ? '生成中' : '生成结果' }}</h2>
+          </div>
+          <span class="ef-section__badge is-live" v-if="isGenerating">{{ currentStep }}/4</span>
+          <span class="ef-section__rule" aria-hidden="true"></span>
+          <div class="ef-section__actions" v-if="showResults">
+            <button class="ef-btn ef-btn--signal" @click="downloadTestCases('xlsx')">下载 XLSX</button>
+            <button class="ef-btn ef-btn--dark" @click="saveToTestCaseRecords" :disabled="!generationResult?.task_id">保存到记录</button>
+            <button class="ef-btn" @click="resetGeneration">新建</button>
+          </div>
+        </div>
         <div class="ef-section__body">
-          <p class="ef-section__label">{{ isGenerating ? '生成中' : '生成结果' }}
-            <span class="ef-section__badge is-live" v-if="isGenerating">{{ currentStep }}/4</span>
-          </p>
           <!-- Steps -->
           <div class="ef-pipeline" v-if="isGenerating">
             <span class="ef-pipe" :class="{ 'is-on': currentStep >= 1, 'is-past': currentStep > 1 }">分析</span>
@@ -251,38 +306,42 @@
             <span class="ef-pipe__line"></span>
             <span class="ef-pipe" :class="{ 'is-on': currentStep >= 4, 'is-past': currentStep > 4 }">完成</span>
           </div>
-          <!-- Content -->
-          <div v-if="streamedContent" class="ef-prose">
-            <p class="ef-prose__label">测试用例</p>
-            <div class="ef-prose__body" v-html="formatMarkdown(streamedContent)"></div>
+          <!-- View switcher -->
+          <div class="ef-switch" v-if="resultTabs.length > 0" role="tablist" aria-label="生成内容">
+            <button v-for="t in resultTabs" :key="t.key" class="ef-switch__item"
+              :class="{ 'is-on': activeResultView === t.key, 'is-live': liveView === t.key }"
+              :aria-selected="activeResultView === t.key"
+              role="tab" @click="activeResultView = t.key">
+              <i class="ef-switch__dot" aria-hidden="true"></i>{{ t.label }}
+            </button>
           </div>
-          <div v-if="streamedReviewContent" class="ef-prose ef-prose--review">
-            <p class="ef-prose__label">评审</p>
-            <div class="ef-prose__body" v-html="formatMarkdown(streamedReviewContent)"></div>
+          <!-- Viewport -->
+          <div class="ef-view">
+            <transition name="ef-switch" mode="out-in">
+              <div v-if="activeResultView === 'cases' && streamedContent" class="ef-prose" key="cases">
+                <p class="ef-prose__label">测试用例</p>
+                <div class="ef-prose__body" v-html="formatMarkdown(streamedContent)"></div>
+              </div>
+              <div v-else-if="activeResultView === 'review' && streamedReviewContent" class="ef-prose ef-prose--review" key="review">
+                <p class="ef-prose__label">评审</p>
+                <div class="ef-prose__body" v-html="formatMarkdown(streamedReviewContent)"></div>
+              </div>
+              <div v-else-if="activeResultView === 'final' && finalTestCases" class="ef-prose ef-prose--final" key="final">
+                <p class="ef-prose__label">最终</p>
+                <div class="ef-prose__body" v-html="formatMarkdown(finalTestCases)"></div>
+              </div>
+              <div v-else-if="isGenerating" class="ef-wait" key="wait">
+                <span class="ef-wait__dot"></span>等待输出...
+              </div>
+            </transition>
           </div>
-          <div v-if="finalTestCases" class="ef-prose ef-prose--final">
-            <p class="ef-prose__label">最终</p>
-            <div class="ef-prose__body" v-html="formatMarkdown(finalTestCases)"></div>
-          </div>
-          <div class="ef-actions" v-if="showResults">
-            <button class="ef-btn ef-btn--signal" @click="downloadTestCases('xlsx')">下载 XLSX</button>
-            <button class="ef-btn ef-btn--dark" @click="saveToTestCaseRecords" :disabled="!generationResult?.task_id">保存到记录</button>
-            <button class="ef-btn" @click="resetGeneration">新建</button>
-          </div>
-          <div class="ef-actions" v-else>
+          <div class="ef-actions" v-if="isGenerating">
             <button class="ef-btn ef-btn--text" @click="cancelGeneration">取消</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ======== Bottom Dock ======== -->
-    <footer class="ef-dock">
-      <span>系统 / 在线</span><span class="ef-dock__div"></span>
-      <span v-if="currentTaskId">任务 {{ currentTaskId?.substring(0,8) }}</span>
-      <span v-else>无活跃任务</span>
-      <span class="ef-dock__dot" :class="{ 'is-live': !!currentTaskId }"></span>
-    </footer>
   </div>
 </template>
 
@@ -332,6 +391,7 @@ export default {
       streamedContent: '',  // 流式接收的内容
       streamedReviewContent: '',  // 流式接收的评审内容
       finalTestCases: '',  // 最终版用例
+      activeResultView: 'cases',  // 生成结果视图切换: cases | review | final
       hasShownCompletionMessage: false,  // 是否已经显示过完成消息
       showReviewStep: true,  // 是否显示评审步骤（根据生成配置决定）
 
@@ -450,12 +510,50 @@ export default {
     isMultimodalFile() {
       if (this.selectedFiles.length === 0) return false
       return this.selectedFiles.some(f => /\.(pdf|png|jpg|jpeg|webp)$/i.test(f.name))
+    },
+
+    configReady() {
+      const c = this.configStatus || {}
+      const ready = (key) => !!(c[key] && c[key].configured && c[key].enabled)
+      return ready('writer_model') && ready('reviewer_model') &&
+             ready('writer_prompt') && ready('reviewer_prompt') &&
+             !!(c.generation_config && c.generation_config.configured)
+    },
+
+    resultTabs() {
+      const tabs = []
+      if (this.streamedContent) tabs.push({ key: 'cases', label: '测试用例' })
+      if (this.streamedReviewContent) tabs.push({ key: 'review', label: '评审' })
+      if (this.finalTestCases) tabs.push({ key: 'final', label: '最终' })
+      return tabs
+    },
+
+    liveView() {
+      if (!this.isGenerating) return null
+      if (this.finalTestCases) return 'final'
+      if (this.streamedReviewContent) return 'review'
+      if (this.streamedContent) return 'cases'
+      return null
+    }
+  },
+
+  watch: {
+    // 各阶段内容首次到达时自动切换到对应视图；
+    // 用户手动切回旧视图后，后续流式增量不会打断其查看
+    streamedContent(v, old) {
+      if (v && !old) this.activeResultView = 'cases'
+    },
+    streamedReviewContent(v, old) {
+      if (v && !old) this.activeResultView = 'review'
+    },
+    finalTestCases(v, old) {
+      if (v && !old) this.activeResultView = 'final'
     }
   },
 
   mounted() {
     // 加载已保存的墨刀 Cookie
-    const savedCookie = localStorage.getItem('modao_cookie')
+    const savedCookie = sessionStorage.getItem('modao_cookie')
     if (savedCookie) this.modaoToken = savedCookie
     this.loadModaoHistoryList()
     this.progressText = this.$t('requirementAnalysis.preparing')
@@ -973,7 +1071,7 @@ export default {
       this._importDetail = { stage: 'prepare', message: '任务已提交，等待执行', current: 0, total: 1, canvases: [] }
       try {
         if (this.modaoToken) {
-          localStorage.setItem('modao_cookie', this.modaoToken)
+          sessionStorage.setItem('modao_cookie', this.modaoToken)
         }
         // 提交异步任务
         const { data } = await api.post('/requirement-analysis/testcase-generation/import-from-modao/', {
@@ -1021,7 +1119,7 @@ export default {
               this.isImportingModao = false
               const msg = r.error_message || '未知错误'
               if (msg.includes('Cookie已失效')) {
-                localStorage.removeItem('modao_cookie')
+                sessionStorage.removeItem('modao_cookie')
                 this.modaoToken = ''
                 ElMessage.warning(msg)
               } else {
@@ -1041,7 +1139,7 @@ export default {
         this.isImportingModao = false
         const msg = e.response?.data?.error || e.message || ''
         if (msg.includes('401') || msg.includes('403') || msg.includes('登录') || msg.includes('auth')) {
-          localStorage.removeItem('modao_cookie')
+          sessionStorage.removeItem('modao_cookie')
           ElMessage.warning('Cookie 已失效，请重新获取')
         } else {
           ElMessage.error('导入失败: ' + msg)
@@ -1483,6 +1581,7 @@ export default {
       this.streamedContent = ''
       this.finalTestCases = ''
       this.streamedReviewContent = ''
+      this.activeResultView = 'cases'
       this.hasShownCompletionMessage = false
       this.showResults = false
 
@@ -1566,6 +1665,7 @@ export default {
       this.streamedContent = ''  // 清空流式内容
       this.finalTestCases = ''  // 清空最终版用例
       this.streamedReviewContent = ''  // 清空评审内容
+      this.activeResultView = 'cases'  // 重置结果视图
       this.hasShownCompletionMessage = false  // 重置完成消息标志位
       this.showResults = false  // 隐藏上一次的结果
 
@@ -2036,6 +2136,7 @@ export default {
       this.streamedContent = '';
       this.streamedReviewContent = '';
       this.finalTestCases = '';
+      this.activeResultView = 'cases';
 
       if (this.pollInterval) {
         clearInterval(this.pollInterval);
@@ -2353,9 +2454,9 @@ export default {
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 /* =============================================
-   Endfield Maximal — Unboxed
+   Endfield Moderate — Field Engineering
    ============================================= */
 .ef-root {
   --ef-ink: #191919;
@@ -2363,114 +2464,152 @@ export default {
   --ef-signal: #fffa00;
   --ef-state: #00ffa2;
 
-  min-height: calc(100vh - 52px);
+  min-height: 100%;
   background: #eeedeb;
   font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   position: relative;
   overflow-x: hidden;
 }
 
-/* Dual grid: rect + diagonal guide lines */
+/* Visible keyboard focus across the page */
+.ef-root :focus-visible {
+  outline: 2px solid var(--ef-ink);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(255, 250, 0, .35);
+}
+
+/* Single engineering grid — one coherent stage layer */
 .ef-grid {
   position: fixed; inset: 0; pointer-events: none; z-index: 0;
   background-image:
-    linear-gradient(to right, rgba(0,0,0,.035) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0,0,0,.035) 1px, transparent 1px);
-  background-size: 80px 80px;
-}
-.ef-grid__diag {
-  position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .25;
-  background:
-    repeating-linear-gradient(55deg, transparent, transparent 159px, rgba(0,0,0,.03) 159px, rgba(0,0,0,.03) 160px);
+    linear-gradient(to right, rgba(0,0,0,.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.03) 1px, transparent 1px);
+  background-size: 96px 96px;
 }
 
 /* ======== Stage ======== */
 .ef-stage {
   position: relative; z-index: 5;
-  max-width: 1040px; margin: 0 auto;
-  padding: 0 28px 100px;
-  overflow: hidden;
+  max-width: 1120px; margin: 0 auto;
+  padding: 0 32px 56px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  column-gap: 32px;
+  align-items: start;
 }
 
-/* ======== Identity strip ======== */
+.ef-identity { grid-column: 1 / -1; }
+.ef-section--input { grid-column: 1; grid-row: 2; }
+.ef-side { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ef-section--clarify,
+.ef-section--results { grid-column: 1 / -1; grid-row: 3; }
+
+/* ======== Identity / page header ======== */
 .ef-identity {
   display: flex; align-items: flex-start; gap: 20px;
-  padding: 40px 0 36px;
+  padding: 44px 0 36px;
   &__wedge {
-    width: 16px; height: 68px; background: var(--ef-signal); flex-shrink: 0; margin-top: 4px;
-    clip-path: polygon(0 0, 100% 0, 100% 70%, 55% 100%, 0 100%);
+    width: 14px; height: 62px; background: var(--ef-signal); flex-shrink: 0; margin-top: 8px;
+    clip-path: polygon(0 0, 100% 0, 100% 72%, 55% 100%, 0 100%);
+  }
+  &__titleblock {
+    display: flex; flex-direction: column; gap: 7px;
   }
   &__kicker {
-    font-size: 11px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
-    text-transform: uppercase; letter-spacing: .18em; color: #777; margin: 0 0 6px; font-weight: 600;
+    font-size: 10px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .2em; color: #8a8882; margin: 0; font-weight: 600;
   }
   &__title {
-    font-size: 2.6rem; font-weight: 900; color: var(--ef-ink); margin: 0;
-    line-height: .88; letter-spacing: -.04em;
+    font-size: 2.5rem; font-weight: 900; color: var(--ef-ink); margin: 0;
+    line-height: .9; letter-spacing: -.04em;
   }
-  &__right {
-    margin-left: auto; text-align: right; display: flex; flex-direction: column;
-    align-items: flex-end; gap: 8px; padding-top: 8px;
-  }
-  &__code {
-    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
-    text-transform: uppercase; letter-spacing: .1em; color: #999;
-  }
-  &__status {
+  &__sub {
     font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
-    text-transform: uppercase; letter-spacing: .12em; font-weight: 600;
-    padding: 4px 12px; border: 1px solid #d0d0c8; color: #999;
-    &.is-live { border-color: var(--ef-signal); color: #8a7a00; }
-    &.is-done { border-color: var(--ef-state); color: #007a4d; }
+    text-transform: uppercase; letter-spacing: .16em; color: #a5a39d; margin: 0; font-weight: 600;
   }
 }
 
 /* ======== Section ======== */
 .ef-section {
   position: relative;
-  padding: 28px 0;
-  margin-bottom: 1px;
-  &::before { display: none; }
-  &--clarify { padding-left: 16px; &::before { display: block; content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--ef-signal); } }
-  &--results { padding-left: 16px; overflow: hidden; &::before { display: block; content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--ef-signal); } }
-  &--alt { padding-left: 20px; }
+  padding: 26px 0;
+  border-top: 1px solid #e2e0da;
+  animation: ef-wipe .5s cubic-bezier(.22,.8,.2,1) both;
+  &--input { animation-delay: .08s; }
+  &--mode { animation-delay: .02s; }
+  &--clarify { animation-delay: .06s; }
+  &--results { animation-delay: .06s; }
 
+  &__head {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 18px;
+  }
   &__num {
-    position: absolute; left: 8px; top: 24px;
-    font-size: 36px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
-    color: #d8d6d0; line-height: 1; letter-spacing: -.04em;
+    font-size: 30px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #d6d4ce; line-height: 1; letter-spacing: -.04em; min-width: 46px;
+  }
+  &__titles {
+    display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  }
+  &__kicker {
+    margin: 0; font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .18em; color: #a5a39d; font-weight: 600;
   }
   &__label {
-    font-size: 15px; font-weight: 800; color: var(--ef-ink); margin: 0 0 20px;
-    padding-left: 14px; border-left: 3px solid var(--ef-signal);
-    letter-spacing: .02em;
+    font-size: 17px; font-weight: 800; color: var(--ef-ink); margin: 0;
+    letter-spacing: .02em; line-height: 1.2;
+  }
+  &__rule {
+    flex: 1; height: 1px; min-width: 40px;
+    background: linear-gradient(to right, #d8d6d0, rgba(216,214,208,0));
+  }
+  &--clarify &__rule,
+  &--results &__rule {
+    background: linear-gradient(to right, var(--ef-signal), rgba(255,250,0,0));
   }
   &__badge {
     font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
-    padding: 1px 8px; border: 1px solid #d8d6d0; color: #999; margin-left: 8px; vertical-align: middle;
-    &.is-live { border-color: var(--ef-signal); color: #8a7a00; animation: ef-blink 1.2s ease-in-out infinite; }
+    padding: 2px 10px; border: 1px solid var(--ef-ink); color: var(--ef-ink); font-weight: 700;
+    letter-spacing: .08em; flex-shrink: 0;
+    &.is-live { animation: ef-blink 1.2s ease-in-out infinite; }
   }
-  &__body { position: relative; min-width: 0; overflow: hidden; }
+  &__actions {
+    display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0;
+    .ef-btn { padding: 7px 16px; font-size: 11px; }
+  }
+  &__body { position: relative; min-width: 0; }
 }
 @keyframes ef-blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes ef-wipe {
+  from { clip-path: inset(0 100% 0 0); transform: translateX(-10px); }
+  to { clip-path: inset(0 0 0 0); transform: none; }
+}
 
-/* ======== Mode cards ======== */
-.ef-mode-row { display: flex; gap: 12px; }
+/* ======== Mode cards (side rail) ======== */
+.ef-section--mode {
+  background: #fff; border: 1px solid #e4e2dc;
+  padding: 18px;
+  .ef-section__head { margin-bottom: 14px; }
+  .ef-section__kicker { font-size: 9px; }
+  .ef-section__label { font-size: 15px; }
+  .ef-section__rule { display: none; }
+}
+.ef-mode-row { display: flex; flex-direction: column; gap: 10px; }
 .ef-mode {
-  flex: 1; display: flex; align-items: center; gap: 14px;
-  padding: 16px 18px; background: #fff; cursor: pointer;
-  border: 1px solid transparent; border-bottom: 2px solid #e0ded8;
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 12px; align-items: center;
+  padding: 12px 14px; background: #fafaf8; cursor: pointer;
+  border: 1px solid #e4e2dc; border-bottom: 2px solid #e4e2dc;
   transition: all .15s;
-  &:hover { background: #fafaf8; }
+  &:hover { background: #f4f4f0; }
   &.is-on { background: #fffef5; border-color: var(--ef-signal); border-bottom-color: var(--ef-ink); }
   &__letter {
-    width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    grid-row: 1 / 3;
     font-size: 15px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif;
     background: #f2f2f0; color: #bbb; flex-shrink: 0;
   }
   .is-on &__letter { background: var(--ef-ink); color: var(--ef-signal); }
-  &__title { font-size: 15px; font-weight: 700; color: #222; }
-  &__desc { font-size: 13px; color: #777; margin-left: auto; text-align: right; }
+  &__title { grid-column: 2; font-size: 13px; font-weight: 700; color: #222; }
+  &__desc { grid-column: 2; margin: 0; font-size: 11px; color: #888; text-align: left; line-height: 1.5; }
 }
 
 /* ======== Tabs ======== */
@@ -2579,6 +2718,12 @@ export default {
   &__n { position: absolute; top: 8px; right: 10px; font-size: 22px; font-weight: 900; font-family: "Space Grotesk", system-ui, sans-serif; color: #e8e6e0; line-height: 1; }
   .is-on &__n { display: none; }
   &__thumbs { display: flex; gap: 4px; margin-bottom: 8px; min-height: 40px; flex-wrap: wrap; }
+  &__noimg {
+    display: flex; align-items: center; justify-content: center; min-height: 40px;
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em; color: #b5b3ad;
+    border: 1px dashed #e0ded8; margin-bottom: 8px; background: #fafaf8;
+  }
   &__name { font-size: 12px; color: #555; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 }
 
@@ -2592,7 +2737,7 @@ export default {
   &__fill { height: 100%; background: var(--ef-signal); transition: width .4s ease; }
   &__stages { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   &__stage {
-    font-size: 11px; padding: 3px 10px; border: 1px solid #e0ded8; color: #b5b3ad; border-radius: 20px;
+    font-size: 11px; padding: 3px 10px; border: 1px solid #e0ded8; color: #b5b3ad;
     &.is-on { border-color: var(--ef-ink); color: var(--ef-ink); background: #fffef5; font-weight: 700; }
     &.is-done { border-color: #9cc98e; color: #5c9c4a; background: #f2f9ef; }
     &.is-failed { border-color: #e0a0a0; color: #c0392b; background: #fdf2f2; }
@@ -2652,6 +2797,40 @@ export default {
   &__line { width: 28px; height: 1px; background: #d8d6d0; .is-past + & { background: #00a86b; } }
 }
 
+/* ======== Result view switcher ======== */
+.ef-switch {
+  display: inline-flex; align-items: stretch; flex-wrap: wrap;
+  margin-bottom: 16px;
+  border: 1px solid var(--ef-ink);
+  background: #fff;
+  &__item {
+    all: unset; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 18px;
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+    color: #888;
+    border-right: 1px solid #e4e2dc;
+    transition: background .15s, color .15s;
+    &:last-child { border-right: none; }
+    &:hover { color: var(--ef-ink); background: #fafaf8; }
+    &.is-on { background: var(--ef-ink); color: var(--ef-signal); }
+  }
+  &__dot {
+    width: 5px; height: 5px; background: currentColor; opacity: .35; flex-shrink: 0;
+  }
+  &__item.is-live &__dot { opacity: 1; animation: ef-blink 1.2s ease-in-out infinite; }
+}
+
+/* Viewport switch transition */
+.ef-view { position: relative; min-width: 0; }
+.ef-switch-enter-active,
+.ef-switch-leave-active {
+  transition: clip-path .3s cubic-bezier(.22,.8,.2,1), transform .3s cubic-bezier(.22,.8,.2,1), opacity .2s ease;
+}
+.ef-switch-enter-from { clip-path: inset(0 100% 0 0); transform: translateX(14px); opacity: 0; }
+.ef-switch-leave-to { clip-path: inset(0 0 0 100%); transform: translateX(-14px); opacity: 0; }
+
 /* ======== Prose / Stream content ======== */
 .ef-prose {
   background: #fff; border: 1px solid #e4e4de;
@@ -2710,28 +2889,72 @@ export default {
   .is-fail { color: #c03939; .ef-guide-item__dot { background: #e04040; } }
 }
 
-/* ======== Dock ======== */
-.ef-dock {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
-  height: 30px; background: var(--ef-ink);
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  font-family: "Space Grotesk", system-ui, sans-serif; font-size: 10px;
-  text-transform: uppercase; letter-spacing: .12em; color: rgba(255,255,255,.28);
-  &__div { width: 1px; height: 12px; background: rgba(255,255,255,.10); }
-  &__dot { width: 6px; height: 6px; background: rgba(255,255,255,.12); &.is-live { background: var(--ef-state); } }
+/* ======== System status (side rail, dark utility panel) ======== */
+.ef-status {
+  background: var(--ef-ink); border: 1px solid var(--ef-ink);
+  padding: 18px 18px 16px;
+  animation: ef-wipe .5s cubic-bezier(.22,.8,.2,1) both .2s;
+  &__head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
+  &__kicker {
+    margin: 0; font-size: 9px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .18em; color: rgba(255,255,255,.38); font-weight: 600;
+  }
+  &__title { margin: 0; font-size: 14px; font-weight: 800; color: #fff; letter-spacing: .02em; }
+  &__rows { display: flex; flex-direction: column; }
+  &__row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-top: 1px solid rgba(255,255,255,.09);
+  }
+  &__label {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em; color: rgba(255,255,255,.45);
+  }
+  &__value {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; font-weight: 700; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.78);
+    &.is-ok { color: var(--ef-state); .ef-status__dot { background: var(--ef-state); } }
+    &.is-warn { color: var(--ef-signal); .ef-status__dot { background: var(--ef-signal); } }
+    &.is-live { color: #fff; .ef-status__dot { background: var(--ef-signal); animation: ef-blink 1.2s ease-in-out infinite; } }
+  }
+  &__dot { width: 5px; height: 5px; background: rgba(255,255,255,.28); flex-shrink: 0; }
 }
 
 /* ======== Responsive ======== */
-@media (max-width: 1024px) { .ef-stage { padding: 0 16px 80px; } .ef-mode-row { flex-direction: column; } .ef-section { padding-left: 48px; &__num { font-size: 28px; left: 4px; } } }
+@media (max-width: 1100px) {
+  .ef-stage { grid-template-columns: minmax(0, 1fr); padding: 0 20px 48px; }
+  .ef-identity,
+  .ef-section--input,
+  .ef-section--clarify,
+  .ef-section--results { grid-column: 1; grid-row: auto; }
+  .ef-side { display: contents; }
+  .ef-section--mode,
+  .ef-status { grid-column: 1; grid-row: auto; }
+  .ef-section--mode { order: 1; }
+  .ef-section--input { order: 2; }
+  .ef-status { order: 3; }
+  .ef-section--clarify,
+  .ef-section--results { order: 4; }
+}
 @media (max-width: 768px) {
-  .ef-stage { padding: 0 12px 80px; }
-  .ef-identity { flex-wrap: wrap; &__right { width: 100%; flex-direction: row; justify-content: space-between; } &__title { font-size: 1.5rem; } &__wedge { height: 40px; width: 10px; } }
-  .ef-section { padding-left: 36px; &__num { font-size: 22px; left: 2px; top: 26px; } }
+  .ef-stage { padding: 0 12px 40px; }
+  .ef-identity { padding: 30px 0 24px; gap: 14px; &__title { font-size: 1.65rem; } &__wedge { height: 44px; width: 10px; margin-top: 6px; } }
+  .ef-section { padding: 20px 0; &__head { flex-wrap: wrap; } &__num { font-size: 22px; min-width: 32px; } &__actions { width: 100%; margin-left: 0; justify-content: flex-end; } }
   .ef-fields { flex-direction: column; }
   .ef-field { min-width: 0; &--wide { min-width: 0; } }
   .ef-pipeline { flex-wrap: wrap; gap: 4px; }
 }
-@media (prefers-reduced-motion: reduce) { .ef-blink { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ef-section,
+  .ef-status { animation: none; }
+  .ef-switch-enter-active,
+  .ef-switch-leave-active { transition: none; }
+  .ef-section__badge.is-live,
+  .ef-status__value.is-live .ef-status__dot,
+  .ef-wait__dot,
+  .ef-import__canvas.is-processing .ef-import__state,
+  .ef-import__canvas.is-pending .ef-import__state { animation: none !important; }
+}
 </style>
 
 <style>

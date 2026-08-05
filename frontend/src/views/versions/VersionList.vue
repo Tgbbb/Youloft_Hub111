@@ -1,194 +1,197 @@
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <h1 class="page-title">{{ $t('version.title') }}</h1>
-      <div class="header-actions">
-        <el-button
-          v-if="selectedVersions.length > 0"
-          type="danger"
-          @click="batchDeleteVersions"
-          :disabled="isDeleting">
-          <el-icon><Delete /></el-icon>
-          {{ $t('version.batchDelete') }} ({{ selectedVersions.length }})
-        </el-button>
-        <el-button type="primary" @click="createVersion">
-          <el-icon><Plus /></el-icon>
-          {{ $t('version.newVersion') }}
-        </el-button>
-      </div>
-    </div>
+  <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <!-- Grid -->
+    <div class="ag-grid" aria-hidden="true"></div>
 
-    <div class="card-container">
-      <div class="filter-bar">
-        <el-row :gutter="20">
-          <el-col :span="6">
-            <el-input
-              v-model="searchText"
-              :placeholder="$t('version.searchPlaceholder')"
-              clearable
-              @input="handleSearch"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-          </el-col>
-          <el-col :span="4">
-            <el-select v-model="projectFilter" :placeholder="$t('version.relatedProject')" clearable @change="handleFilter">
-              <el-option
-                v-for="project in projects"
-                :key="project.id"
-                :label="project.name"
-                :value="project.id"
-              />
-            </el-select>
-          </el-col>
-          <el-col :span="3">
-            <el-select v-model="baselineFilter" :placeholder="$t('version.versionType')" clearable @change="handleFilter">
-              <el-option :label="$t('version.baselineVersion')" :value="true" />
-              <el-option :label="$t('version.normalVersion')" :value="false" />
-            </el-select>
-          </el-col>
-        </el-row>
-      </div>
-      
-      <el-table
-        :data="versions"
-        v-loading="loading"
-        style="width: 100%"
-        @selection-change="handleSelectionChange">
-        <el-table-column type="selection" width="55" />
-        <el-table-column type="index" :label="$t('version.serialNumber')" width="80" :index="getSerialNumber" />
-        <el-table-column prop="name" :label="$t('version.versionName')" min-width="100">
-          <template #default="{ row }">
-            <div class="version-name">
-              <span>{{ row.name }}</span>
-              <el-tag v-if="row.is_baseline" type="warning" size="small" class="baseline-tag">{{ $t('version.baseline') }}</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="projects" :label="$t('version.relatedProject')" width="300">
-          <template #default="{ row }">
-            <div v-if="row.projects && row.projects.length > 0" class="project-tags">
-              <el-tag
-                v-for="project in row.projects.slice(0, 2)"
-                :key="project.id"
-                size="small"
-                type="primary"
-                class="project-tag"
-              >
-                {{ project.name }}
-              </el-tag>
-              <el-tooltip v-if="row.projects.length > 2" :content="getProjectsTooltip(row.projects)">
-                <el-tag size="small" type="info" class="project-tag">
-                  +{{ row.projects.length - 2 }}
-                </el-tag>
-              </el-tooltip>
-            </div>
-            <span v-else class="no-project">{{ $t('version.noProject') }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="description" :label="$t('version.description')" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="testcases_count" :label="$t('version.testCaseCount')" width="100">
-          <template #default="{ row }">
-            <el-tag type="info" size="small">{{ row.testcases_count }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_by.username" :label="$t('version.creator')" width="120" />
-        <el-table-column prop="created_at" :label="$t('version.createdAt')" width="180">
-          <template #default="{ row }">
-            {{ formatDate(row.created_at) }}
-          </template>
-        </el-table-column>
-        <el-table-column :label="$t('project.actions')" width="230" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" @click="openModuleDialog(row)">📦 {{ $t('version.modules') }}</el-button>
-            <el-button size="small" @click="editVersion(row)">{{ $t('common.edit') }}</el-button>
-            <el-button size="small" type="danger" @click="deleteVersion(row)">{{ $t('common.delete') }}</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      
-      <div class="pagination-container">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          @current-change="handlePageChange"
-        />
-      </div>
-    </div>
-    
-    <!-- 模块管理对话框 -->
-    <el-dialog
-      v-model="moduleDialogVisible"
-      :title="$t('version.moduleManagement') + ' - ' + currentVersion?.name"
-      width="550px"
-      :close-on-click-modal="false">
-      <div class="module-list">
-        <div v-if="modules.length === 0" class="empty-hint">{{ $t('version.noModules') }}</div>
-        <div v-for="mod in modules" :key="mod.id" class="module-item">
-          <span class="module-name">{{ mod.name }}</span>
-          <el-button size="small" type="danger" @click="deleteModule(mod)" :loading="mod._deleting">{{ $t('common.delete') }}</el-button>
+    <!-- ====== Zone A: Header ====== -->
+    <section class="ag-zone ag-zone--head">
+      <header class="ag-zone__bar">
+        <span class="ag-zone__kicker">VERSION / INDEX</span>
+        <span class="ag-zone__rule" aria-hidden="true"></span>
+        <span class="ag-zone__code">{{ total }} RECORDS</span>
+      </header>
+      <div class="ag-head">
+        <h1 class="ag-head__title">{{ $t('version.title') }}</h1>
+        <div class="ag-head__actions">
+          <button
+            v-if="selectedVersions.length > 0"
+            class="ag-btn ag-btn--danger"
+            @click="batchDeleteVersions"
+            :disabled="isDeleting">
+            {{ $t('version.batchDelete') }} ({{ selectedVersions.length }})
+          </button>
+          <button class="ag-btn ag-btn--ok" @click="createVersion">+ {{ $t('version.newVersion') }}</button>
         </div>
       </div>
-      <div class="add-module-form" style="margin-top: 16px; display: flex; gap: 8px;">
-        <el-input v-model="newModuleName" :placeholder="$t('version.moduleNamePlaceholder')" style="flex: 1;" @keyup.enter="addModule" />
-        <el-button type="primary" @click="addModule" :loading="addingModule">{{ $t('version.addModule') }}</el-button>
+    </section>
+
+    <!-- ====== Zone B: Content ====== -->
+    <section class="ag-zone ag-zone--content">
+      <div v-if="loading" class="ag-loading-bar" aria-hidden="true"></div>
+
+      <!-- Filter -->
+      <div class="ag-filter">
+        <div class="ag-filter__field ag-filter__field--search">
+          <span class="ag-filter__label">SEARCH / NAME</span>
+          <input v-model="searchText" @input="handleSearch" class="ag-input" :placeholder="$t('version.searchPlaceholder')" />
+        </div>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">PROJECT</span>
+          <select v-model="projectFilter" @change="handleFilter" class="ag-select">
+            <option value="">{{ $t('version.relatedProject') }}</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">TYPE</span>
+          <select v-model="baselineFilter" @change="handleFilter" class="ag-select">
+            <option value="">{{ $t('version.versionType') }}</option>
+            <option :value="true">{{ $t('version.baselineVersion') }}</option>
+            <option :value="false">{{ $t('version.normalVersion') }}</option>
+          </select>
+        </div>
       </div>
-      <template #footer>
-        <el-button @click="moduleDialogVisible = false">{{ $t('common.close') }}</el-button>
-      </template>
-    </el-dialog>
 
-    <!-- 版本表单对话框 -->
-    <el-dialog
-      v-model="versionDialogVisible"
-      :title="isEdit ? $t('version.editVersion') : $t('version.newVersion')"
-      width="600px"
-      :close-on-click-modal="false"
-    >
-      <el-form :model="versionForm" :rules="versionRules" ref="versionFormRef" label-width="120px">
-        <el-form-item :label="$t('version.versionName')" prop="name">
-          <el-input v-model="versionForm.name" :placeholder="$t('version.versionNamePlaceholder')" />
-        </el-form-item>
+      <!-- Table -->
+      <div v-if="versions.length > 0" class="ag-table-wrap">
+        <table class="ag-table ag-table--list">
+          <thead>
+            <tr>
+              <th class="ag-th ag-th--sel">
+                <input type="checkbox" :checked="pageAllSelected" @change="togglePageAll" :aria-label="$t('version.title')" />
+              </th>
+              <th class="ag-th ag-th--idx">#</th>
+              <th class="ag-th ag-th--name">{{ $t('version.versionName') }}</th>
+              <th class="ag-th ag-th--proj">{{ $t('version.relatedProject') }}</th>
+              <th class="ag-th ag-th--desc">{{ $t('version.description') }}</th>
+              <th class="ag-th ag-th--count">{{ $t('version.testCaseCount') }}</th>
+              <th class="ag-th ag-th--creator">{{ $t('version.creator') }}</th>
+              <th class="ag-th ag-th--time">{{ $t('version.createdAt') }}</th>
+              <th class="ag-th ag-th--act">{{ $t('project.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in versions" :key="row.id" class="ag-tr">
+              <td class="ag-td ag-td--sel">
+                <input type="checkbox" :checked="isRowSelected(row)" @change="toggleRow(row)" :aria-label="row.name" />
+              </td>
+              <td class="ag-td ag-td--idx">{{ getSerialNumber(versions.indexOf(row)) }}</td>
+              <td class="ag-td ag-td--name">
+                <span class="ag-version-name">
+                  <span>{{ row.name }}</span>
+                  <span v-if="row.is_baseline" class="ag-badge ag-badge--baseline">{{ $t('version.baseline') }}</span>
+                </span>
+              </td>
+              <td class="ag-td ag-td--proj">
+                <div v-if="row.projects && row.projects.length > 0" class="ag-project-tags">
+                  <span v-for="project in row.projects.slice(0, 2)" :key="project.id" class="ag-tag">{{ project.name }}</span>
+                  <span v-if="row.projects.length > 2" class="ag-tag ag-tag--more" :title="getProjectsTooltip(row.projects)">+{{ row.projects.length - 2 }}</span>
+                </div>
+                <span v-else class="ag-muted">{{ $t('version.noProject') }}</span>
+              </td>
+              <td class="ag-td ag-td--desc"><div class="ag-clamp">{{ row.description }}</div></td>
+              <td class="ag-td ag-td--count"><span class="ag-count">{{ row.testcases_count }}</span></td>
+              <td class="ag-td ag-td--creator">{{ row.created_by?.username }}</td>
+              <td class="ag-td ag-td--time">{{ formatDate(row.created_at) }}</td>
+              <td class="ag-td ag-td--act">
+                <div class="ag-actions">
+                  <button class="ag-btn ag-btn--sm" @click="openModuleDialog(row)">{{ $t('version.modules') }}</button>
+                  <button class="ag-btn ag-btn--sm" @click="editVersion(row)">{{ $t('common.edit') }}</button>
+                  <button class="ag-btn ag-btn--sm ag-btn--danger" @click="deleteVersion(row)">{{ $t('common.delete') }}</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-        <el-form-item :label="$t('version.relatedProject')" prop="project_ids">
-          <el-select
-            v-model="versionForm.project_ids"
-            :placeholder="$t('version.selectProjects')"
-            multiple
-            style="width: 100%"
-          >
-            <el-option
-              v-for="project in projects"
-              :key="project.id"
-              :label="project.name"
-              :value="project.id"
-            />
-          </el-select>
-        </el-form-item>
+      <!-- Empty -->
+      <div v-else-if="!loading" class="ag-empty">
+        <span class="ag-empty__code">00 / EMPTY</span>
+        <p class="ag-empty__title">暂无版本</p>
+        <p class="ag-empty__desc">创建版本后，即可关联项目与测试用例</p>
+      </div>
 
-        <el-form-item :label="$t('version.versionDescription')">
-          <el-input
-            v-model="versionForm.description"
-            type="textarea"
-            :rows="3"
-            :placeholder="$t('version.versionDescriptionPlaceholder')"
-          />
-        </el-form-item>
+      <!-- Pagination -->
+      <div class="ag-page">
+        <span class="ag-page__info">共 {{ total }} 条</span>
+        <div class="ag-page__ctrls">
+          <div class="ag-page__btns">
+            <button class="ag-btn ag-btn--sm" :disabled="currentPage <= 1" @click="currentPage--; handlePageChange()">← 上一页</button>
+            <span class="ag-page__current">{{ currentPage }} / {{ Math.max(1, Math.ceil(total / pageSize)) }}</span>
+            <button class="ag-btn ag-btn--sm" :disabled="currentPage >= Math.max(1, Math.ceil(total / pageSize))" @click="currentPage++; handlePageChange()">下一页 →</button>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        <el-form-item>
-          <el-checkbox v-model="versionForm.is_baseline">{{ $t('version.setAsBaseline') }}</el-checkbox>
-        </el-form-item>
-      </el-form>
+    <!-- ====== Modal: Module management ====== -->
+    <div v-if="moduleDialogVisible" class="ag-modal" @click.self="moduleDialogVisible = false">
+      <div class="ag-modal__box ag-modal__box--sm">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">VERSION / MODULES</span>
+          <button class="ag-modal__close" @click="moduleDialogVisible = false">×</button>
+        </header>
+        <div class="ag-modal__body">
+          <div v-if="modules.length === 0" class="ag-modal__empty">{{ $t('version.noModules') }}</div>
+          <div v-for="mod in modules" :key="mod.id" class="ag-module-item">
+            <span class="ag-module-name">{{ mod.name }}</span>
+            <button class="ag-btn ag-btn--sm ag-btn--danger" @click="deleteModule(mod)" :disabled="mod._deleting">{{ $t('common.delete') }}</button>
+          </div>
+          <div class="ag-module-add">
+            <input v-model="newModuleName" class="ag-input" :placeholder="$t('version.moduleNamePlaceholder')" @keyup.enter="addModule" />
+            <button class="ag-btn ag-btn--ok" @click="addModule" :disabled="addingModule">{{ $t('version.addModule') }}</button>
+          </div>
+        </div>
+        <footer class="ag-modal__foot">
+          <button class="ag-btn ag-btn--ghost" @click="moduleDialogVisible = false">{{ $t('common.close') }}</button>
+        </footer>
+      </div>
+    </div>
 
-      <template #footer>
-        <el-button @click="versionDialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="saveVersion" :loading="saving">{{ $t('common.save') }}</el-button>
-      </template>
-    </el-dialog>
+    <!-- ====== Modal: Create / Edit version ====== -->
+    <div v-if="versionDialogVisible" class="ag-modal">
+      <div class="ag-modal__box">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">{{ isEdit ? 'VERSION / EDIT' : 'VERSION / CREATE' }}</span>
+          <button class="ag-modal__close" @click="versionDialogVisible = false">×</button>
+        </header>
+        <div class="ag-modal__body">
+          <el-form ref="versionFormRef" :model="versionForm" :rules="versionRules" label-width="0">
+            <div class="ag-form__group">
+              <label>{{ $t('version.versionName') }} *</label>
+              <el-form-item prop="name" class="ag-form__item">
+                <el-input v-model="versionForm.name" :placeholder="$t('version.versionNamePlaceholder')" />
+              </el-form-item>
+            </div>
+            <div class="ag-form__group">
+              <label>{{ $t('version.relatedProject') }} *</label>
+              <el-form-item prop="project_ids" class="ag-form__item">
+                <el-select v-model="versionForm.project_ids" :placeholder="$t('version.selectProjects')" multiple popper-class="ag-dropdown" style="width: 100%">
+                  <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
+              </el-form-item>
+            </div>
+            <div class="ag-form__group">
+              <label>{{ $t('version.versionDescription') }}</label>
+              <el-form-item prop="description" class="ag-form__item">
+                <el-input v-model="versionForm.description" type="textarea" :rows="3" :placeholder="$t('version.versionDescriptionPlaceholder')" />
+              </el-form-item>
+            </div>
+            <div class="ag-form__group">
+              <label class="ag-check">
+                <input type="checkbox" v-model="versionForm.is_baseline" />
+                <span>{{ $t('version.setAsBaseline') }}</span>
+              </label>
+            </div>
+          </el-form>
+        </div>
+        <footer class="ag-modal__foot">
+          <button class="ag-btn ag-btn--ghost" @click="versionDialogVisible = false">{{ $t('common.cancel') }}</button>
+          <button class="ag-btn ag-btn--ok" @click="saveVersion" :disabled="saving">{{ saving ? '处理中…' : $t('common.save') }}</button>
+        </footer>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -196,7 +199,6 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Delete } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import dayjs from 'dayjs'
 
@@ -282,12 +284,12 @@ const createVersion = () => {
 const editVersion = (version) => {
   isEdit.value = true
   editingVersionId.value = version.id
-  
+
   versionForm.name = version.name
   versionForm.description = version.description
   versionForm.project_ids = version.projects.map(p => p.id)
   versionForm.is_baseline = version.is_baseline
-  
+
   versionDialogVisible.value = true
 }
 
@@ -339,9 +341,29 @@ const deleteVersion = async (version) => {
   }
 }
 
-// 处理选择变化
+// 处理选择变化（保留兼容）
 const handleSelectionChange = (selection) => {
   selectedVersions.value = selection
+}
+
+// ===== 行选择 =====
+const isRowSelected = (row) => selectedVersions.value.some(s => s.id === row.id)
+const toggleRow = (row) => {
+  const idx = selectedVersions.value.findIndex(s => s.id === row.id)
+  if (idx >= 0) selectedVersions.value.splice(idx, 1)
+  else selectedVersions.value.push(row)
+}
+const pageAllSelected = computed(() => versions.value.length > 0 && versions.value.every(r => isRowSelected(r)))
+const togglePageAll = () => {
+  const pageIds = new Set(versions.value.map(r => r.id))
+  if (pageAllSelected.value) {
+    selectedVersions.value = selectedVersions.value.filter(s => !pageIds.has(s.id))
+  } else {
+    const selectedIds = new Set(selectedVersions.value.map(s => s.id))
+    for (const r of versions.value) {
+      if (!selectedIds.has(r.id)) selectedVersions.value.push(r)
+    }
+  }
 }
 
 // 获取序号
@@ -476,64 +498,416 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.filter-bar {
-  margin-bottom: 20px;
+/* =============================================
+   Ark Moderate — Version Index
+   ============================================= */
+.ag-shell {
+  --ark-ink: #191919;
+  --ark-paper: #f2f2f0;
+  --ark-signal: #fffa00;
+  --ark-state: #00ffa2;
+  --ark-border: #e4e4de;
+
+  height: calc(100vh - 52px);
+  background: var(--ark-paper);
+  position: relative;
+  padding: 24px 24px 0;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
 
-.pagination-container {
-  margin-top: 20px;
-  display: flex;
-  justify-content: center;
+/* Grid */
+.ag-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(0,0,0,.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0,0,0,.03) 1px, transparent 1px);
+  background-size: 72px 72px;
 }
 
-.header-actions {
-  display: flex;
-  gap: 10px;
-}
+/* ============================================
+   Zones
+   ============================================ */
+.ag-zone {
+  position: relative; z-index: 1;
+  background: #fff;
+  border: 1px solid var(--ark-border);
+  animation: ag-enter .35s ease-out both;
 
-.version-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  
-  .baseline-tag {
-    font-size: 12px;
+  &--head { flex-shrink: 0; margin-bottom: 16px; }
+  &--content {
+    flex: 1; min-height: 0; margin-bottom: 24px;
+    display: flex; flex-direction: column; overflow: auto;
+    animation-delay: .05s;
+  }
+  &__bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px 0;
+  }
+  &__kicker {
+    font-size: 10px; font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .16em; color: #888; white-space: nowrap;
+  }
+  &__rule { flex: 1; height: 1px; background: var(--ark-border); }
+  &__code {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .1em; color: #aaa; white-space: nowrap;
   }
 }
 
-.project-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  
-  .project-tag {
-    margin: 0;
+/* ============================================
+   Header
+   ============================================ */
+.ag-head {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 20px;
+  padding: 16px 20px 20px;
+  &__title {
+    margin: 0; font-size: 24px; font-weight: 900; color: var(--ark-ink); line-height: 1.3;
+    &::before {
+      content: ""; display: block; width: 44px; height: 4px;
+      background: var(--ark-signal); margin-bottom: 10px;
+    }
+  }
+  &__actions { display: flex; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+}
+
+/* ============================================
+   Filter
+   ============================================ */
+.ag-filter {
+  display: flex; align-items: flex-end; gap: 16px; padding: 16px 20px;
+  border-bottom: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__field {
+    display: flex; flex-direction: column; gap: 6px;
+    &--search { flex: 1; min-width: 220px; max-width: 320px; }
+  }
+  &__label {
+    font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .12em; color: #999;
   }
 }
 
-.no-project {
-  color: #909399;
-  font-size: 12px;
-  font-style: italic;
+/* ============================================
+   Input / Select
+   ============================================ */
+.ag-input {
+  padding: 8px 12px; border: 1px solid #ccc; font-size: 13px; color: #333;
+  width: 100%; box-sizing: border-box; font-family: inherit;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
+}
+.ag-select {
+  height: 36px; padding: 0 28px 0 10px; box-sizing: border-box; line-height: 1;
+  border: 1px solid #ccc; background: #fff;
+  font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em; color: #444;
+  cursor: pointer; appearance: none; min-width: 160px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  &:focus { outline: none; border-color: #fffa00; }
+  &:focus-visible { outline: 2px solid #fffa00; outline-offset: 1px; }
 }
 
-.module-list {
-  max-height: 300px;
-  overflow-y: auto;
+/* ============================================
+   Table
+   ============================================ */
+.ag-table-wrap { flex: 1; overflow: visible; }
+.ag-table {
+  width: 100%; min-width: 1200px; border-collapse: collapse; font-size: 13px;
+  thead { border-bottom: 2px solid var(--ark-ink); }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: middle; }
 }
-.empty-hint {
-  text-align: center;
-  color: #909399;
-  padding: 20px;
+.ag-th {
+  font-size: 10px; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; color: #999; font-weight: 600;
+  &--sel { width: 44px; text-align: center; }
+  &--idx { width: 56px; text-align: center; }
+  &--name { min-width: 180px; }
+  &--proj { min-width: 200px; }
+  &--desc { min-width: 220px; }
+  &--count { width: 90px; text-align: center; }
+  &--creator { width: 110px; }
+  &--time { width: 150px; }
+  &--act { width: 220px; }
 }
-.module-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
+.ag-tr {
   border-bottom: 1px solid #eee;
+  transition: background .1s;
+  &:hover { background: #f8fafa; }
 }
-.module-name {
-  font-size: 14px;
+.ag-td {
+  color: #444; line-height: 1.6;
+  &--sel { text-align: center; }
+  &--idx { color: #999; text-align: center; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; }
+  &--name { font-weight: 600; }
+  &--proj { color: #666; }
+  &--desc { color: #666; }
+  &--count { text-align: center; }
+  &--creator { color: #666; }
+  &--time { color: #888; font-size: 12px; white-space: nowrap; }
+  &--act { white-space: nowrap; }
 }
+.ag-clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: pre-wrap; line-height: 1.6;
+  word-break: break-word; max-width: 320px;
+}
+.ag-actions { display: flex; gap: 4px; flex-wrap: nowrap; }
+.ag-muted { color: #ccc; }
+input[type="checkbox"] {
+  width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--ark-ink);
+}
+
+/* ============================================
+   Version cell / badges
+   ============================================ */
+.ag-version-name {
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.ag-badge {
+  display: inline-block; padding: 3px 10px; font-size: 10px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 600; border: 1px solid;
+  &--baseline { color: #7d6a16; background: #fdf7e4; border-color: #e0d29a; }
+}
+.ag-project-tags {
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.ag-tag {
+  display: inline-block; padding: 2px 10px; font-size: 11px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .04em;
+  color: #555; background: #fafaf8; border: 1px solid var(--ark-border);
+  &--more { cursor: help; color: #777; }
+}
+.ag-count {
+  display: inline-block; min-width: 34px; padding: 2px 8px; text-align: center;
+  font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; font-weight: 700;
+  color: var(--ark-ink); background: #f4f5f3; border: 1px solid var(--ark-border);
+}
+
+/* ============================================
+   Empty
+   ============================================ */
+.ag-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 72px 20px; color: #999; text-align: center; flex: 1;
+  &__code {
+    font-size: 20px; font-weight: 900; letter-spacing: .24em;
+    font-family: "Space Grotesk", system-ui, sans-serif; color: var(--ark-ink);
+    background: #fff; border: 1px solid var(--ark-border);
+    border-left: 3px solid var(--ark-signal);
+    padding: 12px 24px; margin-bottom: 16px;
+  }
+  &__title { margin: 0 0 8px; font-size: 15px; font-weight: 700; color: var(--ark-ink); }
+  &__desc { margin: 0; font-size: 13px; color: #999; line-height: 1.8; }
+}
+
+/* ============================================
+   Buttons
+   ============================================ */
+.ag-btn {
+  all: unset; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 8px 18px; box-sizing: border-box;
+  white-space: nowrap;
+  font-size: 12px; font-weight: 600;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ark-ink); background: #fff; border: 1px solid #c9cbc8;
+  transition: background .12s, border-color .12s, color .12s, transform .08s;
+  user-select: none; -webkit-tap-highlight-color: transparent;
+
+  &::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 3px; background: transparent;
+    transition: background .12s;
+  }
+  &:hover:not(:disabled) { background: #e9ebe9; border-color: #a9aca9; }
+  &:active:not(:disabled) { transform: translateY(1px); background: #dde0dd; }
+  &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 2px; }
+  &:disabled {
+    color: #b4b6b3; background: #f5f6f4; border-color: #e1e3e0; cursor: not-allowed;
+    &::before { background: transparent; }
+  }
+
+  &--sm { min-height: 30px; padding: 4px 10px; font-size: 11px; letter-spacing: .06em; }
+  &--ghost {
+    background: transparent; border-color: transparent; color: #6b6d6a;
+    &:hover:not(:disabled) { background: #eef0ed; border-color: #d4d6d3; color: #222; }
+    &:disabled { background: transparent; border-color: transparent; }
+  }
+  &--ok {
+    color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+    &::before { background: var(--ark-signal); }
+    &:hover:not(:disabled) { background: #2e2e2e; border-color: #2e2e2e; }
+    &:active:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+    &:disabled { color: #c9cbc8; background: #e8eae7; border-color: #d6d8d5; &::before { background: transparent; } }
+  }
+  &--danger {
+    color: #b03a35; background: #fff; border-color: #e3b9b6;
+    &::before { background: #e06060; }
+    &:hover:not(:disabled) { background: #fbefee; border-color: #d9a3a0; }
+    &:disabled { color: #c9aca9; background: #f8f4f3; border-color: #eadcd9; &::before { background: transparent; } }
+  }
+}
+
+/* ============================================
+   Pagination
+   ============================================ */
+.ag-page {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  padding: 14px 20px; border-top: 1px solid var(--ark-border); flex-wrap: wrap;
+  &__info { font-size: 12px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif; }
+  &__ctrls { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  &__btns { display: flex; align-items: center; gap: 8px; }
+  &__current {
+    font-size: 12px; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #555; padding: 0 4px; white-space: nowrap;
+  }
+}
+
+/* ============================================
+   Loading bar
+   ============================================ */
+.ag-loading-bar {
+  position: absolute; top: -1px; left: 0; right: 0; height: 3px; z-index: 5;
+  background: linear-gradient(90deg, transparent 0%, var(--ark-signal) 50%, transparent 100%);
+  background-size: 200px 3px; background-repeat: no-repeat;
+  animation: ag-scan 1.1s linear infinite;
+}
+@keyframes ag-scan {
+  from { background-position: -200px 0; }
+  to { background-position: calc(100% + 200px) 0; }
+}
+
+/* ============================================
+   Modal
+   ============================================ */
+.ag-modal {
+  position: fixed; inset: 0; background: rgba(4,6,8,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+  &__box {
+    background: #fff; width: 90%; max-width: 640px; max-height: 84vh;
+    display: flex; flex-direction: column; border: 1px solid #888;
+    &--sm { max-width: 520px; }
+  }
+  &__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: var(--ark-ink); color: #fff; flex-shrink: 0;
+  }
+  &__kicker {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.7);
+  }
+  &__close {
+    all: unset; cursor: pointer;
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 22px; color: rgba(255,255,255,.55); line-height: 1; border: 1px solid transparent;
+    transition: color .12s, border-color .12s;
+    &:hover { color: #fff; border-color: rgba(255,255,255,.35); }
+    &:focus-visible { outline: 2px solid var(--ark-signal); outline-offset: 1px; }
+  }
+  &__body { padding: 20px 24px 24px; overflow-y: auto; flex: 1; }
+  &__foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 24px; border-top: 1px solid var(--ark-border);
+    background: #fafaf8; flex-shrink: 0;
+  }
+  &__empty { text-align: center; color: #999; padding: 24px 0; font-size: 13px; }
+}
+
+/* Module management */
+.ag-module-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid #eee;
+  &:last-of-type { border-bottom: none; }
+}
+.ag-module-name { font-size: 14px; color: #333; }
+.ag-module-add {
+  display: flex; gap: 8px; margin-top: 16px;
+  .ag-input { flex: 1; min-height: 36px; }
+}
+
+/* ============================================
+   Form (Element Plus deep overrides)
+   ============================================ */
+.ag-form {
+  &__group {
+    display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px;
+    label {
+      font-weight: 600; font-size: 11px; color: #666;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+  }
+  &__item { margin-bottom: 0; }
+  :deep(.el-input__wrapper), :deep(.el-textarea__inner) {
+    border-radius: 0; box-shadow: 0 0 0 1px #c9cbc8 inset; background: #fff;
+    font-family: inherit;
+  }
+  :deep(.el-input__wrapper.is-focus), :deep(.el-textarea__inner:focus) {
+    box-shadow: 0 0 0 1px var(--ark-signal) inset;
+  }
+  :deep(.el-input__inner) { font-family: inherit; }
+  :deep(.el-textarea__inner) { font-size: 13px; line-height: 1.7; }
+}
+
+/* Native baseline checkbox */
+.ag-check {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 13px; color: #444; text-transform: none; letter-spacing: 0;
+  input { accent-color: var(--ark-ink); width: 15px; height: 15px; margin: 0; }
+}
+
+/* ============================================
+   Motion
+   ============================================ */
+@keyframes ag-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-zone, .ag-btn, .ag-select, .ag-input, .ag-tr, .ag-modal__close, .ag-loading-bar {
+    transition: none !important; animation: none !important;
+  }
+  .ag-btn:active:not(:disabled) { transform: none; }
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 1024px) {
+  .ag-shell { padding: 16px 16px 0; }
+  .ag-table { min-width: 1080px; }
+}
+@media (max-width: 768px) {
+  .ag-shell { padding: 12px 12px 0; }
+  .ag-head { flex-direction: column; align-items: flex-start; }
+  .ag-head__actions { width: 100%; justify-content: flex-start; }
+  .ag-head__actions .ag-btn { flex: 1; }
+  .ag-filter { flex-direction: column; align-items: stretch; }
+  .ag-filter__field--search { max-width: none; }
+  .ag-select { min-width: 0; }
+  .ag-page { flex-direction: column; align-items: flex-start; }
+  .ag-page__ctrls { flex-direction: column; align-items: flex-start; width: 100%; }
+  .ag-modal__box { width: 95%; }
+  .ag-module-add { flex-wrap: wrap; }
+}
+</style>
+
+<!-- Unscoped styles for teleported Element Plus dropdown poppers -->
+<style lang="scss">
+.ag-dropdown.el-popper { border-radius: 0; border-color: #191919; }
+.ag-dropdown .el-select-dropdown {
+  border-radius: 0; border-color: #191919; box-shadow: none;
+}
+.ag-dropdown .el-select-dropdown__item {
+  border-radius: 0; font-size: 13px; color: #333; height: 34px; line-height: 34px;
+}
+.ag-dropdown .el-select-dropdown__item:hover { background: #f4f5f3; color: #191919; }
+.ag-dropdown .el-select-dropdown__item.is-selected { color: #191919; font-weight: 700; }
 </style>

@@ -117,9 +117,61 @@ export function executeTestSuite(id, data) {
 // 执行API请求
 export function executeApiRequest(id, data) {
   return request({
-    url: `/api-testing/api-requests/${id}/execute/`,
+    url: `/api-testing/requests/${id}/execute/`,
     method: 'post',
     data
+  })
+}
+
+// 获取套件用例列表
+export function getSuiteRequests(params) {
+  return request({
+    url: '/api-testing/test-suite-requests/',
+    method: 'get',
+    params
+  })
+}
+
+// 新建套件用例
+export function createSuiteRequest(data) {
+  return request({
+    url: '/api-testing/test-suite-requests/',
+    method: 'post',
+    data
+  })
+}
+
+// 更新套件用例
+export function updateSuiteRequest(id, data) {
+  return request({
+    url: `/api-testing/test-suite-requests/${id}/`,
+    method: 'put',
+    data
+  })
+}
+
+// 删除套件用例
+export function deleteSuiteRequest(id) {
+  return request({
+    url: `/api-testing/test-suite-requests/${id}/`,
+    method: 'delete'
+  })
+}
+
+// 复制套件用例
+export function duplicateSuiteRequest(id) {
+  return request({
+    url: `/api-testing/test-suite-requests/${id}/duplicate/`,
+    method: 'post'
+  })
+}
+
+// 调整套件用例顺序
+export function reorderSuiteRequests(items) {
+  return request({
+    url: '/api-testing/test-suite-requests/reorder/',
+    method: 'post',
+    data: { items }
   })
 }
 

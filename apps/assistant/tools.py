@@ -40,7 +40,7 @@ class GetProjectOverview(BaseTool):
             testcase_count = TestCase.objects.filter(project_id=project_id).count()
 
             # 接口测试（关联的 ApiProject）
-            api_projects = list(ApiProject.objects.filter(name__icontains=project.name)[:3])
+            api_projects = list(ApiProject.objects.filter(main_project=project)[:3])
             api_count = 0
             collection_count = 0
             recent_executions = []
@@ -62,9 +62,7 @@ class GetProjectOverview(BaseTool):
             ui_suite_count = 0
             try:
                 from apps.ui_automation.models import UiProject, TestScript as UIScript, TestSuite as UITestSuite
-                ui_projects = UiProject.objects.filter(
-                    name__icontains=project.name
-                ) | UiProject.objects.filter(owner=project.owner)
+                ui_projects = UiProject.objects.filter(main_project=project)
                 for up in ui_projects[:5]:
                     ui_count += UIScript.objects.filter(project=up).count()
                     ui_suite_count += UITestSuite.objects.filter(project=up).count()
@@ -76,9 +74,7 @@ class GetProjectOverview(BaseTool):
             midscene_device_count = 0
             try:
                 from apps.ui_automation.models import MidsceneProject, MidsceneCase, MidsceneDevice
-                mp = MidsceneProject.objects.filter(
-                    name__icontains=project.name
-                ) | MidsceneProject.objects.filter(owner=project.owner)
+                mp = MidsceneProject.objects.filter(main_project=project)
                 for m in mp[:5]:
                     midscene_count += MidsceneCase.objects.filter(project=m).count()
                 midscene_device_count = MidsceneDevice.objects.filter(status='online').count()
@@ -136,9 +132,7 @@ class SearchApis(BaseTool):
         try:
             # 通过主 Project 找到关联的 ApiProject
             main_project = Project.objects.get(id=project_id)
-            api_projects = ApiProject.objects.filter(
-                name__icontains=main_project.name
-            ) | ApiProject.objects.filter(owner=main_project.owner)
+            api_projects = ApiProject.objects.filter(main_project=main_project)
             api_project_ids = list(api_projects.values_list('id', flat=True)[:5])
 
             # 有集合的 + 无集合的（orphaned）
@@ -282,15 +276,14 @@ class CreateApiTest(BaseTool):
             from apps.assistant.agent import TestHubAgent
             user = TestHubAgent.get_current_user()
             main_project = Project.objects.get(id=params['project_id'])
-            api_project = ApiProject.objects.filter(
-                name__icontains=main_project.name, owner=main_project.owner
-            ).first()
+            api_project = ApiProject.objects.filter(main_project=main_project).first()
             if not api_project:
                 api_project = ApiProject.objects.create(
                     name=main_project.name,
                     project_type='HTTP',
                     status='IN_PROGRESS',
-                    owner=user or main_project.owner
+                    owner=user or main_project.owner,
+                    main_project=main_project,
                 )
 
             collection = None
@@ -390,15 +383,14 @@ class CreateCollection(BaseTool):
             from apps.assistant.agent import TestHubAgent
             user = TestHubAgent.get_current_user()
             main_project = Project.objects.get(id=params['project_id'])
-            api_project = ApiProject.objects.filter(
-                name__icontains=main_project.name, owner=main_project.owner
-            ).first()
+            api_project = ApiProject.objects.filter(main_project=main_project).first()
             if not api_project:
                 api_project = ApiProject.objects.create(
                     name=main_project.name,
                     project_type='HTTP',
                     status='IN_PROGRESS',
-                    owner=user or main_project.owner
+                    owner=user or main_project.owner,
+                    main_project=main_project,
                 )
 
             parent = None

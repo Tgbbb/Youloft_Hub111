@@ -34,7 +34,7 @@ from django.db import models
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService, ModaoImport
+    GenerationConfig, AIModelService, ModaoImport, check_image_pixel_limits
 )
 from .serializers import (
     RequirementDocumentSerializer, RequirementAnalysisSerializer,
@@ -76,6 +76,21 @@ def _resolve_media_file(url):
     return full
 
 
+def _media_type_for_path(filepath):
+    """根据图片文件扩展名推断 media_type（墨刀截图实际保存为 JPEG，不能硬编码 PNG）"""
+    if not filepath:
+        return 'image/jpeg'
+    ext = os.path.splitext(str(filepath))[1].lower()
+    return {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+    }.get(ext, 'image/jpeg')
+
+
 def _modao_dir_owned_by(import_dir, user):
     """判断截图目录是否属于当前用户；已被其他用户占用时返回 False"""
     if not user or not user.is_authenticated:
@@ -105,9 +120,153 @@ def _looks_like_image(head, ext):
     return False
 
 
+MULTIMODAL_TMP_DIR_NAME = 'multimodal_tmp'
+
+
+def _multimodal_tmp_root():
+    """多模态临时图片根目录（MEDIA_ROOT/multimodal_tmp）"""
+    return os.path.realpath(os.path.join(settings.MEDIA_ROOT, MULTIMODAL_TMP_DIR_NAME))
+
+
+def _stage_multimodal_page_images(page_images, folder_id):
+    """把内存中的多模态图片落盘到 MEDIA_ROOT/multimodal_tmp/<folder_id>/，
+    返回引用列表（只存 screenshot_url，不把 base64 落库）。
+
+    page_images 元素支持两种格式：
+    - {'page': n, 'raw': bytes, 'media_type': ...}（上传图片原始字节）
+    - {'page': n, 'data': 'base64...', 'media_type': ...}（PDF 渲染页等内存 base64）
+    """
+    ext_map = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp',
+        'image/bmp': 'bmp',
+        'image/gif': 'gif',
+    }
+    tmp_root = _multimodal_tmp_root()
+    folder = os.path.join(tmp_root, folder_id)
+    os.makedirs(folder, exist_ok=True)
+    refs = []
+    import base64 as _b64
+    for img in page_images:
+        page_no = img.get('page', len(refs) + 1)
+        media_type = img.get('media_type', 'image/jpeg')
+        if img.get('raw') is not None:
+            raw = img['raw']
+        elif img.get('data'):
+            raw = _b64.b64decode(img['data'])
+        else:
+            continue
+        filename = 'page_{:03d}.{}'.format(page_no, ext_map.get(media_type, 'jpg'))
+        with open(os.path.join(folder, filename), 'wb') as f:
+            f.write(raw)
+        rel = '{}/{}/{}'.format(MULTIMODAL_TMP_DIR_NAME, folder_id, filename)
+        refs.append({
+            'page': page_no,
+            'screenshot_url': '{}{}'.format(settings.MEDIA_URL, rel),
+            'media_type': media_type,
+        })
+    return refs
+
+
+def _cleanup_multimodal_tmp(page_images):
+    """按引用列表清理落盘的临时图片（只处理 multimodal_tmp/ 下文件，不触碰墨刀截图）"""
+    if not page_images:
+        return
+    tmp_root = _multimodal_tmp_root()
+    dirs = set()
+    for img in page_images:
+        if not isinstance(img, dict):
+            continue
+        url = img.get('screenshot_url')
+        if not url or not isinstance(url, str):
+            continue
+        if url.startswith(settings.MEDIA_URL):
+            rel = url[len(settings.MEDIA_URL):].lstrip('/')
+        else:
+            rel = url.lstrip('/')
+        if not rel or '\\' in rel or not rel.startswith(MULTIMODAL_TMP_DIR_NAME + '/'):
+            continue
+        full = os.path.realpath(os.path.join(settings.MEDIA_ROOT, rel))
+        try:
+            if os.path.commonpath([tmp_root, full]) != tmp_root:
+                continue
+        except ValueError:
+            continue
+        if os.path.isfile(full):
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+        dirs.add(os.path.dirname(full))
+    for d in dirs:
+        try:
+            if os.path.commonpath([tmp_root, os.path.realpath(d)]) == tmp_root:
+                os.rmdir(d)
+        except OSError:
+            pass
+
+
+def _cleanup_multimodal_tmp_folder(folder_id):
+    """按 folder_id 清理整个临时目录（仅限 multimodal_tmp/<folder_id>，防路径穿越）"""
+    import re as _re
+    if not folder_id or not _re.fullmatch(r'[0-9a-f]{32}', str(folder_id)):
+        return
+    tmp_root = _multimodal_tmp_root()
+    folder = os.path.realpath(os.path.join(tmp_root, str(folder_id)))
+    try:
+        if os.path.commonpath([tmp_root, folder]) != tmp_root or folder == tmp_root:
+            return
+    except ValueError:
+        return
+    if not os.path.isdir(folder):
+        return
+    for name in os.listdir(folder):
+        fp = os.path.join(folder, name)
+        if os.path.isfile(fp):
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+    try:
+        os.rmdir(folder)
+    except OSError:
+        pass
+
+
+def _run_with_timeout(fn, timeout, label='操作'):
+    """在守护线程中执行 fn 并等待结果；超时抛 TimeoutError。
+
+    Python 无法中断已发出的 HTTP 调用，因此超时后后台线程仍可能继续跑完；
+    但使用守护线程不会阻塞进程退出，也不再持有线程池资源。
+    """
+    import threading
+
+    box = {}
+
+    def _target():
+        try:
+            box['result'] = fn()
+        except Exception as e:
+            box['error'] = e
+
+    thread = threading.Thread(target=_target, name=label, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if 'error' in box:
+        raise box['error']
+    if 'result' not in box:
+        raise TimeoutError(
+            '{}超时（超过{}秒），本次请求已中止；后台调用仍可能继续执行，请稍后检查任务状态。'
+            '如反复超时，建议减少图片数量后重试'.format(label, timeout)
+        )
+    return box['result']
+
+
 def _clear_generation_task_images(task, update_fields=None):
-    """多模态任务完成/失败/取消时清空图片 base64，释放数据库空间"""
+    """多模态任务完成/失败/取消时清空图片引用并清理临时落盘文件，释放数据库与磁盘空间"""
     if getattr(task, 'multimodal_mode', False) and task.page_images_base64:
+        _cleanup_multimodal_tmp(task.page_images_base64)
         task.page_images_base64 = None
         if update_fields is not None and 'page_images_base64' not in update_fields:
             update_fields.append('page_images_base64')
@@ -1689,9 +1848,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # 异步执行提取
-                import threading
-                from concurrent.futures import ThreadPoolExecutor
+                # 异步执行提取（守护线程 + 超时；超时后线程继续跑完但不再阻塞进程）
 
                 if use_multimodal and tmp_path.lower().endswith('.pdf'):
                     # 多模态提取：PDF → 提取图片 → VL模型分析
@@ -1713,9 +1870,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         finally:
                             loop.close()
 
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(run_extract_multimodal)
-                    markdown = future.result(timeout=300)
+                    markdown = _run_with_timeout(run_extract_multimodal, 300, '多模态文档提取')
                     mode = 'multimodal'
                 else:
                     # 纯文本提取
@@ -1734,9 +1889,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         finally:
                             loop.close()
 
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(run_extract)
-                    markdown = future.result(timeout=300)
+                    markdown = _run_with_timeout(run_extract, 300, '文档提取')
                     mode = 'text'
 
                 return Response({
@@ -1896,6 +2049,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 import base64 as b64
 
                 page_images = []
+                missing_images = []
                 for img in page_images_from_json_raw:
                     if not isinstance(img, dict):
                         continue
@@ -1915,15 +2069,16 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                             page_images.append({
                                 'page': len(page_images) + 1,
                                 'data': img_data,
-                                'media_type': 'image/png',
+                                'media_type': _media_type_for_path(filepath),
                             })
                         else:
-                            logger.warning(f'[clarify] 截图文件不存在或路径不合法: {str(img.get("screenshot_url"))[:120]}')
+                            missing_images.append(str(img.get('screenshot_url'))[:120])
                 text_parts = [request.data.get('requirement_text', '')]
                 if files:
                     # 覆盖为文件内容
                     page_images = []
                     text_parts = []
+                    missing_images = []
 
                     for file in files:
                         fname = file.name.lower()
@@ -1957,11 +2112,24 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                 try: os.unlink(tmp_path)
                                 except Exception: pass
 
+                if missing_images:
+                    detail = '；'.join(missing_images[:3]) + ('…' if len(missing_images) > 3 else '')
+                    return Response(
+                        {'error': f'{len(missing_images)} 张截图文件缺失，已中止澄清：{detail}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
                 if not page_images:
                     return Response(
                         {'error': '未能提取图片内容'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
+
+                # 单张图像素前置守卫：超限直接拒绝，避免等模型调用超时/失败
+                try:
+                    check_image_pixel_limits(page_images)
+                except ValueError as e:
+                    return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 requirement_text = request.data.get('description', '').strip() or '\n'.join(text_parts)
 
@@ -1983,9 +2151,6 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                import threading
-                from concurrent.futures import ThreadPoolExecutor
-
                 def run_clarify_multimodal():
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -2006,9 +2171,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     finally:
                         loop.close()
 
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(run_clarify_multimodal)
-                questions = future.result(timeout=300)
+                questions = _run_with_timeout(run_clarify_multimodal, 300, '多模态需求澄清')
 
                 # 保存澄清结果到 task（含图片引用，便于断线恢复）
                 task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
@@ -2017,7 +2180,11 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 task_images = []
                 for img in page_images_from_json_raw:
                     if img.get('screenshot_url'):
-                        task_images.append({'screenshot_url': img['screenshot_url'], 'media_type': img.get('media_type', 'image/png')})
+                        fp = _resolve_media_file(img['screenshot_url'])
+                        task_images.append({
+                            'screenshot_url': img['screenshot_url'],
+                            'media_type': _media_type_for_path(fp) if fp else 'image/jpeg',
+                        })
                     else:
                         task_images.append(img)
                 task.page_images_base64 = task_images
@@ -2071,9 +2238,6 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # 异步执行澄清
-                import threading
-
                 def run_clarify():
                     try:
                         loop = asyncio.new_event_loop()
@@ -2097,10 +2261,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     finally:
                         loop.close()
 
-                from concurrent.futures import ThreadPoolExecutor
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(run_clarify)
-                questions = future.result(timeout=120)  # 2分钟超时
+                questions = _run_with_timeout(run_clarify, 120, '需求澄清')
 
                 # 保存澄清结果到 task
                 task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
@@ -2400,8 +2561,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
     def generate_multimodal(self, request):
         """多模态测试用例生成（文本+图片→视觉模型）。支持PDF文件和直接上传图片。"""
         import tempfile
-        import base64 as b64
+        import uuid as uuid_mod
 
+        task_created = False
+        staging_folder_id = None
         try:
             files = request.FILES.getlist('files') or ([request.FILES.get('file')] if request.FILES.get('file') else [])
             if not files:
@@ -2424,13 +2587,13 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     continue
 
                 if is_image:
-                    image_data = b64.b64encode(file.read()).decode('utf-8')
+                    raw_image = file.read()
                     ext = fname.rsplit('.', 1)[-1]
                     media_type = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
                     if ext == 'webp': media_type = 'image/webp'
                     if ext == 'bmp': media_type = 'image/bmp'
                     if ext == 'gif': media_type = 'image/gif'
-                    page_images.append({'page': len(page_images)+1, 'data': image_data, 'media_type': media_type})
+                    page_images.append({'page': len(page_images)+1, 'raw': raw_image, 'media_type': media_type})
                     text_parts.append(f'图片{len(page_images)}: {file.name}')
                 else:
                     # PDF
@@ -2466,6 +2629,17 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     {'error': '未能提取图片内容'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            # 单张图像素前置守卫：超限直接拒绝，避免落盘后又等模型拒绝
+            try:
+                check_image_pixel_limits(page_images)
+            except ValueError as e:
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 图片落盘到 MEDIA_ROOT/multimodal_tmp/<folder_id>/，任务只存引用不存 base64
+            # （实际编码在调用模型前临时完成，见 models._resolve_screenshot_url_to_data）
+            staging_folder_id = uuid_mod.uuid4().hex
+            page_images = _stage_multimodal_page_images(page_images, staging_folder_id)
 
             text = user_desc or '\n'.join(text_parts) if text_parts else user_desc or '多模态生成'
 
@@ -2589,6 +2763,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             if not task_serializer.is_valid():
                 return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             task = task_serializer.save()
+            task_created = True
 
             # 如果有旧任务，把澄清数据迁移过来，标记旧任务为已废弃
             if existing_task_obj:
@@ -2753,9 +2928,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         task.final_test_cases = task.generated_test_cases
 
                                     update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
-                                    if task.multimodal_mode and task.page_images_base64:
-                                        task.page_images_base64 = None
-                                        update_fields.append('page_images_base64')
+                                    _clear_generation_task_images(task, update_fields)
                                     task.save(update_fields=update_fields)
 
                                 else:
@@ -2813,9 +2986,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         task.final_test_cases = task.generated_test_cases
 
                                     update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
-                                    if task.multimodal_mode and task.page_images_base64:
-                                        task.page_images_base64 = None
-                                        update_fields.append('page_images_base64')
+                                    _clear_generation_task_images(task, update_fields)
                                     task.save(update_fields=update_fields)
 
                             finally:
@@ -2845,6 +3016,18 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             logger.error(f"创建多模态生成任务时出错: {e}")
+            try:
+                if task_created:
+                    # 任务已创建但启动失败：标记失败并清理临时图片
+                    task.pipeline_stage = 'failed'
+                    task.error_message = str(e)[:500]
+                    update_fields = ['pipeline_stage', 'error_message']
+                    _clear_generation_task_images(task, update_fields)
+                    task.save(update_fields=update_fields)
+                elif staging_folder_id:
+                    _cleanup_multimodal_tmp_folder(staging_folder_id)
+            except Exception:
+                pass
             return Response(
                 {'error': f'创建任务失败: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -2951,26 +3134,37 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 except (ValueError, TypeError):
                     pass
 
-            # 如果请求中包含截图（墨刀导入等场景），转 base64 并设多模态模式
+            # 如果请求中包含截图（墨刀导入等场景），只存引用（screenshot_url），
+            # 不把 base64 落库；实际编码在生成调用模型前临时完成（见 models._resolve_screenshot_url_to_data）
             page_images_raw = request.data.get('page_images')
             if page_images_raw:
-                import base64 as b64
-                page_images_base64 = []
+                page_images_refs = []
+                missing_images = []
                 for img in page_images_raw:
                     if not isinstance(img, dict):
                         continue
                     if img.get('data'):
-                        page_images_base64.append({'page': len(page_images_base64)+1, 'data': img['data'], 'media_type': img.get('media_type', 'image/png')})
+                        page_images_refs.append({'page': len(page_images_refs)+1, 'data': img['data'], 'media_type': img.get('media_type', 'image/png')})
                     elif img.get('screenshot_url'):
                         filepath = _resolve_media_file(img['screenshot_url'])
                         if filepath and os.path.exists(filepath):
-                            with open(filepath, 'rb') as f:
-                                img_data = b64.b64encode(f.read()).decode('utf-8')
-                            page_images_base64.append({'page': len(page_images_base64)+1, 'data': img_data, 'media_type': 'image/png'})
-                if page_images_base64:
+                            page_images_refs.append({
+                                'page': len(page_images_refs)+1,
+                                'screenshot_url': img['screenshot_url'],
+                                'media_type': _media_type_for_path(filepath),
+                            })
+                        else:
+                            missing_images.append(str(img.get('screenshot_url'))[:120])
+                if missing_images:
+                    detail = '；'.join(missing_images[:3]) + ('…' if len(missing_images) > 3 else '')
+                    return Response(
+                        {'error': f'{len(missing_images)} 张截图文件缺失，已中止生成：{detail}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                if page_images_refs:
                     task_data['multimodal_mode'] = True
-                    task_data['page_images_base64'] = page_images_base64
-                    logger.info(f"[generate] 多模态模式，{len(page_images_base64)} 张截图")
+                    task_data['page_images_base64'] = page_images_refs
+                    logger.info(f"[generate] 多模态模式，{len(page_images_refs)} 张截图（引用，不落库）")
 
             # 如果请求中包含需求澄清回答，添加到任务数据中
             clarification_answers = request.data.get('clarification_answers')
@@ -3022,24 +3216,15 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if existing_task_obj:
                     task.clarification_questions = existing_task_obj.clarification_questions
                     task.clarification_answers = existing_task_obj.clarification_answers
-                    # 图片：优先用新请求带的（已处理为base64），旧task的screenshot_url转格式兜底
+                    # 图片：优先用新请求带的；旧 task 的引用直接复用，不再转 base64 落库
                     if not task.multimodal_mode:
                         task.multimodal_mode = existing_task_obj.multimodal_mode
                     if not task.page_images_base64 and existing_task_obj.page_images_base64:
-                        imgs = []
-                        for img in existing_task_obj.page_images_base64:
-                            if img.get('data'):
-                                imgs.append(img)
-                            elif img.get('screenshot_url'):
-                                fp = _resolve_media_file(img['screenshot_url'])
-                                if fp and os.path.exists(fp):
-                                    import base64 as b64
-                                    with open(fp, 'rb') as f:
-                                        img_data = b64.b64encode(f.read()).decode('utf-8')
-                                    imgs.append({'page': len(imgs)+1, 'data': img_data, 'media_type': img.get('media_type', 'image/png')})
+                        imgs = [img for img in existing_task_obj.page_images_base64
+                                if img.get('data') or img.get('screenshot_url')]
                         if imgs:
                             task.page_images_base64 = imgs
-                            logger.info(f'[generate] 已将{len(imgs)}张screenshot_url转为data格式')
+                            logger.info(f'[generate] 已复用旧任务 {len(imgs)} 张图片引用')
                     task.pipeline_stage = 'answers_ready'
                     update_fields = ['clarification_questions', 'clarification_answers', 'pipeline_stage']
                     if task.multimodal_mode:
@@ -3436,11 +3621,9 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         logger.warning(f"final_test_cases为空，回退使用generated_test_cases ({len(task.generated_test_cases)}字符)")
                                         task.final_test_cases = task.generated_test_cases
 
-                                    # 多模态完成后清除图片数据，释放数据库空间
+                                    # 多模态完成后清除图片引用并清理临时文件，释放数据库与磁盘空间
                                     update_fields = ['status', 'progress', 'completed_at', 'final_test_cases']
-                                    if task.multimodal_mode and task.page_images_base64:
-                                        task.page_images_base64 = None
-                                        update_fields.append('page_images_base64')
+                                    _clear_generation_task_images(task, update_fields)
 
                                     task.save(update_fields=update_fields)
                                     logger.info(f"任务 {task.task_id} 已完成")

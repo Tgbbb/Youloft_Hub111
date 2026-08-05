@@ -12,7 +12,7 @@
       <el-table-column v-if="scope === 'LOCAL'" prop="project_name" :label="$t('apiTesting.component.environmentTable.relatedProject')" width="150" />
       <el-table-column :label="$t('apiTesting.environment.baseURL')" width="130" show-overflow-tooltip>
         <template #default="scope2">
-          <span v-if="scope2.row.base_url" style="font-size:12px;color:#409eff">{{ scope2.row.base_url }}</span>
+          <span v-if="scope2.row.base_url" class="base-url">{{ scope2.row.base_url }}</span>
           <span v-else style="color:#c0c4cc">-</span>
         </template>
       </el-table-column>
@@ -65,6 +65,8 @@
     <!-- 查看变量对话框 -->
     <el-dialog
       v-model="showViewDialog"
+      class="automation-dialog"
+      modal-class="automation-modal"
       :title="$t('apiTesting.component.environmentTable.environmentVariables')"
       width="600px"
     >
@@ -189,6 +191,19 @@ const viewVariables = (environment) => {
 <style scoped>
 .environment-table {
   height: 100%;
+  color: #191919;
+  --ef-ink: #191919;
+  --ef-paper: #f2f2f0;
+  --ef-signal: #fffa00;
+  --ef-muted: #8a8a86;
+  --ef-line: #dcdcd7;
+  --ef-line-strong: #c9c9c3;
+  --ef-line-soft: #f0f0ec;
+  --ef-rail: #fafaf8;
+  --ef-surface: #ffffff;
+  --ef-font-tech: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --ef-font-display: "Arial Narrow", "Roboto Condensed", "DIN Condensed", sans-serif;
+  --ef-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 .variables-view {
@@ -200,10 +215,89 @@ const viewVariables = (environment) => {
   margin-bottom: 20px;
 }
 
+.base-url {
+  font-size: 12px;
+  color: var(--ef-ink);
+  font-family: var(--ef-font-mono);
+}
+
 .variables-table h4 {
   margin: 20px 0 10px 0;
-  color: #303133;
+  color: var(--ef-ink);
   font-size: 14px;
+  font-weight: 700;
+  font-family: var(--ef-font-display);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+/* ---------- Element Plus unification ---------- */
+.environment-table :deep(.el-button) { border-radius: 2px; }
+.environment-table :deep(.el-button--primary.is-link) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ef-ink);
   font-weight: 600;
+}
+.environment-table :deep(.el-button--primary.is-link:hover) {
+  color: var(--ef-ink);
+  background: rgba(255, 250, 0, .18);
+  border-color: transparent;
+}
+.environment-table :deep(.el-button--success.is-link) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ef-ink);
+  font-weight: 600;
+}
+.environment-table :deep(.el-button--success.is-link:hover) {
+  color: #15803d;
+  background: rgba(22, 163, 74, .1);
+  border-color: transparent;
+}
+.environment-table :deep(.el-button--danger.is-link) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ef-ink);
+  font-weight: 600;
+}
+.environment-table :deep(.el-button--danger.is-link:hover) {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, .08);
+  border-color: transparent;
+}
+.environment-table :deep(.el-button:focus-visible) {
+  outline: 2px solid var(--ef-signal);
+  outline-offset: 1px;
+}
+
+.environment-table :deep(.el-tag) {
+  border-radius: 2px;
+  font-family: var(--ef-font-tech);
+  letter-spacing: .04em;
+}
+.environment-table :deep(.el-tag--primary) { background: rgba(25, 25, 25, .08); border-color: transparent; color: var(--ef-ink); }
+.environment-table :deep(.el-tag--success) { background: rgba(22, 163, 74, .12); border-color: transparent; color: #15803d; }
+.environment-table :deep(.el-tag--warning) { background: rgba(217, 119, 6, .12); border-color: transparent; color: #b45309; }
+.environment-table :deep(.el-tag--danger) { background: rgba(220, 38, 38, .12); border-color: transparent; color: #b91c1c; }
+.environment-table :deep(.el-tag--info) { background: rgba(25, 25, 25, .08); border-color: transparent; color: var(--ef-muted); }
+
+.environment-table :deep(.el-table) {
+  --el-table-border-color: var(--ef-line);
+  --el-table-header-bg-color: var(--ef-paper);
+  --el-table-header-text-color: var(--ef-ink);
+  --el-table-row-hover-bg-color: rgba(255, 250, 0, .10);
+  --el-table-text-color: var(--ef-ink);
+  font-size: 12px;
+}
+.environment-table :deep(.el-table th.el-table__cell) { font-weight: 700; }
+
+.environment-table :deep(.el-descriptions) {
+  --el-descriptions-table-border: 1px solid var(--ef-line);
+  --el-descriptions-table-bg-color: var(--ef-surface);
+  --el-descriptions-cell-bg-color: var(--ef-rail);
+  --el-descriptions-label-bg-color: var(--ef-paper);
+  --el-descriptions-text-color: var(--ef-ink);
+  --el-descriptions-label-text-color: var(--ef-muted);
 }
 </style>

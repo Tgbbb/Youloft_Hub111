@@ -278,11 +278,7 @@ class TestHubAgent:
                 testcase_count = TestCase.objects.filter(project_id=self.project_id).count()
 
                 # 接口测试统计（查找同名或关联的 ApiProject）
-                api_projects = ApiProject.objects.filter(
-                    name__icontains=project.name
-                ) | ApiProject.objects.filter(
-                    owner=project.owner
-                )
+                api_projects = ApiProject.objects.filter(main_project=project)
                 api_count = 0
                 collection_count = 0
                 for ap in api_projects[:5]:
@@ -294,9 +290,7 @@ class TestHubAgent:
                 ui_suite_count = 0
                 try:
                     from apps.ui_automation.models import UiProject, TestScript as UIScript, TestSuite as UITestSuite
-                    ui_projects = UiProject.objects.filter(
-                        name__icontains=project.name
-                    ) | UiProject.objects.filter(owner=project.owner)
+                    ui_projects = UiProject.objects.filter(main_project=project)
                     for up in ui_projects[:5]:
                         ui_count += UIScript.objects.filter(project=up).count()
                         ui_suite_count += UITestSuite.objects.filter(project=up).count()
@@ -308,9 +302,7 @@ class TestHubAgent:
                 midscene_device_count = 0
                 try:
                     from apps.ui_automation.models import MidsceneProject, MidsceneCase, MidsceneDevice
-                    mp = MidsceneProject.objects.filter(
-                        name__icontains=project.name
-                    ) | MidsceneProject.objects.filter(owner=project.owner)
+                    mp = MidsceneProject.objects.filter(main_project=project)
                     for m in mp[:5]:
                         midscene_count += MidsceneCase.objects.filter(project=m).count()
                     midscene_device_count = MidsceneDevice.objects.filter(status='online').count()

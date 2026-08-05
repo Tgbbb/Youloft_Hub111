@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
     UiProject, LocatorStrategy, Element, TestScript, TestSuite,
     TestSuiteScript, TestSuiteTestCase, TestExecution, TestEnvironment, Screenshot,
@@ -19,7 +20,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ('id', 'username', 'email')
 
 
-class UiProjectSerializer(serializers.ModelSerializer):
+class UiProjectSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
     members = UserSerializer(many=True, read_only=True)
 
@@ -29,16 +30,16 @@ class UiProjectSerializer(serializers.ModelSerializer):
         read_only_fields = ('created_at', 'updated_at')
 
 
-class UiProjectCreateSerializer(serializers.ModelSerializer):
+class UiProjectCreateSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'owner', 'members')
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'owner', 'members', 'main_project')
 
 
-class UiProjectUpdateSerializer(serializers.ModelSerializer):
+class UiProjectUpdateSerializer(MainProjectSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'members')
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'members', 'main_project')
 
 
 class LocatorStrategySerializer(serializers.ModelSerializer):
