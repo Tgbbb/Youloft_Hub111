@@ -72,7 +72,8 @@ export default {
       apiTesting: '接口测试',
       testcases: '测试用例',
       uiAutomation: 'UI 自动化',
-      documents: '文档与文件'
+      documents: '文档与文件',
+      browser: '浏览器自动化'
     },
     messages: {
       testSuccess: '连接成功！',

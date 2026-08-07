@@ -11,6 +11,9 @@ import ipaddress
 import json
 import logging
 import os
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -71,6 +74,9 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "list_session_files",
         "read_session_file",
         "simple_doc_parser",
+    ],
+    "browser": [
+        "agent_browser",
     ],
 }
 
@@ -1300,6 +1306,96 @@ def execute_test_suite(
 # ---------------------------------------------------------------
 # 执行类工具
 # ---------------------------------------------------------------
+
+
+_AGENT_BROWSER_ACTIONS = {
+    "open", "snapshot", "click", "dblclick", "focus", "fill", "type", "press",
+    "keydown", "keyup", "hover", "check", "uncheck", "select", "scroll",
+    "scrollintoview", "drag", "upload", "get", "is", "screenshot", "pdf",
+    "record", "wait", "mouse", "find", "set", "cookies", "storage",
+    "network", "back", "forward", "reload", "close",
+}
+
+
+def _find_agent_browser_binary() -> Optional[str]:
+    """查找 agent-browser CLI（npm 全局安装，兼容 .cmd/.exe）。"""
+    for name in ("agent-browser", "agent-browser.cmd", "agent-browser.exe"):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+@assistant_tool("agent_browser", permission="none")
+def agent_browser(
+    ctx: RunContextWrapper[TestHubContext],
+    command: str,
+) -> Dict:
+    """执行 Agent Browser 浏览器自动化命令（headless Chrome），返回页面状态。
+
+    配合 Agent Browser 技能使用，典型流程：
+    1. open <url> 打开页面
+    2. snapshot -i 获取可交互元素 refs（如 @e1）
+    3. click <ref> / fill <ref> <text> / press <key> 操作元素
+    4. get text <ref> / get url / get title 读取页面信息
+
+    command 是 agent-browser 子命令（不含前缀），如：
+    "open https://example.com"、"snapshot -i"、"click @e1"、
+    "fill @e2 用户名"、"press Enter"、"get url"、"wait --text 加载完成"。
+
+    Args:
+        command: agent-browser 命令行。
+    """
+    cmd = (command or "").strip()
+    if not cmd:
+        return {"success": False, "error": "请提供 agent-browser 命令，如 open <url>"}
+    action = cmd.split(maxsplit=1)[0].lower()
+    if action not in _AGENT_BROWSER_ACTIONS:
+        return {"success": False, "error": f"不支持的 agent-browser 动作: {action}"}
+    try:
+        args = shlex.split(cmd)
+    except ValueError as e:
+        return {"success": False, "error": f"命令参数解析失败: {e}"}
+
+    binary = _find_agent_browser_binary()
+    if not binary:
+        return {
+            "success": False,
+            "error": "未找到 agent-browser CLI，请先执行 npm install -g agent-browser",
+        }
+    if os.name == "nt":
+        full = ["cmd.exe", "/d", "/c", binary, *args]
+    else:
+        full = [binary, *args]
+    try:
+        proc = subprocess.run(
+            full,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "agent-browser 执行超时（60s）"}
+    except Exception as e:
+        return {"success": False, "error": f"agent-browser 执行失败: {e}"}
+
+    output = proc.stdout or ""
+    stderr = proc.stderr or ""
+    truncated = len(output) > 4000
+    return {
+        "success": proc.returncode == 0,
+        "action": action,
+        "returncode": proc.returncode,
+        "output": output[:4000],
+        "truncated": truncated,
+        "stderr": (stderr or "")[:500],
+        "hint": (
+            "输出超过 4000 字符时已截断；继续操作请基于返回的 refs 调用 "
+            "snapshot/click/fill 等，不要重复打开页面。"
+        ),
+    }
 
 
 @assistant_tool("execute_api", permission="project")

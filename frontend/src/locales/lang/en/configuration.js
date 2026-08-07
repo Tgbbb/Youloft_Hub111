@@ -72,7 +72,8 @@ export default {
       apiTesting: 'API Testing',
       testcases: 'Test Cases',
       uiAutomation: 'UI Automation',
-      documents: 'Documents & Files'
+      documents: 'Documents & Files',
+      browser: 'Browser Automation'
     },
     messages: {
       testSuccess: 'Connection successful!',

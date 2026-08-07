@@ -678,6 +678,64 @@ class TestSuiteToolTests(TestCase):
             tools.execute_test_suite(_ctx(self.outsider), self.suite.id)
 
 
+class AgentBrowserToolTests(TestCase):
+    """agent_browser 工具：白名单动作、命令执行、输出截断。"""
+
+    def _fake_proc(self, stdout="ok", stderr="", returncode=0):
+        return SimpleNamespace(
+            stdout=stdout, stderr=stderr, returncode=returncode
+        )
+
+    def test_empty_command_rejected(self):
+        resp = tools.agent_browser(_ctx(None), command="")
+        self.assertFalse(resp["success"])
+
+    def test_unknown_action_rejected(self):
+        resp = tools.agent_browser(_ctx(None), command="rm -rf /")
+        self.assertFalse(resp["success"])
+        self.assertIn("不支持", resp["error"])
+
+    def test_missing_binary_reported(self):
+        with patch("apps.assistant.tools._find_agent_browser_binary", return_value=None):
+            resp = tools.agent_browser(_ctx(None), command="open https://example.com")
+        self.assertFalse(resp["success"])
+        self.assertIn("agent-browser CLI", resp["error"])
+
+    def test_command_executes_and_truncates(self):
+        big_output = "x" * 5000
+        with patch(
+            "apps.assistant.tools._find_agent_browser_binary",
+            return_value="agent-browser",
+        ), patch(
+            "apps.assistant.tools.subprocess.run",
+            return_value=self._fake_proc(stdout=big_output),
+        ) as m:
+            resp = tools.agent_browser(_ctx(None), command='open "https://a.b/c?q=1"')
+        self.assertTrue(resp["success"])
+        self.assertEqual(resp["action"], "open")
+        self.assertTrue(resp["truncated"])
+        self.assertEqual(len(resp["output"]), 4000)
+        self.assertEqual(m.call_count, 1)
+        call_args = m.call_args[0][0]
+        self.assertEqual(call_args[0], "cmd.exe")
+        self.assertIn("agent-browser", call_args)
+        self.assertIn("https://a.b/c?q=1", call_args)
+
+    def test_timeout_reported(self):
+        from subprocess import TimeoutExpired
+
+        with patch(
+            "apps.assistant.tools._find_agent_browser_binary",
+            return_value="agent-browser",
+        ), patch(
+            "apps.assistant.tools.subprocess.run",
+            side_effect=TimeoutExpired("agent-browser", 60),
+        ):
+            resp = tools.agent_browser(_ctx(None), command="snapshot -i")
+        self.assertFalse(resp["success"])
+        self.assertIn("超时", resp["error"])
+
+
 class AgentConfigProtocolTests(TestCase):
     """AgentConfig 协议字段与 sdk_runtime 强制协议逻辑。"""
 

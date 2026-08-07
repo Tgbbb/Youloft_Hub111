@@ -228,6 +228,7 @@ const toolGroupOptions = [
   { value: 'testcases', label: t('configuration.agent.toolGroups.testcases') },
   { value: 'ui_automation', label: t('configuration.agent.toolGroups.uiAutomation') },
   { value: 'documents', label: t('configuration.agent.toolGroups.documents') },
+  { value: 'browser', label: t('configuration.agent.toolGroups.browser') },
 ]
 
 const formRef = ref(null)
