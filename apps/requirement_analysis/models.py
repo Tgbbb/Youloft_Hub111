@@ -12,9 +12,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 墨刀截图输出控制：目标长边（控制模型输入大小/成本）与原始像素上限（防 OOM）
-# 2048 会导致大画布文字模糊，提升到 4096（仍会控制成本，但清晰度明显改善）
-MODAO_SCREENSHOT_TARGET_LONG_EDGE = 4096
+# 墨刀截图输出控制：模型单图上限（总像素 1600 万，与 MAX_SINGLE_IMAGE_PIXELS 保持一致）
+# 与原始像素上限（防 OOM）。按总像素等比缩放，避免 4096×4096=1677 万像素的方形大图超出模型限制。
+MODAO_SCREENSHOT_MAX_PIXELS = 16_000_000
 MODAO_SCREENSHOT_MAX_EDGE = 25000
 
 _MODAO_BOUNDS_JS = '''() => {
@@ -151,6 +151,62 @@ _MODAO_ACTIVE_CID_JS = '''() => {
     if (!active) return null;
     const li = active.closest('li');
     return li ? (li.getAttribute('data-cid') || null) : null;
+}'''
+
+# 提取当前画布内可见文本（DOM innerText，不受截图压缩影响）。
+# 结构化输出两组（只做物理分组，不做语义分类，语义判断交给模型结合截图完成）：
+#   body   = 画布正文全部文字（非便利贴 .widget 文本，按位置 y→x 排序）
+#   sticky = 便利贴批注（wSticky 容器，按编号升序，无编号排最后）
+# 需求文本可能写在便利贴，也可能直接写在画布正文里（切量规则/需求描述等），
+# 产品文档写法混乱时无法可靠区分"界面文案/需求说明"，因此统一按物理分组输出。
+# 只做硬过滤：不可见元素、纯署名/日期、状态栏时间/纯符号。
+_MODAO_EXTRACT_TEXTS_JS = '''() => {
+    const scope = document.querySelector('.mb-screen') || document;
+    const body = [];
+    const sticky = [];
+    const seenBody = new Set();
+    const seenSticky = new Set();
+    for (const w of scope.querySelectorAll('.widget')) {
+        const r = w.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cls = typeof w.className === 'string' ? w.className : '';
+        const t = (w.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (!t || t.length < 2) continue;
+        // 纯署名/日期（如"墨刀用户 2026.07.24"）无需求内容，跳过；其余（含批注正文）全部保留
+        const cleaned = t.replace(/\\d{4}[./]\\d{1,2}[./]\\d{1,2}/g, '').replace(/墨刀用户/g, '').trim();
+        if (!cleaned) continue;
+        // 手机状态栏时间与纯符号装饰对需求无用
+        if (/^\\d{1,2}:\\d{2}$/.test(t) || /^[…...·•+×✓-]+$/.test(t)) continue;
+        const isSticky = /(^|\\s)wSticky(\\s|$)/.test(cls);
+        const item = {
+            text: t.slice(0, 1500),
+            x: Math.round(r.x),
+            y: Math.round(r.y),
+        };
+        if (isSticky) {
+            const key = t.slice(0, 60);
+            if (seenSticky.has(key)) continue;
+            seenSticky.add(key);
+            sticky.push(item);
+        } else {
+            const key = t.slice(0, 60);
+            if (seenBody.has(key)) continue;
+            seenBody.add(key);
+            body.push(item);
+        }
+    }
+    const byPos = (a, b) => (a.y - b.y) || (a.x - b.x);
+    body.sort(byPos);
+    // 批注通常带产品编号（"1 xxx"），按编号升序还原文档逻辑顺序；无编号的排最后
+    const stickyNum = (s) => {
+        const m = (s.text || '').match(/^(\\d+)[.、\\s]/);
+        return m ? parseInt(m[1], 10) : 1e9;
+    };
+    sticky.sort((a, b) => (stickyNum(a) - stickyNum(b)) || byPos(a, b));
+    return {
+        body: body.slice(0, 300),
+        sticky: sticky.slice(0, 60),
+    };
 }'''
 
 
@@ -717,12 +773,127 @@ def _resolve_screenshot_url_to_data(img):
         '.gif': 'image/gif',
         '.bmp': 'image/bmp',
     }.get(ext, 'image/jpeg')
-    return {'page': img.get('page'), 'data': data, 'media_type': media_type}
+    return {
+        'page': img.get('page'),
+        'data': data,
+        'media_type': media_type,
+        'name': img.get('name') or '',
+        'texts': img.get('texts') or [],
+    }
+
+
+def _kb_clarify_block(knowledge_base: str) -> str:
+    """构建澄清环节的项目知识背景块：仅供理解术语，严禁作为提问来源。
+
+    背景知识只是补充（业务术语/领域概念/隐含约束），不是需求内容；
+    如果让它进入提问范围，容易喧宾夺主，因此在此处做强约束。
+    """
+    if not knowledge_base:
+        return ""
+    return (
+        f"【项目知识背景 — 仅供理解术语，不是需求内容】\n{knowledge_base}\n\n"
+        f"⚠️ 使用规则（必须遵守）：\n"
+        f"- 背景知识只用于帮你理解业务术语、领域概念和隐含约束，它不是需求文档的一部分。\n"
+        f"- 提问的唯一依据是「需求文档 + 截图 + 画布提取文本」：每个问题都必须能对应到其中的具体内容。\n"
+        f"- 背景知识中提到的功能、规则或信息，只要需求文档和截图中没有出现，"
+        f"一律不得提问、不得补充、不得作为问题素材。\n"
+        f"- 如果背景知识与需求文档/截图冲突，以需求文档和截图为准。\n\n"
+    )
+
+
+def _kb_generate_block(knowledge_base: str) -> str:
+    """构建生成环节的项目知识背景块：允许补充业务上下文与联动理解，但不得扩大用例范围。
+
+    生成时保留背景知识是有用的：需求可能涉及与既有背景功能的联动（如消息、支付、会员等），
+    此时背景知识帮助理解联动逻辑；但用例范围仍以需求文档/截图/提取文本为准，
+    背景里独有的功能不得单独扩展成用例。
+    """
+    if not knowledge_base:
+        return ""
+    return (
+        f"【项目知识背景 — 业务上下文补充】\n{knowledge_base}\n\n"
+        f"⚠️ 使用规则（必须遵守）：\n"
+        f"- 背景知识用于帮你理解业务术语、既有功能模块，以及需求与既有功能之间的联动关系。\n"
+        f"- 用例设计以「需求文档 + 截图 + 画布提取文本」为范围：每个用例都必须能对应到其中的具体内容。\n"
+        f"- 背景知识中的功能，只有在需求/截图中存在明确联动或依赖时，才可作上下文理解；"
+        f"不得单独扩展成用例，不得引入需求中不存在的功能点。\n"
+        f"- 如果背景知识与需求/截图冲突，以需求文档和截图为准。\n\n"
+    )
+
+
+def _canvas_text_block(img, fallback_index=None):
+    """构建"截图配对该画布 DOM 提取文本"的 text block。
+    无文本时返回 None，调用方自动降级为纯图片块。"""
+    texts = img.get('texts') or []
+    if not texts:
+        return None
+    label = f'画布{img.get("page") or fallback_index or "?"}'
+    name = (img.get('name') or '').strip()
+    if name:
+        label += f'《{name}》'
+
+    def _fmt_list(items):
+        return '\n'.join(f'- {t}' for t in items)
+
+    def _to_list(items):
+        return [x.get('text') or x for x in items]
+
+    # 新版结构化格式：{body: [{text,x,y}], sticky: [{text,x,y}]}
+    # body=画布正文全部文字（含界面元素与说明文字，未做语义分类），sticky=便利贴批注
+    body_parts = []
+    if isinstance(texts, dict) and 'body' in texts:
+        # 新版结构化格式：{body: [...], sticky: [...]}
+        body_items = _to_list(texts.get('body') or [])
+        sticky_items = _to_list(texts.get('sticky') or [])
+        if body_items:
+            body_parts.append(
+                '【画布正文文字】（画布上显示的元素文字与说明文字，按位置从上到下、从左到右排列；'
+                '包含界面文案也可能包含需求说明，未做分类）\n' + _fmt_list(body_items)
+            )
+        if sticky_items:
+            body_parts.append(
+                '【产品批注】（便利贴内容，通常包含需求规则与说明，按编号排序）\n' + _fmt_list(sticky_items)
+            )
+    elif isinstance(texts, dict) and ('ui' in texts or 'notes' in texts):
+        # 旧版结构化格式兼容：{ui, sticky, notes} 合并为两组
+        ui_items = _to_list(texts.get('ui') or [])
+        sticky_items = _to_list(texts.get('sticky') or [])
+        notes_items = _to_list(texts.get('notes') or [])
+        body_items = ui_items + notes_items
+        if body_items:
+            body_parts.append(
+                '【画布正文文字】（画布上显示的元素文字与说明文字，按位置从上到下、从左到右排列；'
+                '包含界面文案也可能包含需求说明，未做分类）\n' + _fmt_list(body_items)
+            )
+        if sticky_items:
+            body_parts.append(
+                '【产品批注】（便利贴内容，通常包含需求规则与说明，按编号排序）\n' + _fmt_list(sticky_items)
+            )
+    else:
+        # 旧版：纯字符串数组（旧任务/PDF 降级）
+        body_parts.append(_fmt_list(str(t) for t in texts))
+
+    if not body_parts:
+        return None
+    body = '\n\n'.join(body_parts)
+
+    return {
+        "type": "text",
+        "text": (
+            f"\n【{label}· DOM 提取文本】\n"
+            f"以下为该画布页面的原始文字（DOM 提取，仅作辅助核对）：\n"
+            f"· 画布正文文字：画布上显示的内容，混有界面文案与需求说明，未做语义分类，请自行判断哪些是需求；\n"
+            f"· 产品批注：便利贴内容，同样可能是需求规则来源。\n"
+            f"截图是主要依据（大多数截图清晰，可直接读取）；文字仅在截图字小、模糊或长规则文字块时用于核对细节。"
+            f"若文字与截图不一致，以截图可见内容为准。\n"
+            f"{body}"
+        ),
+    }
 
 
 # qwen3.7-plus（视觉）官方单图上限 1600 万像素；留 0.5M 边界，
 # 避免模型侧对边界图的自适应处理/文档口径差异导致误判。可自行调整。
-MAX_SINGLE_IMAGE_PIXELS = 16_000_000
+MAX_SINGLE_IMAGE_PIXELS = MODAO_SCREENSHOT_MAX_PIXELS
 
 
 def _image_pixel_violations(page_images):
@@ -909,6 +1080,9 @@ class AIModelService:
                     "url": f"data:{img['media_type']};base64,{img['data']}"
                 }
             })
+            canvas_text_block = _canvas_text_block(img)
+            if canvas_text_block:
+                content_blocks.append(canvas_text_block)
 
         content_blocks.append({
             "type": "text",
@@ -1315,16 +1489,7 @@ class AIModelService:
         """
         system_prompt = clarifier_prompt.content
 
-        kb_block = ""
-        if knowledge_base:
-            kb_block = (
-                f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
-                f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
-                f"请严格以「需求文档内容」为主要分析对象：\n"
-                f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
-                f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
-                f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
-            )
+        kb_block = _kb_clarify_block(knowledge_base)
 
         user_message = (
             f"请仔细分析以下需求文档，找出其中不明确、模糊、矛盾或缺失的信息点，"
@@ -1339,7 +1504,9 @@ class AIModelService:
             f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
             f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
             f"{kb_block}"
-            f"【需求文档内容】\n{requirement_text}"
+            f"【需求文档内容】\n{requirement_text}\n\n"
+            f"⚠️ 最后提醒：只对上述需求文档中实际出现的内容提问；"
+            f"背景知识仅供理解术语，不作为提问来源。"
         )
 
         messages = [
@@ -1377,16 +1544,7 @@ class AIModelService:
         """
         system_prompt = clarifier_prompt.content
 
-        kb_block = ""
-        if knowledge_base:
-            kb_block = (
-                f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
-                f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
-                f"请严格以「需求文档内容」为主要分析对象：\n"
-                f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
-                f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
-                f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
-            )
+        kb_block = _kb_clarify_block(knowledge_base)
 
         user_message = (
             f"请仔细分析以下需求文档，找出其中不明确、模糊、矛盾或缺失的信息点，"
@@ -1401,7 +1559,9 @@ class AIModelService:
             f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
             f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
             f"{kb_block}"
-            f"【需求文档内容】\n{requirement_text}"
+            f"【需求文档内容】\n{requirement_text}\n\n"
+            f"⚠️ 最后提醒：只对上述需求文档中实际出现的内容提问；"
+            f"背景知识仅供理解术语，不作为提问来源。"
         )
 
         messages = [
@@ -1467,6 +1627,8 @@ class AIModelService:
         # 构建多模态消息
         content_blocks = []
 
+        kb_block = _kb_clarify_block(knowledge_base)
+
         # 文本部分
         text_content = (
             f"请仔细分析以下需求文档的内容和各页面的截图（包含流程图、原型图、UI设计稿等视觉信息），"
@@ -1481,14 +1643,10 @@ class AIModelService:
             f"【输出格式】\n"
             f"请以JSON数组格式输出，每个问题包含 id 和 question 字段：\n"
             f'[{{"id": 1, "question": "问题的具体描述？"}}, ...]\n\n'
-            + (f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
-               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语、领域概念和隐含约束。\n"
-               f"请严格以「需求文档内容」为主要分析对象：\n"
-               f"- 如果知识背景中提到但需求文档中未涉及的功能，不要提问\n"
-               f"- 如果知识背景与需求文档有冲突，以需求文档为准\n"
-               f"- 提出的问题必须直接关联需求文档中的具体描述\n\n"
-               if knowledge_base else "") +
-            f"【文档文本内容】\n{requirement_text}"
+            f"{kb_block}"
+            f"【文档文本内容】\n{requirement_text}\n\n"
+            f"⚠️ 最后提醒：只对上述需求文档和截图中实际出现的内容提问；"
+            f"背景知识仅供理解术语，不作为提问来源。"
         )
         content_blocks.append({"type": "text", "text": text_content})
 
@@ -1500,11 +1658,18 @@ class AIModelService:
                     "url": f"data:{img['media_type']};base64,{img['data']}"
                 }
             })
+            canvas_text_block = _canvas_text_block(img)
+            if canvas_text_block:
+                content_blocks.append(canvas_text_block)
 
         # 末尾指导
         content_blocks.append({
             "type": "text",
-            "text": "\n\n请结合上述文档文本和各页面的截图，找出需求中不明确的地方并输出问题列表。"
+            "text": (
+                "\n\n请结合上述文档文本和各页面的截图，找出需求中不明确的地方并输出问题列表。"
+                "注意：只针对需求文档和截图中实际出现的内容提问，"
+                "背景知识仅供理解术语，不作为提问来源。"
+            )
         })
 
         openai_messages = [
@@ -1568,9 +1733,7 @@ class AIModelService:
             rf"6. **⚠️ 特殊字符处理（关键）**：\n"
             rf"   - **表格分隔符 '|' 必须保留**，不要在表格结构上做任何替换。\n"
             rf"   - 如果单元格内容中包含管道符，请使用反斜杠转义 '\\|'。\n\n"
-            + (f"【项目知识背景 — 仅供参考】\n{task.knowledge_base}\n\n"
-               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「需求文档内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n\n"
-               if task.knowledge_base else "") +
+            + _kb_generate_block(task.knowledge_base) +
             f"【需求文档内容】\n{task.requirement_text}"
         )
 
@@ -1678,9 +1841,7 @@ class AIModelService:
             rf"6. **⚠️ 特殊字符处理（关键）**：\n"
             rf"   - **表格分隔符 '|' 必须保留**，不要在表格结构上做任何替换。\n"
             rf"   - 如果单元格内容中包含管道符，请使用反斜杠转义 '\\|'。\n\n"
-            + (f"【项目知识背景 — 仅供参考】\n{task.knowledge_base}\n\n"
-               f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「需求文档内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n\n"
-               if task.knowledge_base else "") +
+            + _kb_generate_block(task.knowledge_base) +
             f"【需求文档内容】\n{task.requirement_text}"
         )
 
@@ -1771,10 +1932,51 @@ class AIModelService:
             f"**重要**：输出格式要求紧凑，不要在段落之间添加多余的空行，每个问题点之间用单空行分隔即可，用例展示仍为markdown形式。"
         )
 
-        messages = [
-            {"role": "system", "content": reviewer_prompt},
-            {"role": "user", "content": user_message}
-        ]
+        # 多模态评审：reviewer 模型支持视觉且任务带图时，附加截图与该画布 DOM 文本，
+        # 让评审核对"用例元素/文案是否真实存在于界面"；否则回退纯文本评审。
+        can_see_images = (
+            getattr(task.reviewer_model_config, 'supports_vision', False)
+            and getattr(task, 'multimodal_mode', False)
+            and bool(task.page_images_base64)
+        )
+        page_images = []
+        if can_see_images:
+            for img in (task.page_images_base64 or []):
+                resolved = _resolve_screenshot_url_to_data(img)
+                if resolved:
+                    page_images.append(resolved)
+        if page_images:
+            content_blocks = [
+                {"type": "text", "text": user_message},
+            ]
+            for img in page_images:
+                content_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"}
+                })
+                canvas_text_block = _canvas_text_block(img)
+                if canvas_text_block:
+                    content_blocks.append(canvas_text_block)
+            content_blocks.append({
+                "type": "text",
+                "text": (
+                    "\n\n【界面一致性核对要求】\n"
+                    "请结合以上截图（及其附带的 DOM 提取文本）逐条核对：\n"
+                    "1. 用例引用的页面、按钮、输入框、文案、跳转是否真实存在于对应截图；不存在的记为问题。\n"
+                    "2. 截图中有明显主流程/入口但用例未覆盖的，记为覆盖率问题。\n"
+                    "3. DOM 提取文本分画布正文与产品批注两组，正文未按语义分类，"
+                    "仅作辅助核对；批注同样可能包含需求规则。文字与截图冲突时以截图为准。"
+                )
+            })
+            messages = [
+                {"role": "system", "content": reviewer_prompt},
+                {"role": "user", "content": content_blocks}
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": reviewer_prompt},
+                {"role": "user", "content": user_message}
+            ]
 
         # 流式调用API，确保正确关闭生成器
         generator = AIModelService.call_openai_compatible_api_stream(
@@ -1934,10 +2136,7 @@ class AIModelService:
         if knowledge_base:
             content_blocks.append({
                 "type": "text",
-                "text": (
-                    f"【项目知识背景 — 仅供参考】\n{knowledge_base}\n\n"
-                    f"⚠️ 重要：以上背景知识仅供你理解需求中的业务术语和隐含约束。请严格以「文档文本内容」为设计依据。如果知识背景与需求文档有冲突，以需求文档为准。\n"
-                )
+                "text": _kb_generate_block(knowledge_base),
             })
 
         # 文本部分
@@ -1955,6 +2154,9 @@ class AIModelService:
                     "url": f"data:{img['media_type']};base64,{img['data']}"
                 }
             })
+            canvas_text_block = _canvas_text_block(img)
+            if canvas_text_block:
+                content_blocks.append(canvas_text_block)
 
         # 截图分析引导
         content_blocks.append({
@@ -2345,7 +2547,8 @@ class AIModelService:
         return renumbered_content
 
     @staticmethod
-    async def import_from_modao(url: str, auth_token: str = '', progress_callback=None) -> dict:
+    async def import_from_modao(url: str, auth_token: str = '', progress_callback=None,
+                                import_id: str = '') -> dict:
         """
         从墨刀导入需求内容：遍历所有画布，每个画布截一张全画布截图，保存到文件。
         返回: {'title': str, 'canvases': [{name, screenshot_url, width, height}]}
@@ -2356,7 +2559,8 @@ class AIModelService:
 
         logger.info(f'[Modao] 开始导入: {url}')
 
-        import_id = uuid_mod.uuid4().hex[:12]
+        if not import_id:
+            import_id = uuid_mod.uuid4().hex[:12]
         result = {'title': '', 'canvases': [], 'import_id': import_id}
 
         # 进度上报：维护当前阶段/画布计数，回调仅透出最新状态
@@ -2756,11 +2960,15 @@ class AIModelService:
                             logger.info(f'[Modao] 背景裁剪: {pw}×{ph} → {crop[2]-crop[0]}×{crop[3]-crop[1]}')
                         if img.mode in ('RGBA', 'P'):
                             img = img.convert('RGB')
-                        # 统一缩放到目标长边：控制模型输入大小与 token 成本
-                        long_edge = max(img.size)
-                        if long_edge > MODAO_SCREENSHOT_TARGET_LONG_EDGE:
-                            ratio = MODAO_SCREENSHOT_TARGET_LONG_EDGE / long_edge
-                            img = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
+                        # 统一缩放到模型单图上限：按总像素等比缩放（≤1600 万），
+                        # 避免按长边 4096 缩放导致正方形大图（4096×4096=1677 万）超出模型限制
+                        img_pixels = img.width * img.height
+                        if img_pixels > MODAO_SCREENSHOT_MAX_PIXELS:
+                            ratio = (MODAO_SCREENSHOT_MAX_PIXELS / img_pixels) ** 0.5
+                            img = img.resize(
+                                (max(1, int(img.width * ratio)), max(1, int(img.height * ratio))),
+                                Image.LANCZOS,
+                            )
                         final_w, final_h = img.size
                         buf = io.BytesIO()
                         img.save(buf, format='JPEG', quality=92, subsampling=0)
@@ -2775,6 +2983,14 @@ class AIModelService:
                     with open(filepath, 'wb') as f:
                         f.write(screenshot_bytes)
 
+                    # 提取该画布可见文本（DOM innerText，不受截图压缩影响）
+                    canvas_texts = []
+                    try:
+                        canvas_texts = await page.evaluate(_MODAO_EXTRACT_TEXTS_JS) or []
+                        logger.info(f'[Modao] 画布 {i+1}: {name} 提取文本 {len(canvas_texts)} 条')
+                    except Exception as e:
+                        logger.warning(f'[Modao] 画布{i+1} 文本提取失败，降级为纯截图: {e}')
+
                     screenshot_url = f'{settings.MEDIA_URL}modao_screenshots/{import_id}/{filename}'
                     w, h = final_w, final_h
 
@@ -2783,6 +2999,7 @@ class AIModelService:
                         'screenshot_url': screenshot_url,
                         'width': w,
                         'height': h,
+                        'texts': canvas_texts,
                     })
                     logger.info(f'[Modao] 画布 {i+1}/{canvas_count}: {name} ({w}×{h}) → {screenshot_url}')
                     report(f'{name} 截图完成 ({w}×{h})', current=i + 1, total=canvas_count, stage='canvas',

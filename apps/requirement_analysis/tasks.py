@@ -1,13 +1,29 @@
 """需求分析 Celery 异步任务"""
 import logging
+import os
+import re
+import shutil
 import threading
+import uuid
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 from apps.requirement_analysis.models import ModaoImport
 
 logger = logging.getLogger(__name__)
 
 STAGE_BASE_PROGRESS = {'prepare': 5, 'login': 15, 'list': 25}
+
+
+def _cleanup_failed_import_screenshots(import_id: str):
+    """导入失败/中断时清理本次截图目录，避免残留孤儿文件"""
+    if not import_id or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', import_id):
+        return
+    root = os.path.realpath(os.path.join(settings.MEDIA_ROOT, 'modao_screenshots'))
+    target = os.path.realpath(os.path.join(root, import_id))
+    if target.startswith(root + os.sep) and os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
+        logger.info(f'[Modao] 导入失败，已清理截图目录: {target}')
 
 
 def _calc_progress(stage: str, current: int, total: int) -> int:
@@ -35,6 +51,7 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
     }
     record.celery_task_id = self.request.id or ''
     record.save(update_fields=['status', 'stage', 'progress', 'progress_detail', 'celery_task_id'])
+    import_id = uuid.uuid4().hex[:12]
 
     # 进度状态维护在内存，由后台线程节流写库（避免 async 回调里操作 ORM）
     progress_state = {
@@ -125,6 +142,7 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
                     url=url,
                     auth_token=auth_token,
                     progress_callback=on_progress,
+                    import_id=import_id,
                 )
             )
         finally:
@@ -150,6 +168,7 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
     except Exception as exc:
         stop_event.set()
         persist_thread.join(timeout=2)
+        _cleanup_failed_import_screenshots(import_id)
         record.status = 'failed'
         record.stage = 'failed'
         record.error_message = str(exc)[:1000]

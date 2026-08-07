@@ -2070,6 +2070,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                 'page': len(page_images) + 1,
                                 'data': img_data,
                                 'media_type': _media_type_for_path(filepath),
+                                'name': img.get('name'),
+                                'texts': img.get('texts') or [],
                             })
                         else:
                             missing_images.append(str(img.get('screenshot_url'))[:120])
@@ -2184,6 +2186,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         task_images.append({
                             'screenshot_url': img['screenshot_url'],
                             'media_type': _media_type_for_path(fp) if fp else 'image/jpeg',
+                            'name': img.get('name'),
+                            'texts': img.get('texts') or [],
                         })
                     else:
                         task_images.append(img)
@@ -3152,6 +3156,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                 'page': len(page_images_refs)+1,
                                 'screenshot_url': img['screenshot_url'],
                                 'media_type': _media_type_for_path(filepath),
+                                'name': img.get('name'),
+                                'texts': img.get('texts') or [],
                             })
                         else:
                             missing_images.append(str(img.get('screenshot_url'))[:120])

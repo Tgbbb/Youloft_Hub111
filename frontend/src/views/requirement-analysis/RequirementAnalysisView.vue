@@ -166,20 +166,8 @@
               <div v-for="(c, i) in modaoCanvases" :key="i" class="ef-canvas" :class="{ 'is-on': c.selected }" @click="c.selected = !c.selected">
                 <span class="ef-canvas__check" v-if="c.selected">✓</span>
                 <span class="ef-canvas__n">{{ String(i + 1).padStart(2, '0') }}</span>
-                <div class="ef-canvas__thumbs" v-if="c.screenshots && c.screenshots.length">
-                  <img v-for="(s, si) in c.screenshots" :key="si" :src="s.url" style="width:40px;height:40px;object-fit:cover;flex-shrink:0;border:1px solid #e8e6e0" @click.stop="previewCanvas = c; previewIdx = si" />
-                </div>
-                <div v-else class="ef-canvas__noimg" @click.stop="previewCanvas = c; previewIdx = 0">无截图</div>
                 <span class="ef-canvas__name">{{ c.name }}</span>
               </div>
-            </div>
-            <!-- Lightbox -->
-            <div v-if="previewCanvas" class="ef-lightbox" @click.self="closePreview">
-              <div class="ef-lightbox__nav" v-if="previewCanvas.screenshots?.length > 1"><button v-for="(s, si) in previewCanvas.screenshots" :key="si" class="ef-lightbox__dot" :class="{ 'is-on': si === previewIdx }" @click.stop="previewIdx = si">{{ si + 1 }}</button></div>
-              <div class="ef-lightbox__stage">
-                <img v-if="previewCanvas.screenshots?.[previewIdx]?.url" :src="previewCanvas.screenshots[previewIdx].url" style="display:block;max-width:90vw;max-height:86vh;width:auto;height:auto;object-fit:contain" :style="{ transform: `scale(${previewZoom})` }" @wheel.stop.prevent="onPreviewWheel" />
-              </div>
-              <button class="ef-lightbox__close" @click="closePreview">×</button>
             </div>
           </div>
 
@@ -463,11 +451,8 @@ export default {
       modaoTitle: '',
       _modaoHistoryId: null,   // 当前历史记录ID（更新用）
       _modaoImportId: '',      // 导入批次ID（截图文件夹）
-      modaoCanvases: [],       // [{name, screenshots: [{url, width, height}], selected}]
+      modaoCanvases: [],       // [{name, screenshot_url, texts, selected}]
       modaoHistory: [],
-      previewCanvas: null,     // 当前预览的画布（lightbox）
-      previewIdx: 0,           // 当前预览的截图索引
-      previewZoom: 1,          // 预览缩放比例
       replaceInputs: {},       // 添加截图的 file input refs
       isImportingModao: false,
       _importProgress: 0,          // 导入进度（0-100）
@@ -932,14 +917,6 @@ export default {
     toggleCanvasSelection(i) {
       this.modaoCanvases[i].selected = !this.modaoCanvases[i].selected
     },
-    closePreview() {
-      this.previewCanvas = null
-      this.previewIdx = 0
-      this.previewZoom = 1
-    },
-    onPreviewWheel(e) {
-      this.previewZoom = Math.max(0.2, Math.min(5, this.previewZoom + (e.deltaY > 0 ? -0.1 : 0.1)))
-    },
     triggerReplace(i) {
       this.replaceInputs[i]?.click()
     },
@@ -983,6 +960,7 @@ export default {
       try {
         const canvases = this.modaoCanvases.map(c => ({
           name: c.name,
+          texts: c.texts || [],
           screenshots: c.screenshots,
         }))
         const pId = this.manualInput.selectedProject || this.selectedProject || null
@@ -1028,6 +1006,7 @@ export default {
         }
         this.modaoCanvases = (data.data?.canvases || []).map(c => ({
           name: c.name,
+          texts: c.texts || [],
           screenshots: c.screenshots || (c.screenshot_url ? [{ url: c.screenshot_url, width: c.width, height: c.height }] : []),
           selected: true,
         }))
@@ -1096,6 +1075,7 @@ export default {
               // 加载结果
               this.modaoCanvases = (r.data?.canvases || []).map(c => ({
                 name: c.name,
+                texts: c.texts || [],
                 screenshots: (c.screenshot_url || c.screenshots)
                   ? (c.screenshots || [{ url: c.screenshot_url, width: c.width, height: c.height }])
                   : [],
@@ -1166,7 +1146,12 @@ export default {
         functionModuleId: this.manualInput.selectedModuleId || '',
         outputMode: 'stream',
         pageImages: selected.flatMap(c =>
-          (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
+          (c.screenshots || []).filter(s => s.url).map(s => ({
+            screenshot_url: s.url,
+            media_type: 'image/png',
+            name: c.name,
+            ...(c.texts && (Array.isArray(c.texts) ? c.texts.length : Object.keys(c.texts).length) ? { texts: c.texts } : {}),
+          }))
         ),
       }
       // 更新历史记录中的项目/版本选择
@@ -1178,7 +1163,12 @@ export default {
           version_ids: versionIds,
           function_module_id: this.manualInput.selectedModuleId || undefined,
           page_images: selected.flatMap(c =>
-            (c.screenshots || []).filter(s => s.url).map(s => ({ screenshot_url: s.url, media_type: 'image/png' }))
+            (c.screenshots || []).filter(s => s.url).map(s => ({
+              screenshot_url: s.url,
+              media_type: 'image/png',
+              name: c.name,
+              ...(c.texts && (Array.isArray(c.texts) ? c.texts.length : Object.keys(c.texts).length) ? { texts: c.texts } : {}),
+            }))
           ),
         }
         const { data } = await api.post('/requirement-analysis/testcase-generation/clarify/', payload, { timeout: 300000 })
