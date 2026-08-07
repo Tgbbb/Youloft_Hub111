@@ -29,6 +29,13 @@ from apps.assistant.context import TestHubContext
 logger = logging.getLogger(__name__)
 
 
+def _raw_get(raw: Any, key: str, default: Any = "") -> Any:
+    """兼容 dict / pydantic 对象两种 raw_item 形态取值。"""
+    if isinstance(raw, dict):
+        return raw.get(key, default)
+    return getattr(raw, key, default)
+
+
 class TestHubAgent:
     """
     TestHub AI 协作者
@@ -270,6 +277,7 @@ class TestHubAgent:
 
         full_text = ""
         tool_calls: List[str] = []
+        call_names: Dict[str, str] = {}
         exceeded = False
 
         try:
@@ -278,9 +286,12 @@ class TestHubAgent:
                     if event.name == "tool_called":
                         item = event.item
                         raw = getattr(item, "raw_item", None)
-                        call_id = getattr(raw, "id", "") or ""
-                        name = getattr(raw, "name", "") or ""
-                        raw_args = getattr(raw, "arguments", "")
+                        # ResponseFunctionToolCall：call_id 是函数调用 ID，
+                        # 与 tool_output 输出项里的 call_id 对应。
+                        call_id = str(_raw_get(raw, "call_id") or _raw_get(raw, "id") or "")
+                        name = str(_raw_get(raw, "name") or "")
+                        call_names[call_id] = name
+                        raw_args = _raw_get(raw, "arguments") or ""
                         try:
                             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                         except Exception:
@@ -292,7 +303,11 @@ class TestHubAgent:
                     elif event.name == "tool_output":
                         item = event.item
                         raw = getattr(item, "raw_item", None)
-                        output = getattr(raw, "output", "")
+                        # SDK 0.19.x 输出项是 dict（call_id/output/type），不含 name/id，
+                        # 需从 call_id 反查 tool_start 阶段记录的函数名。
+                        call_id = str(_raw_get(raw, "call_id") or _raw_get(raw, "id") or "")
+                        name = call_names.get(call_id) or str(_raw_get(raw, "name") or "")
+                        output = _raw_get(raw, "output", None)
                         # Responses 模式下 output 可能是内容片段列表，统一展平为文本
                         if isinstance(output, list):
                             parts = []
@@ -305,8 +320,8 @@ class TestHubAgent:
                         output_str = str(output)[:800] if output is not None else ""
                         yield {
                             "type": "tool_output",
-                            "id": getattr(raw, "id", "") or "",
-                            "name": getattr(raw, "name", "") or "",
+                            "id": call_id,
+                            "name": name,
                             "output": output_str,
                         }
 

@@ -321,7 +321,54 @@ class AgentStreamEventTests(TestCase):
         )
         self.assertEqual(events[1]["name"], "search_apis")
         self.assertEqual(events[1]["args"], {"project_id": 1})
+        self.assertEqual(events[1]["id"], "c1")
+        self.assertEqual(events[2]["name"], "search_apis")
+        self.assertEqual(events[2]["id"], "c1")
         self.assertEqual(events[3]["final_output"], "完成")
+
+    def test_tool_output_maps_call_id_with_real_sdk_shape(self):
+        """SDK 0.19.x 的真实输出项是 dict（call_id/output/type），无 name/id，
+        必须能通过 call_id 反查出函数名，否则前端状态无法更新。"""
+        agent = TestHubAgent()
+
+        async def _fake_create():
+            return object()
+
+        agent._create_agent = _fake_create
+
+        async def fake_stream():
+            yield RunItemStreamEvent(
+                name="tool_called",
+                item=SimpleNamespace(
+                    raw_item=SimpleNamespace(
+                        id="item_1",
+                        call_id="call_1",
+                        name="agent_browser",
+                        arguments='{"command": "open https://example.com"}',
+                    )
+                ),
+            )
+            yield RunItemStreamEvent(
+                name="tool_output",
+                item=SimpleNamespace(
+                    raw_item={
+                        "call_id": "call_1",
+                        "output": '{"success": true}',
+                        "type": "function_call_output",
+                    }
+                ),
+            )
+
+        fake_result = SimpleNamespace(stream_events=fake_stream, final_output="完成")
+        with patch("apps.assistant.agent.Runner.run_streamed", return_value=fake_result):
+            events = asyncio.run(self._collect(agent))
+
+        self.assertEqual(events[0]["id"], "call_1")
+        self.assertEqual(events[0]["name"], "agent_browser")
+        self.assertEqual(events[1]["type"], "tool_output")
+        self.assertEqual(events[1]["id"], "call_1")
+        self.assertEqual(events[1]["name"], "agent_browser")
+        self.assertEqual(events[1]["output"], '{"success": true}')
 
     def test_max_turns_exceeded_yields_error(self):
         agent = TestHubAgent()

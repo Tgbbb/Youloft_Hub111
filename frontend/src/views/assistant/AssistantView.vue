@@ -430,6 +430,7 @@ const toolLabels = {
   update_knowledge_base: '正在更新知识库...',
   bash: '正在执行命令...',
   'agent-browser': '正在操作浏览器...',
+  agent_browser: '正在操作浏览器...',
   navigate: '正在打开页面...',
   snapshot: '正在获取页面内容...',
   screenshot: '正在截取页面...',
@@ -604,7 +605,8 @@ const handleSSEEvent = (eventType, data) => {
     case 'tool_output': {
       // 找到最近的同名 tool_call 并更新状态
       const lastTool = [...chatItems.value].reverse().find(
-        item => item.type === 'tool_call' && item.name === data.name && item.status === 'running' &&
+        item => item.type === 'tool_call' && item.status === 'running' &&
+                (!data.name || item.name === data.name) &&
                 (!data.id || !item.toolCallId || item.toolCallId === data.id)
       )
       if (lastTool) {
