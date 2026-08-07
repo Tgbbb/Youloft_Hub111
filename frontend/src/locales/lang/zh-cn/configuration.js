@@ -25,23 +25,66 @@ export default {
   // Agent 配置
   agent: {
     title: 'TestHub Agent 配置',
-    description: '配置大语言模型以启用对话式 AI 测试协作者',
+    description: '配置大语言模型以启用对话式 AI 测试协作者（基于 OpenAI Agents SDK）',
     llmConfig: 'LLM 配置',
+    currentConfig: '当前配置',
+    sections: {
+      connection: '连接信息',
+      parameters: '模型参数',
+      prompt: '系统提示词',
+      enable: '启用与操作'
+    },
     provider: '模型提供商',
+    providerHint: '选择提供商后自动填充 Base URL 与推荐模型，可手动修改',
     modelName: '模型名称',
+    modelNamePlaceholder: '如: qwen-plus, deepseek-chat, gpt-4o',
+    modelNameHint: '填写目标提供商实际支持的模型标识',
     apiKey: 'API Key',
+    apiKeyPlaceholder: '请输入 API Key',
+    apiKeyPlaceholderEdit: '留空则沿用已保存的 Key',
+    apiKeyHint: '保存后 Key 将加密存储，页面仅显示掩码',
+    apiKeyMaskHint: '已保存的 Key',
     baseUrl: 'API Base URL',
+    baseUrlPlaceholder: 'https://api.deepseek.com',
+    baseUrlHint: 'OpenAI 兼容接口地址，留空使用提供商默认地址',
+    protocol: '接入协议',
+    protocols: {
+      auto: '自动探测',
+      responses: 'Responses API',
+      chatCompletions: 'Chat Completions'
+    },
+    protocolHint: '自动探测优先使用 Responses API，不支持时自动降级 Chat Completions；也可按模型服务商能力手动固定',
     maxTokens: '最大 Token 数',
-    maxToolCalls: '单轮最大工具调用',
+    maxToolCalls: '最大轮数（含工具调用）',
     temperature: '温度参数',
     systemPrompt: '额外系统提示词',
+    systemPromptPlaceholder: '追加到 Agent 系统提示词末尾的自定义内容（可选）',
+    systemPromptHint: '用于注入团队规范、测试偏好等长期约束',
+    parametersHint: '控制 Agent 单次对话最多执行的模型轮数（每轮可含多次工具调用），防止死循环；默认 20 一般够用，复杂任务可调大',
+    enableHint: '启用后 Agent 将使用此配置，其他配置自动停用',
     testConnection: '测试连接',
+    toolGroups: {
+      label: '启用工具组',
+      hint: '按后台功能模块裁剪 Agent 工具，减少模型上下文占用与调用成本；不勾选任何组表示全部启用',
+      selectAll: '全选',
+      selectNone: '全部启用',
+      project: '项目与知识库',
+      apiTesting: '接口测试',
+      testcases: '测试用例',
+      uiAutomation: 'UI 自动化',
+      documents: '文档与文件'
+    },
     messages: {
       testSuccess: '连接成功！',
       testFailed: '连接失败',
       saveSuccess: '配置保存成功！',
       saveFailed: '保存失败',
-      loadFailed: '加载配置失败'
+      loadFailed: '加载配置失败',
+      enterApiKey: '请先输入 API Key，或先保存配置后测试',
+      requiredField: '请选择/填写{field}',
+      deleteTitle: '删除确认',
+      deleteConfirm: '确定要删除 Agent 配置吗？删除后将回退到 AI 用例生成的模型配置。',
+      deleteSuccess: '配置已删除'
     }
   },
 

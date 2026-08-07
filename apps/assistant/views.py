@@ -126,9 +126,9 @@ class ChatViewSet(viewsets.ViewSet):
 
         try:
             for event in agent.chat(message, history):
-                if event['type'] == 'text':
+                if event['type'] == 'message_delta':
                     full_response.append(event['content'])
-                elif event['type'] == 'tool_call':
+                elif event['type'] == 'tool_start':
                     tool_calls.append({
                         'name': event['name'],
                         'args': event['args'],
@@ -231,26 +231,26 @@ class ChatViewSet(viewsets.ViewSet):
                 )
 
                 for event in agent.chat(message, history):
-                    if event['type'] == 'text':
+                    if event['type'] == 'message_delta':
                         full_text += event['content']
-                        yield f'event: text\ndata: {json.dumps({"content": event["content"]}, ensure_ascii=False)}\n\n'
+                        yield f'event: message_delta\ndata: {json.dumps({"content": event["content"]}, ensure_ascii=False)}\n\n'
 
-                    elif event['type'] == 'tool_call':
-                        yield f'event: tool\ndata: {json.dumps({"name": event["name"], "args": event.get("args", {})}, ensure_ascii=False, default=str)}\n\n'
+                    elif event['type'] == 'tool_start':
+                        yield f'event: tool_start\ndata: {json.dumps({"id": event.get("id", ""), "name": event["name"], "args": event.get("args", {})}, ensure_ascii=False, default=str)}\n\n'
 
-                    elif event['type'] == 'tool_result':
-                        yield f'event: tool_result\ndata: {json.dumps({"name": event["name"], "result": event["result"]}, ensure_ascii=False)}\n\n'
+                    elif event['type'] == 'tool_output':
+                        yield f'event: tool_output\ndata: {json.dumps({"id": event.get("id", ""), "name": event["name"], "output": event.get("output", "")}, ensure_ascii=False, default=str)}\n\n'
 
                     elif event['type'] == 'error':
                         yield f'event: error\ndata: {json.dumps({"content": event["content"]}, ensure_ascii=False)}\n\n'
 
-                    elif event['type'] == 'done':
+                    elif event['type'] == 'run_done':
                         assistant_message = ChatMessage.objects.create(
                             session=session,
                             role='assistant',
                             content=full_text.strip(),
                         )
-                        yield f'event: done\ndata: {json.dumps({"message_id": assistant_message.id, "tool_calls_count": event.get("tool_calls_count", 0), "tool_calls_made": event.get("tool_calls_made", [])}, ensure_ascii=False)}\n\n'
+                        yield f'event: run_done\ndata: {json.dumps({"message_id": assistant_message.id, "tool_calls": event.get("tool_calls", []), "final_output": event.get("final_output", "")}, ensure_ascii=False)}\n\n'
 
             except Exception as e:
                 logger.error(f'Stream error: {e}', exc_info=True)
@@ -428,11 +428,11 @@ class ChatViewSet(viewsets.ViewSet):
 
         try:
             for event in agent.chat(message):
-                if event['type'] == 'text':
+                if event['type'] == 'message_delta':
                     results['responses'].append({'type': 'text', 'content': event['content']})
-                elif event['type'] == 'tool_call':
+                elif event['type'] == 'tool_start':
                     results['responses'].append({
-                        'type': 'tool_call',
+                        'type': 'tool_start',
                         'name': event['name'],
                         'args': event.get('args', {}),
                     })

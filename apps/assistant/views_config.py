@@ -155,58 +155,109 @@ class AgentConfigViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def test_connection(self, request):
-        """测试 Agent LLM 连接"""
-        model_name = request.data.get('model_name', 'qwen-plus')
-        api_key = request.data.get('api_key', '')
-        base_url = request.data.get('base_url', '')
-        provider = request.data.get('provider', 'qwen')
+        """测试 Agent LLM 连接（与 sdk_runtime 同一套协议逻辑）。
+
+        - 前端可传 config_id + use_stored_key=true 使用已保存的 API Key 测试；
+        - 按 api_protocol 测试：auto 优先探测 Responses，失败降级 Chat Completions。
+        """
+        from apps.assistant import sdk_runtime
+
+        config_id = request.data.get('config_id')
+        use_stored_key = request.data.get('use_stored_key', False)
+
+        stored = None
+        if use_stored_key and config_id:
+            stored = AgentConfig.objects.filter(pk=config_id).first()
+
+        model_name = request.data.get('model_name') or (stored.model_name if stored else 'qwen-plus')
+        api_key = request.data.get('api_key') or (stored.api_key if stored else '')
+        base_url = request.data.get('base_url') or (stored.base_url if stored else '')
+        provider = request.data.get('provider') or (stored.provider if stored else 'qwen')
+        api_protocol = request.data.get('api_protocol') or (stored.api_protocol if stored else 'auto')
 
         if not api_key:
-            return Response({'error': 'API Key 是必填项'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'API Key 是必填项，或先保存配置后使用已保存的 Key 测试'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        target_url = base_url.rstrip('/')
+        if not target_url:
+            target_url = (sdk_runtime.PROVIDER_DEFAULT_BASE.get(provider, '') or '').rstrip('/')
+        if not target_url:
+            return Response({'error': '请填写 API Base URL 或选择模型提供商'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model_name,
+            'input': 'ping',
+            'max_output_tokens': 16,
+            'stream': False,
+        }
+        chat_payload = {
+            'model': model_name,
+            'messages': [{'role': 'user', 'content': 'ping'}],
+            'max_tokens': 16,
+        }
+
+        def _probe(url, body):
+            candidates = [url]
+            # 兼容不带 /v1 的裸地址（如 https://api.deepseek.com）
+            if not url.endswith('/v1') and '/compatible-mode/v1' not in url:
+                candidates.append(url + '/v1')
+            last_err = None
+            for candidate in dict.fromkeys(candidates):
+                resp = requests.post(candidate, headers=headers, json=body, timeout=20)
+                if resp.status_code == 200:
+                    return True, None
+                last_err = f'{candidate}: {resp.status_code} {resp.text[:200]}'
+            return False, last_err
 
         try:
-            # 用 OpenAI 兼容接口发送测试请求
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
+            protocol_ok = {}
+            used_protocol = None
+            error_detail = None
 
-            target_url = base_url
-            if not target_url:
-                if provider == 'deepseek':
-                    target_url = 'https://api.deepseek.com'
-                elif provider == 'siliconflow':
-                    target_url = 'https://api.siliconflow.cn'
-                elif provider == 'qwen':
-                    target_url = 'https://dashscope.aliyuncs.com/compatible-mode'
-
-            # Normalize URL
-            target_url = target_url.rstrip('/')
-            if not target_url.endswith('/v1'):
-                if '/compatible-mode' in target_url:
-                    pass  # DashScope 兼容模式不需要 /v1
+            if api_protocol in ('responses', 'chat_completions'):
+                if api_protocol == 'responses':
+                    ok, err = _probe(f'{target_url}/responses', payload)
+                    protocol_ok['responses'] = ok
+                    used_protocol = 'responses' if ok else None
+                    error_detail = err
                 else:
-                    target_url = target_url + '/v1'
-
-            response = requests.post(
-                f'{target_url}/chat/completions',
-                headers=headers,
-                json={
-                    'model': model_name,
-                    'messages': [{'role': 'user', 'content': 'Hello'}],
-                    'max_tokens': 10
-                },
-                timeout=15
-            )
-
-            if response.status_code == 200:
-                return Response({'message': '连接成功！', 'success': True})
+                    ok, err = _probe(f'{target_url}/chat/completions', chat_payload)
+                    protocol_ok['chat_completions'] = ok
+                    used_protocol = 'chat_completions' if ok else None
+                    error_detail = err
             else:
+                # auto：优先探测 Responses，失败再探测 Chat Completions
+                ok, err = _probe(f'{target_url}/responses', payload)
+                protocol_ok['responses'] = ok
+                if ok:
+                    used_protocol = 'responses'
+                else:
+                    ok2, err2 = _probe(f'{target_url}/chat/completions', chat_payload)
+                    protocol_ok['chat_completions'] = ok2
+                    error_detail = err2
+                    if ok2:
+                        used_protocol = 'chat_completions'
+
+            if used_protocol:
                 return Response({
-                    'error': f'连接失败: {response.status_code}',
-                    'detail': response.text[:500],
-                    'success': False
-                }, status=status.HTTP_400_BAD_REQUEST)
+                    'message': '连接成功！',
+                    'success': True,
+                    'protocol': used_protocol,
+                    'protocol_label': 'Responses API' if used_protocol == 'responses' else 'Chat Completions',
+                    'protocol_support': protocol_ok,
+                    'model': model_name,
+                })
+            return Response({
+                'error': f'连接失败: {error_detail or "两种协议均不支持"}',
+                'success': False,
+                'protocol_support': protocol_ok,
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         except requests.exceptions.Timeout:
             return Response({'error': '连接超时', 'success': False},

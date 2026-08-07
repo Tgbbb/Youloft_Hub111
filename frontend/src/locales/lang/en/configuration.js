@@ -25,23 +25,66 @@ export default {
   // Agent Configuration
   agent: {
     title: 'TestHub Agent Configuration',
-    description: 'Configure LLM to enable conversational AI test collaborator',
+    description: 'Configure LLM to enable the conversational AI test collaborator (OpenAI Agents SDK)',
     llmConfig: 'LLM Configuration',
+    currentConfig: 'Current Config',
+    sections: {
+      connection: 'Connection',
+      parameters: 'Model Parameters',
+      prompt: 'System Prompt',
+      enable: 'Enable & Actions'
+    },
     provider: 'Model Provider',
+    providerHint: 'Base URL and recommended model are auto-filled, you can modify them',
     modelName: 'Model Name',
+    modelNamePlaceholder: 'e.g., qwen-plus, deepseek-chat, gpt-4o',
+    modelNameHint: 'Use the exact model identifier supported by the provider',
     apiKey: 'API Key',
+    apiKeyPlaceholder: 'Enter your API Key',
+    apiKeyPlaceholderEdit: 'Leave empty to keep the stored Key',
+    apiKeyHint: 'The Key is stored securely and only shown masked',
+    apiKeyMaskHint: 'Stored Key',
     baseUrl: 'API Base URL',
+    baseUrlPlaceholder: 'https://api.deepseek.com',
+    baseUrlHint: 'OpenAI-compatible endpoint; leave empty for the provider default',
+    protocol: 'API Protocol',
+    protocols: {
+      auto: 'Auto Detect',
+      responses: 'Responses API',
+      chatCompletions: 'Chat Completions'
+    },
+    protocolHint: 'Auto detect prefers Responses API and falls back to Chat Completions; you can also fix the protocol manually',
     maxTokens: 'Max Tokens',
-    maxToolCalls: 'Max Tool Calls Per Round',
+    maxToolCalls: 'Max Turns (incl. tool calls)',
     temperature: 'Temperature',
     systemPrompt: 'Extra System Prompt',
+    systemPromptPlaceholder: 'Extra content appended to the Agent system prompt (optional)',
+    systemPromptHint: 'Use it to inject team conventions, testing preferences and long-lived constraints',
+    parametersHint: 'Controls the max model turns in one conversation (each turn may include several tool calls), preventing runaway loops. 20 is usually enough; raise it for complex tasks',
+    enableHint: 'When enabled, this config is used by the Agent and other configs are deactivated',
     testConnection: 'Test Connection',
+    toolGroups: {
+      label: 'Enabled Tool Groups',
+      hint: 'Enable tools by backend module to reduce context usage and cost; empty selection means all tools are enabled',
+      selectAll: 'Select all',
+      selectNone: 'Enable all',
+      project: 'Project & Knowledge Base',
+      apiTesting: 'API Testing',
+      testcases: 'Test Cases',
+      uiAutomation: 'UI Automation',
+      documents: 'Documents & Files'
+    },
     messages: {
       testSuccess: 'Connection successful!',
       testFailed: 'Connection failed',
       saveSuccess: 'Configuration saved!',
       saveFailed: 'Save failed',
-      loadFailed: 'Failed to load configuration'
+      loadFailed: 'Failed to load configuration',
+      enterApiKey: 'Enter an API Key, or save the config first and test with the stored Key',
+      requiredField: 'Please select/fill {field}',
+      deleteTitle: 'Delete Confirmation',
+      deleteConfirm: 'Delete this Agent configuration? The system will fall back to the AI test-case generation model config.',
+      deleteSuccess: 'Configuration deleted'
     }
   },
 

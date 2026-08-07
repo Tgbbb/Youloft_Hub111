@@ -32,8 +32,14 @@ class AgentConfig(models.Model):
         ('deepseek', 'DeepSeek'),
         ('qwen', '通义千问'),
         ('siliconflow', '硅基流动'),
+        ('zhipu', '智谱'),
         ('openai', 'OpenAI'),
         ('other', '其他'),
+    ]
+    PROTOCOL_CHOICES = [
+        ('auto', '自动探测'),
+        ('responses', 'Responses API'),
+        ('chat_completions', 'Chat Completions'),
     ]
 
     name = models.CharField(max_length=200, verbose_name='配置名称')
@@ -42,10 +48,15 @@ class AgentConfig(models.Model):
     api_key = models.CharField(max_length=500, verbose_name='API Key')
     base_url = models.URLField(max_length=500, blank=True, verbose_name='API Base URL',
                                 help_text='OpenAI兼容接口地址，留空使用默认')
+    api_protocol = models.CharField(max_length=20, choices=PROTOCOL_CHOICES, default='auto',
+                                     verbose_name='接入协议',
+                                     help_text='自动探测优先使用 Responses API，失败自动降级 Chat Completions')
     max_tokens = models.IntegerField(default=8192, verbose_name='最大Token数')
     temperature = models.FloatField(default=0.7, verbose_name='温度参数')
     max_tool_calls = models.IntegerField(default=20, verbose_name='单轮最大工具调用次数',
                                          help_text='Agent 单轮对话最多调用的工具次数，复杂任务可调大')
+    tool_groups = models.JSONField(default=list, blank=True, verbose_name='启用工具组',
+                                   help_text='按后台功能模块启用工具，空表示全部启用')
     is_active = models.BooleanField(default=True, verbose_name='是否启用',
                                      help_text='启用后 Agent 将使用此配置')
     system_prompt_extra = models.TextField(blank=True, verbose_name='额外系统提示词',

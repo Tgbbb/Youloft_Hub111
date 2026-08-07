@@ -15,8 +15,8 @@ class AgentConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentConfig
         fields = ['id', 'name', 'provider', 'model_name', 'api_key',
-                  'base_url', 'max_tokens', 'max_tool_calls', 'temperature', 'is_active',
-                  'system_prompt_extra', 'created_at', 'updated_at']
+                  'base_url', 'api_protocol', 'max_tokens', 'max_tool_calls', 'tool_groups',
+                  'temperature', 'is_active', 'system_prompt_extra', 'created_at', 'updated_at']
         extra_kwargs = {
             'api_key': {'write_only': True}
         }

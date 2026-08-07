@@ -577,7 +577,7 @@ const sendMessage = async () => {
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const reader = response.body.getReader(); const decoder = new TextDecoder()
-    let buffer = ''; let currentEventType = 'text'
+    let buffer = ''; let currentEventType = 'message_delta'
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -586,7 +586,7 @@ const sendMessage = async () => {
       for (const line of lines) {
         if (line.startsWith('event: ')) { currentEventType = line.slice(7).trim(); continue }
         if (line.startsWith('data: ')) {
-          try { handleSSEEvent(currentEventType || 'text', JSON.parse(line.slice(6))) } catch { /* skip */ }
+          try { handleSSEEvent(currentEventType || 'message_delta', JSON.parse(line.slice(6))) } catch { /* skip */ }
         }
       }
     }
@@ -596,32 +596,33 @@ const sendMessage = async () => {
 
 const handleSSEEvent = (eventType, data) => {
   switch (eventType) {
-    case 'text': streamBuffer.value += data.content || ''; scrollToBottom(); break
-    case 'tool':
-      chatItems.value.push({ type: 'tool_call', name: data.name, status: 'running' })
+    case 'message_delta': streamBuffer.value += data.content || ''; scrollToBottom(); break
+    case 'tool_start':
+      chatItems.value.push({ type: 'tool_call', name: data.name, status: 'running', toolCallId: data.id || '' })
       scrollToBottom()
       break
-    case 'tool_result': {
+    case 'tool_output': {
       // 找到最近的同名 tool_call 并更新状态
       const lastTool = [...chatItems.value].reverse().find(
-        item => item.type === 'tool_call' && item.name === data.name && item.status === 'running'
+        item => item.type === 'tool_call' && item.name === data.name && item.status === 'running' &&
+                (!data.id || !item.toolCallId || item.toolCallId === data.id)
       )
       if (lastTool) {
-        lastTool.status = data.result?.includes('"success": true') || data.result?.includes('"success":true')
-          ? 'success' : data.result?.includes('"error"') || data.result?.includes('"success": false')
+        const output = data.output || ''
+        lastTool.status = output.includes('"success": true') || output.includes('"success":true')
+          ? 'success' : output.includes('"error"') || output.includes('"success": false')
           ? 'error' : 'done'
-        lastTool.result = data.result || ''
+        lastTool.result = output
       }
       scrollToBottom()
       break
     }
-    case 'done':
+    case 'run_done':
       if (streamBuffer.value.trim()) {
         // 幻觉提示：如果 Agent 没有任何 tool 调用但回复看起来像操作结果
-        const tcCount = data.tool_calls_count || 0
-        const tcMade = data.tool_calls_made || []
+        const tcMade = data.tool_calls || []
         let finalContent = streamBuffer.value
-        if (tcCount === 0 && /已(创建|删除|修改|执行|更新|添加|导入|保存|生成)/.test(finalContent)) {
+        if (tcMade.length === 0 && /已(创建|删除|修改|执行|更新|添加|导入|保存|生成)/.test(finalContent)) {
           finalContent += '\n\n⚠️ 系统提示：以上内容未经 Tool 实际执行，可能是模型生成的幻觉信息，请谨慎核实。'
         }
         chatItems.value.push({ type: 'message', role: 'assistant', content: finalContent })

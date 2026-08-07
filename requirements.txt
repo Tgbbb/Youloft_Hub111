@@ -191,3 +191,7 @@ numpy==1.26.4
 daphne==4.2.1
 channels==4.3.2
 channels-redis==4.3.0
+
+# Agent 编排（替代 qwen-agent）
+openai-agents==0.19.4
+openai>=2.45.0,<3
