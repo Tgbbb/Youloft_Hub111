@@ -56,8 +56,84 @@ def _adb(device_id, *args, timeout=15):
                           encoding='utf-8', errors='replace', **_SUBPROCESS_KWARGS)
 
 def adb_input_text(device_id, text):
-    """输入文本：空格用 %s 转义（adb shell input text 的约定），& 用反斜杠转义"""
-    _adb(device_id, 'shell', 'input', 'text', str(text or '').replace(' ', '%s').replace('&', '\\&'))
+    """输入文本：非 ASCII/特殊字符走 yadb（支持中文），否则单引号全字符转义
+    走 `input text`（对齐 Midscene shellEscapeArg，空格/&/;/$/` 等全部由
+    单引号保护，不再逐字转义）。"""
+    text = str(text or '')
+    if not text:
+        return
+    if _needs_yadb(text):
+        if _yadb_input(device_id, text):
+            logger.info('[ADB] 使用 yadb 输入非 ASCII/特殊字符')
+            return
+        logger.warning('[ADB] yadb 不可用，降级 input text（非 ASCII 文本可能无法输入）')
+    escaped = text.replace("'", "'\\''")
+    _adb(device_id, 'shell', 'input', 'text', f"'{escaped}'")
+
+
+_YADB_PUSHED_DEVICES = set()
+
+
+def _yadb_bin_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'midscene_ai', 'bin', 'yadb')
+
+
+def _download_yadb(dest):
+    """尽力下载 yadb 二进制（Midscene 同款 GitHub Release v1.1.1），失败返回 False。"""
+    url = 'https://github.com/ysbing/YADB/releases/download/v1.1.1/yadb'
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        r = httpx.get(url, timeout=60, follow_redirects=True)
+        if r.status_code == 200 and r.content:
+            with open(dest, 'wb') as f:
+                f.write(r.content)
+            logger.info(f'[ADB] yadb 已下载: {dest} ({len(r.content)} bytes)')
+            return True
+        logger.warning(f'[ADB] yadb 下载失败 HTTP {r.status_code}')
+    except Exception as e:
+        logger.warning(f'[ADB] yadb 下载失败: {e}')
+    return False
+
+
+def _ensure_yadb(device_id):
+    """确保 yadb 二进制已推送到设备 /data/local/tmp（每设备一次）。"""
+    if device_id in _YADB_PUSHED_DEVICES:
+        return True
+    dest = _yadb_bin_path()
+    if not os.path.exists(dest):
+        _download_yadb(dest)
+    if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+        r = _adb(device_id, 'push', dest, '/data/local/tmp/yadb', timeout=120)
+        if r.returncode == 0:
+            _YADB_PUSHED_DEVICES.add(device_id)
+            logger.info(f'[ADB] yadb 已推送: {device_id}')
+            return True
+        logger.warning(f'[ADB] yadb push 失败: {r.stderr[:200]}')
+    return False
+
+
+def _needs_yadb(text):
+    """对齐 Midscene shouldUseYadbForText：非 ASCII / %x 格式符 / \\ ` $ /
+    同时含双引号与单引号时走 yadb，input text 无法正确处理。"""
+    return (
+        any(ord(ch) >= 128 for ch in text)
+        or re.search(r'%[a-zA-Z]', text) is not None
+        or re.search(r'[\\`$]', text) is not None
+        or ('"' in text and "'" in text)
+    )
+
+
+def _yadb_input(device_id, text):
+    """通过 yadb (app_process) 输入文本，支持中文/特殊字符。"""
+    if not _ensure_yadb(device_id):
+        return False
+    escaped = text.replace("'", "'\\''").replace('\n', '\\n')
+    r = _adb(device_id, 'shell', 'app_process',
+             '-Djava.class.path=/data/local/tmp/yadb', '/data/local/tmp',
+             'com.ysbing.yadb.Main', '-keyboard', f"'{escaped}'", timeout=30)
+    if r.returncode != 0:
+        logger.warning(f'[ADB] yadb 执行失败: {r.stderr[:200]}')
+    return r.returncode == 0
 
 def adb_execute(device_id, action):
     t = action.get('action', '')
@@ -132,6 +208,13 @@ def adb_screenshot(device_id):
     return result.stdout
 
 def adb_get_screen_size(device_id):
+    """返回实际截图尺寸（以 screencap 实测为准），失败回退 wm size。"""
+    try:
+        size = png_size(adb_screenshot(device_id))
+        if size:
+            return size
+    except Exception:
+        pass
     r = _adb(device_id, 'shell', 'wm', 'size')
     m = re.search(r'(\d+)x(\d+)', r.stdout)
     return (int(m.group(1)), int(m.group(2))) if m else (1080,1920)
@@ -149,10 +232,26 @@ def grant_permissions(device_id, package):
 # 截图压缩 + 保存
 # ============================================================
 
-def _compress_png(png_bytes):
+def png_size(png_bytes):
+    """读取 PNG 实际像素尺寸 (width, height)；解析失败返回 None。"""
     try:
         from PIL import Image; import io
-        img = Image.open(io.BytesIO(png_bytes)); img = img.resize((405,900), Image.LANCZOS)
+        return Image.open(io.BytesIO(png_bytes)).size
+    except Exception:
+        return None
+
+def _compress_png(png_bytes):
+    """等比压缩：最长边不超过 900px，保持原图宽高比，避免方向/比例失真。"""
+    try:
+        from PIL import Image; import io
+        img = Image.open(io.BytesIO(png_bytes))
+        w, h = img.size
+        max_side = max(w, h)
+        if max_side > 900:
+            scale = 900.0 / max_side
+            w2 = max(1, int(round(w * scale)))
+            h2 = max(1, int(round(h * scale)))
+            img = img.resize((w2, h2), Image.LANCZOS)
         buf = io.BytesIO(); img.save(buf, format='PNG'); return buf.getvalue()
     except: return png_bytes
 
@@ -195,6 +294,41 @@ def _is_same_page_by_hash(png_bytes, expected_hash):
     if h == 0:
         return False
     return (h ^ expected).bit_count() < 3
+
+def _action_fingerprint(action):
+    """动作指纹：覆盖 swipe 四坐标与 input 文本，用于卡死判定（对齐 aiAct）。"""
+    t = action.get('action', '')
+    parts = [t]
+    for coord in ('x', 'y', 'x1', 'y1', 'x2', 'y2'):
+        if action.get(coord) is not None:
+            parts.append(f'{coord}={action[coord]}')
+    if t == 'input':
+        parts.append(f'text={action.get("text", "")}')
+    return '|'.join(parts)
+
+
+def _action_fingerprint_desc(action):
+    """动作指纹的人类可读描述，用于卡死报错信息。"""
+    t = action.get('action', '')
+    if t in ('tap', 'click', 'long_press'):
+        return f"{t}({action.get('x_pct', action.get('x', '?'))},{action.get('y_pct', action.get('y', '?'))})"
+    if t == 'swipe':
+        return (f"swipe(({action.get('x1_pct', action.get('x1', '?'))},"
+                f"{action.get('y1_pct', action.get('y1', '?'))})->"
+                f"({action.get('x2_pct', action.get('x2', '?'))},"
+                f"{action.get('y2_pct', action.get('y2', '?'))}))")
+    if t == 'input':
+        return f"input(text={str(action.get('text', ''))[:20]})"
+    return str(t)
+
+
+def _push_step_memory(step_memory, step_num, instruction, action_type='', data=''):
+    """记录已完成步骤摘要，供后续步骤 prompt 注入跨步记忆。"""
+    entry = {'step': step_num, 'instruction': str(instruction)[:60], 'action': action_type}
+    if data:
+        entry['data'] = str(data)[:200]
+    step_memory.append(entry)
+
 
 def save_screenshot(png_bytes, execution_id, step_num):
     d = os.path.join(settings.MEDIA_ROOT, 'midscene', str(execution_id))
@@ -249,9 +383,16 @@ step_status 说明：
 
 规则：
 - 指令含"验证/检查/确认/断言"→用assert，看图判断passed=true/false
+- 断言时页面仍在加载（加载转圈/骨架屏/进度条）→先用wait，不要断言，等页面加载完成再判断
 - 指令含"提取/获取/查询"→用query，data字段放提取结果
 - 如果界面加载完毕但找不到目标→用swipe滑动查找。绝对不要猜坐标
 - 如果界面还在加载/动画/过渡中→用wait等待
+- 滚动选项列表/下拉框：
+  - 从可滚动的选择器、下拉框、菜单等选项列表中选择时，先打开该控件；列表打开后与列表本身交互，不要操作页面其他区域
+  - 列表打开且目标选项可见→直接精确点击该选项；目标不可见→先滚动打开的列表/下拉框查找，不要放弃或去点其他元素
+  - 在打开的列表/下拉框内查找时，使用带明确距离的小步滚动（通常50-120像素），不要省略滚动距离，否则默认滚动距离可能跳过目标选项并造成来回振荡
+  - 列表内查找用短滚动，避免跳过中间选项
+- 输入文字后：上一步已执行输入动作且当前输入框不为空→直接视为输入成功；不要因为截图可见文字与目标不同（可能由裁剪、横向滚动、窄输入框、选中、光标或识别误差导致）就重复输入或修正输入；仅当输入框明确为空或页面出现明确错误提示时才重试输入
 - x_pct/y_pct必须是0到100之间的数字（如62表示62%，不要用625这样的三位数）
 - 顶部元素对应y_pct很小（例如最顶部按钮y_pct约5~8）
 - x_pct: 从左到右的百分比（0=最左，50=中间，100=最右）
@@ -290,13 +431,18 @@ def _parse_vlm_response(content):
     raise ValueError(f'无法解析 VLM 响应: {content[:300]}')
 
 
-def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, context=''):
+def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, context='',
+             system_prompt=None, return_raw=False, max_tokens=1024):
+    """调用 VLM。system_prompt 可替换（aiAct 引擎传入规划/locate 提示词）；
+    return_raw=True 时返回模型原始文本（XML 规划协议），否则返回解析后的 JSON 动作。"""
     png_bytes = _compress_png(png_bytes)
-    logger.info(f'[VLM] 截图已压缩: {len(png_bytes)} bytes (405x900)')
+    png_w, png_h = png_size(png_bytes) or (width, height)
+    logger.info(f'[VLM] 截图已压缩: {len(png_bytes)} bytes ({png_w}x{png_h})')
     b64 = base64.b64encode(png_bytes).decode('utf-8')
     ctx = f'全局提示: {context}' if context else ''
-    system_prompt = (VLM_SYSTEM_PROMPT
-                     .replace('{width}', str(width)).replace('{height}', str(height))
+    system_prompt = (VLM_SYSTEM_PROMPT if system_prompt is None else system_prompt)
+    system_prompt = (system_prompt
+                     .replace('{width}', str(png_w)).replace('{height}', str(png_h))
                      .replace('{context}', ctx))
     base_url = model_config.base_url if hasattr(model_config, 'base_url') else model_config.get('base_url','')
     api_key = model_config.api_key if hasattr(model_config, 'api_key') else model_config.get('api_key','')
@@ -316,7 +462,7 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
                                     {'role':'user','content':[
                                         {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}},
                                         {'type':'text','text':instruction}]}],
-                                      'max_tokens':1024,'temperature':0.1})
+                                      'max_tokens':max_tokens,'temperature':0.1})
                 r.raise_for_status()
             break
         except Exception as e:
@@ -328,6 +474,8 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
         raise last_error
     content = r.json()['choices'][0]['message']['content']
     logger.info(f'[VLM] 响应: {content[:200]}')
+    if return_raw:
+        return content
     return _parse_vlm_response(content)
 
 
@@ -381,6 +529,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             width, height = adb_get_screen_size(device_id)
         else:
             width, height = ios_dev.screen_size
+            try:
+                size = png_size(ios_dev.screenshot())
+                if size:
+                    width, height = size
+            except Exception:
+                pass
         logger.info(f'[Runner] 屏幕分辨率: {width}x{height}')
 
         # ---- 启动应用 ----
@@ -412,12 +566,36 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 except Exception: pass
                 time.sleep(1)
 
+        # 启动的包名（Android app_pkg / iOS ios_bid），供"打开应用"快捷分支与 aiAct 使用
+        app_package = app_pkg if platform == 'android' else (ios_bid if platform == 'ios' else '')
+
         # ---- 智能规划模式 ----
         auto_plan = getattr(execution_record, 'auto_plan', False)
         if auto_plan and steps:
             full_goal = ai_prompt.replace('\n', '，')
             logger.info(f'[Runner] aiAct 模式: VLM 持续决策，总目标={full_goal[:80]}...')
             steps = [{'instruction': full_goal}]  # 合并为一个任务
+            # 新引擎：规划 -> 定位 -> 执行 -> 反馈 -> 重规划（对齐 Midscene）
+            from .midscene_ai.engine import run_ai_act
+            device_ctx = {
+                'platform': platform,
+                'device_id': device_id,
+                'ios_dev': ios_dev,
+                'width': width,
+                'height': height,
+            }
+            use_locate = getattr(mc, 'use_locate', None) if mc is not None else None
+            return run_ai_act(
+                goal=full_goal,
+                device_ctx=device_ctx,
+                model_config=model_config,
+                max_steps=getattr(mc, 'max_steps', 30) if mc is not None else 30,
+                action_delay=getattr(mc, 'action_delay', 0.5) if mc is not None else 0.5,
+                context=ai_context,
+                progress_callback=progress_callback,
+                execution_record=execution_record,
+                use_locate=use_locate,
+            )
 
         # ---- 逐步执行 ----
         results = []
@@ -425,6 +603,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         step_retry_count = {}
         step_idx = 0
         stopped = False
+        step_memory = []  # 跨步记忆：已完成步骤摘要 + 提取数据，供后续步骤注入 prompt
 
         # ---- 逐步执行 ----
         replay_available = replay_data and replay_data.get('steps') and not auto_plan
@@ -438,7 +617,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             is_repeat = step.get('repeat', False)
             is_ai_act = auto_plan  # 智能规划模式 VLM 自己决定 done
 
-            if re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
+            if not auto_plan and re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
                                 'screenshot':'','aiReasoning':['ADB启动'],'action':'launch'})
                 step_idx += 1; continue
@@ -475,6 +654,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     if record_mode:
                                         while len(recording) <= step_idx: recording.append(None)
                                         recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                      r_actions[-1].get('action', 'tap') if r_actions else '')
                                     prev_png = png_after; step_idx += 1
                                     logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
                                     continue
@@ -495,6 +676,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
+                                _push_step_memory(step_memory, step_idx + 1, instruction)
                                 prev_png = png; step_idx += 1
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足)')
                                 continue
@@ -527,6 +709,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             if record_mode:
                                 while len(recording) <= step_idx: recording.append(None)
                                 recording[step_idx] = dict(r_step)
+                            _push_step_memory(step_memory, step_idx + 1, instruction, last_action)
                             prev_png = png; step_idx += 1
                             if progress_callback:
                                 progress_callback(step_idx, len(steps), {
@@ -556,6 +739,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             # 重复动作检测（每步独立）
             last_action_fp = ''
             repeat_count = 0
+            last_tap_feedback = ''  # tap 连续失败后的定向纠错提示，注入下一轮 prompt
 
             try:
                 for turn in range(max_turns):
@@ -633,9 +817,17 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         conditional_hint = ''
                         if is_conditional:
                             conditional_hint = '这是一个条件步骤：如果截图中能看到目标就点击，看不到就直接返回 done 跳过。'
+                        memory_text = ''
+                        if step_memory:
+                            mem_lines = [f"第{m['step']}步 {m['instruction']}"
+                                         + (f"（提取: {m['data']}）" if m.get('data') else '')
+                                         for m in step_memory[-3:]]
+                            memory_text = '\n'.join(mem_lines)
+                            memory_text = f'\n已完成步骤:\n{memory_text}\n提取到的数据在后续步骤可直接使用。'
                         prompt = (
                             f'当前步骤({step_idx+1}/{len(steps)}): {instruction}\n'
                             f'{conditional_hint}'
+                            f'{memory_text}'
                             f'如果当前截图与步骤目标无关（如弹窗、渠道选择页），'
                             f'请根据「全局提示」处理，step_status 填 "in_progress"。'
                             f'只有当你的动作直接执行了这条步骤指令时，step_status 填 "done"。'
@@ -643,7 +835,10 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         )
 
                     if page_unchanged:
-                        prompt += '\n上一次操作后页面未变化，请自行判断是否需要重试或调整。'
+                        if last_tap_feedback:
+                            prompt += f'\n{last_tap_feedback}'
+                        else:
+                            prompt += '\n上一次操作后页面未变化，请自行判断是否需要重试或调整。'
                     action = call_vlm(png, prompt, model_config, width, height, ai_context)
 
                     # 百分比→像素
@@ -683,15 +878,17 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     prev_action = last_action
                     last_action = t
 
-                    # 重复动作检测：连续3次相同操作且页面未变 → 卡死
-                    action_fp = f"{t}_{action.get('x_pct','')}_{action.get('y_pct','')}"
-                    if action_fp == last_action_fp and t in ('tap', 'click'):
+                    # 重复动作检测：相同指纹（覆盖swipe四坐标/input文本）+ 页面未变 → 卡死
+                    action_fp = _action_fingerprint(action)
+                    if (action_fp == last_action_fp
+                            and t in ('tap', 'click', 'long_press', 'swipe', 'input')
+                            and page_unchanged):
                         repeat_count += 1
                     else:
                         last_action_fp = action_fp
                         repeat_count = 0
                     if repeat_count >= 2:
-                        raise RuntimeError(f'连续{repeat_count+1}次重复{t}: ({action.get("x_pct","")},{action.get("y_pct","")})，操作无效，页面可能卡死或元素不可点击')
+                        raise RuntimeError(f'连续{repeat_count+1}次重复动作 {_action_fingerprint_desc(action)} 且页面未变化，操作无效，页面可能卡死或元素不可点击')
 
                     # 1. 按类型执行
                     if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
@@ -727,6 +924,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             if _is_same_page(png, after2):
                                 logger.info(f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，继续等待VLM判断')
                                 action['step_status'] = 'in_progress'
+                                last_tap_feedback = (
+                                    f"上次 {t} 坐标 ({action.get('x_pct', action.get('x', '?'))},"
+                                    f"{action.get('y_pct', action.get('y', '?'))}) 连续两次点击后页面无变化，"
+                                    f"可能目标被遮挡或坐标偏差，请更换目标或改用 back 动作，不要重复同一坐标")
+                            else:
+                                last_tap_feedback = ''
+                        else:
+                            last_tap_feedback = ''
                     else:
                         w = {'long_press':0.5,'back':0.5,'input':0.2,'swipe':1.5,
                              'wait':0,'assert':0,'query':0,'done':0}.get(t,0.5)
@@ -756,6 +961,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
                                 'screenshot':screenshot_url,'aiReasoning':reasonings,'action':last_action})
+                mem_data = str(action.get('data', '')) if (last_action == 'query' and action) else ''
+                _push_step_memory(step_memory, step_idx + 1, instruction, last_action, mem_data)
 
                 if progress_callback:
                     progress_callback(step_idx+1, len(steps), {'type':'step_done','step':step_idx+1,'total':len(steps),
