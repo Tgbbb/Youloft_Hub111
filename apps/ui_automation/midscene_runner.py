@@ -406,6 +406,66 @@ def _is_same_page_by_hash(png_bytes, expected_hash):
     return (h ^ expected).bit_count() < 3
 
 
+CONDITION_CONFIRM_PROMPT = (
+    '当前是条件步骤，指令: {instruction}\n'
+    '请观察截图，判断指令条件中描述的目标页面/元素是否出现。\n'
+    '只输出 JSON，不要输出任何其他内容：{{"present": true或false, "reasoning": "一句话说明"}}'
+)
+
+
+def _ask_condition_present(png_bytes, instruction, model_config, width, height):
+    """轻量 VLM 确认：条件步骤的目标元素是否出现在当前截图。返回 (present, reasoning)。"""
+    raw = call_vlm(png_bytes, CONDITION_CONFIRM_PROMPT.format(instruction=instruction),
+                   model_config, width=width, height=height, return_raw=True, max_tokens=256)
+    logger.info(f'[Condition] 元素确认响应: {str(raw)[:200]}')
+    m = re.search(r'"present"\s*:\s*(true|false)', raw, re.IGNORECASE)
+    if not m:
+        raise ValueError(f'元素确认响应缺少 present 字段: {str(raw)[:200]}')
+    reasoning = ''
+    rm = re.search(r'"reasoning"\s*:\s*"([^"]*)"', raw)
+    if rm:
+        reasoning = rm.group(1)
+    return m.group(1).lower() == 'true', reasoning
+
+
+def _confirm_condition_target(device_id, ios_dev, instruction, model_config, width, height,
+                              initial_png=None, max_attempts=2, wait_interval=2.0):
+    """条件步骤目标元素确认（带加载等待）：
+    - present=true → (True, 当前截图, reasoning)，播放录制动作
+    - 页面稳定且仍不存在 → (False, 当前截图, reasoning)，判定条件不满足跳过
+    - 页面一直在变化(加载中)重试耗尽 / 确认调用失败 → (None, 截图, reasoning)，由调用方降至 VLM
+    """
+    png = initial_png
+    last_png = None
+    stable_count = 0
+    reasoning = ''
+    for attempt in range(max_attempts):
+        if png is None:
+            png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        try:
+            present, reasoning = _ask_condition_present(png, instruction, model_config, width, height)
+        except Exception as e:
+            logger.warning(f'[Condition] 元素确认失败({e})，降至VLM')
+            return None, png, ''
+        if present:
+            logger.info(f'[Condition] 目标元素确认存在: {reasoning[:120]}')
+            return True, png, reasoning
+        # 未出现：判断页面是否仍在变化（加载中）
+        if last_png is not None and _is_same_page(last_png, png):
+            stable_count += 1
+        else:
+            stable_count = 0
+        last_png = png
+        if attempt >= 1 and stable_count >= 1:
+            logger.info(f'[Condition] 页面稳定且目标未出现，条件不满足: {reasoning[:120]}')
+            return False, png, reasoning
+        logger.info(f'[Condition] 目标未出现(第{attempt+1}/{max_attempts}次)，页面仍在变化，{wait_interval}s后重试')
+        png = None
+        time.sleep(wait_interval)
+    logger.warning('[Condition] 重试耗尽仍未确认目标元素，降至VLM')
+    return None, last_png, reasoning
+
+
 def _action_fingerprint(action):
     """动作指纹：覆盖 swipe 四坐标与 input 文本，用于卡死判定（对齐 aiAct）。"""
     t = action.get('action', '')
@@ -742,42 +802,74 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 if r_step and r_step.get('instruction', '').strip() == instruction.strip():
                     r_actions = r_step.get('actions', [])
                     is_cond = instruction.startswith('如果') or instruction.startswith('若')
-                    # 条件步骤三态模型：
-                    #   1) 满足 → 当前页匹配 act_before_hash(动作执行前指纹)，播放录制动作并校验 after_hash
-                    #   2) 跳过 → 录制时条件不满足(无动作)，当前页匹配 after_hash 即"跳过"指纹
-                    #   3) 未知 → 不匹配/缺字段(旧数据)，replay_fail+1 后落到 VLM 判断，不做盲目播放
+                    # 条件步骤判定模型：
+                    #   快速路径: 指纹命中 act_before_hash → 播放录制动作（after_hash 仅记日志，加载帧也会失真）
+                    #   主路径:   指纹未命中（如录制到加载帧）→ 元素级 VLM 确认，等待加载完成，存在→播放，稳定不存在→跳过
+                    #   兜底:     确认失败/无法判定 → replay_fail+1 落到 VLM 判断，不做盲目播放
                     if is_cond:
                         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         act_hash = r_step.get('act_before_hash', '')
                         after_hash = r_step.get('after_hash', '')
                         if r_actions:
-                            # 录制时条件满足：判断当前页是否就是动作执行前的状态
+                            # 快速路径：当前页匹配录制动作执行前指纹 → 直接播放
                             if act_hash and _is_same_page_by_hash(png, act_hash):
-                                # 同条件路径 → 播放录制动作
                                 _replay_actions(device_id, ios_dev, r_actions, width, height)
-                                # 动作后校验本步骤 after_hash
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
-                                if after_hash and _is_same_page_by_hash(png_after, after_hash):
-                                    replay_pass += 1
-                                    screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
-                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
-                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
-                                                    'action': r_actions[-1].get('action', 'tap')})
-                                    if record_mode:
-                                        while len(recording) <= step_idx: recording.append(None)
-                                        recording[step_idx] = dict(r_step)
-                                    _push_step_memory(step_memory, step_idx + 1, instruction,
-                                                      r_actions[-1].get('action', 'tap') if r_actions else '')
-                                    prev_png = png_after; step_idx += 1
-                                    logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
-                                    continue
-                                # 动作已播放但结果页与录制不符 → 不重复播放，直接降至VLM
-                                replay_fail += 1
-                                logger.warning(f'[Runner] 条件步骤{step_idx+1} 动作执行后pHash不匹配，降至VLM')
-                            else:
-                                # 未知状态：缺 act_before_hash(旧数据)或当前页不是录制时状态 → 降至VLM
-                                replay_fail += 1
-                                logger.info(f'[Runner] 条件步骤 {step_idx+1} 页面与录制状态不符，降至VLM')
+                                if after_hash and not _is_same_page_by_hash(png_after, after_hash):
+                                    # after_hash 在加载帧下同样失真，不阻断，仅记录
+                                    logger.warning(f'[Runner] 条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理')
+                                replay_pass += 1
+                                screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
+                                                'action': r_actions[-1].get('action', 'tap')})
+                                if record_mode:
+                                    while len(recording) <= step_idx: recording.append(None)
+                                    recording[step_idx] = dict(r_step)
+                                _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                  r_actions[-1].get('action', 'tap') if r_actions else '')
+                                prev_png = png_after; step_idx += 1
+                                logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
+                                continue
+                            # 主路径：指纹未命中 → 元素级确认（等待加载完成，避免录制到加载帧导致永久不匹配）
+                            present, png_conf, reasoning = _confirm_condition_target(
+                                device_id, ios_dev, instruction, model_config, width, height, initial_png=png)
+                            if present is True:
+                                _replay_actions(device_id, ios_dev, r_actions, width, height)
+                                png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                if after_hash and not _is_same_page_by_hash(png_after, after_hash):
+                                    logger.warning(f'[Runner] 条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理')
+                                replay_pass += 1
+                                screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                'screenshot': screenshot_url,
+                                                'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
+                                                'action': r_actions[-1].get('action', 'tap')})
+                                if record_mode:
+                                    while len(recording) <= step_idx: recording.append(None)
+                                    recording[step_idx] = dict(r_step)
+                                _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                  r_actions[-1].get('action', 'tap') if r_actions else '')
+                                prev_png = png_after; step_idx += 1
+                                logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(元素确认-条件满足)')
+                                continue
+                            if present is False:
+                                # 页面稳定且目标元素不存在 → 条件不满足，跳过
+                                replay_pass += 1
+                                screenshot_url = save_screenshot(png_conf, execution_record.id, step_idx+1)
+                                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                'screenshot': screenshot_url,
+                                                'aiReasoning': [f'[回放] 条件不满足-元素确认: {reasoning[:80]}']})
+                                if record_mode:
+                                    while len(recording) <= step_idx: recording.append(None)
+                                    recording[step_idx] = dict(r_step)
+                                _push_step_memory(step_memory, step_idx + 1, instruction)
+                                prev_png = png_conf; step_idx += 1
+                                logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足-元素确认)')
+                                continue
+                            # 确认失败/无法判定 → 降至VLM
+                            replay_fail += 1
+                            logger.info(f'[Runner] 条件步骤 {step_idx+1} 元素确认无法判定，降至VLM')
                         else:
                             # 录制时条件不满足(无动作)：after_hash 即"跳过"指纹
                             if after_hash and _is_same_page_by_hash(png, after_hash):
