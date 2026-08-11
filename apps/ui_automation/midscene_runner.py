@@ -744,7 +744,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     # 条件步骤三态模型：
                     #   1) 满足 → 当前页匹配 act_before_hash(动作执行前指纹)，播放录制动作并校验 after_hash
                     #   2) 跳过 → 录制时条件不满足(无动作)，当前页匹配 after_hash 即"跳过"指纹
-                    #   3) 未知 → 不匹配/缺字段(旧数据)，replay_fail+1 后落到 VLM 判断，不做盲目播放
+                    #   3) 未知 → 仅缺 act_before_hash 的极旧数据落到 VLM 判断；
+                    #      有指纹可比对但当前页不是目标页（含动作级门控全跳过）→ 条件不满足，直接跳过通过
                     if is_cond:
                         # 下一步是条件步骤 → 当前步执行后的页面受路径分叉影响（如关闭会员页后可能有/无挽留弹窗），
                         # 播放动作后不做 after_hash 校验，页面状态交给下一步条件判断
@@ -762,6 +763,19 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     logger.info(f'[Runner] 条件步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配动作')
                                 # 动作后校验本步骤 after_hash
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                if r_stats['played'] == 0:
+                                    # 动作全部被门控跳过 → 条件不满足，直接跳过通过（不再降级 VLM）
+                                    replay_pass += 1
+                                    screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(条件不满足-动作门控)']})
+                                    if record_mode:
+                                        while len(recording) <= step_idx: recording.append(None)
+                                        recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction)
+                                    prev_png = png_after; step_idx += 1
+                                    logger.info(f'[Runner] 条件步骤 {step_idx+1} 跳过(条件不满足-动作门控)')
+                                    continue
                                 if next_cond and r_stats['played'] > 0:
                                     # 动作已播放且下一步是条件步骤：结果页分叉，直接通过
                                     replay_pass += 1
@@ -832,7 +846,20 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 replay_fail += 1
                                 logger.warning(f'[Runner] 条件步骤{step_idx+1} 动作执行后pHash不匹配，降至VLM')
                             else:
-                                # 未知状态：缺 act_before_hash(旧数据)或当前页不是录制时状态 → 降至VLM
+                                if act_hash:
+                                    # 有 act_before_hash 但当前页不是目标页 → 条件不满足，直接跳过通过
+                                    replay_pass += 1
+                                    screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)']})
+                                    if record_mode:
+                                        while len(recording) <= step_idx: recording.append(None)
+                                        recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction)
+                                    prev_png = png; step_idx += 1
+                                    logger.info(f'[Runner] 条件步骤 {step_idx+1} 跳过(条件不满足)')
+                                    continue
+                                # 缺 act_before_hash 的极旧数据：无法比对目标页，保持降级 VLM 判断
                                 replay_fail += 1
                                 logger.info(f'[Runner] 条件步骤 {step_idx+1} 页面与录制状态不符，降至VLM')
                         else:

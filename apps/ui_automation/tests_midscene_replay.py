@@ -332,7 +332,7 @@ class ConditionalNextCondReplayTests(TestCase):
         img.save(buf, format='PNG')
         return buf.getvalue()
 
-    def _make_context(self):
+    def _make_context(self, steps=None):
         mc = mock.Mock()
         mc.ai_act_context = ''
         mc.app_package = ''
@@ -341,7 +341,7 @@ class ConditionalNextCondReplayTests(TestCase):
         mc.max_steps = 30
         mc.action_delay = 0.5
         mc.replay_data = [{
-            'steps': [
+            'steps': steps if steps is not None else [
                 {
                     'instruction': '如果展示会员购买页，就点击左上角关闭',
                     'actions': [{
@@ -400,6 +400,89 @@ class ConditionalNextCondReplayTests(TestCase):
         self.assertEqual(len(result['steps']), 2)
         self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
         self.vlm_mock.assert_not_called()
+
+    def test_new_format_all_gated_skip_passes_without_vlm(self):
+        # 新格式：条件步骤动作全部被门控跳过（目标页没出现）→ 条件不满足，直接跳过通过
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{
+                'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216,
+                'before_hash': 'H1', 'conditional': False,
+            }],
+            'after_hash': 'H1_AFTER',
+            'act_before_hash': 'H1',
+        }]
+        pngs = [self._img_png(i) for i in (1, 2, 3)]
+        state = {'i': 0}
+        def shot(*_args):
+            frame = pngs[state['i'] % len(pngs)]
+            state['i'] += 1
+            return frame
+        self.shot.side_effect = shot
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            _, execution, device, model = self._make_context(steps)
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员购买页，就点击左上角关闭',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=True, replay_index=0,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(result['steps']), 1)
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_not_called()
+
+    def test_old_format_act_hash_mismatch_skips_without_vlm(self):
+        # 旧格式：有 act_before_hash 但当前页不是目标页 → 条件不满足，直接跳过通过
+        steps = [{
+            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
+        }]
+        pngs = [self._img_png(i) for i in (1, 2)]
+        state = {'i': 0}
+        def shot(*_args):
+            frame = pngs[state['i'] % len(pngs)]
+            state['i'] += 1
+            return frame
+        self.shot.side_effect = shot
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            _, execution, device, model = self._make_context(steps)
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=True, replay_index=0,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(result['steps']), 1)
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_not_called()
+
+    def test_old_format_missing_act_hash_falls_back_to_vlm(self):
+        # 极旧数据：连 act_before_hash 都没有，无法比对目标页 → 保持降级 VLM 判断
+        steps = [{
+            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
+            'after_hash': 'H_AFTER',
+        }]
+        pngs = [self._img_png(i) for i in (1, 2)]
+        state = {'i': 0}
+        def shot(*_args):
+            frame = pngs[state['i'] % len(pngs)]
+            state['i'] += 1
+            return frame
+        self.shot.side_effect = shot
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            _, execution, device, model = self._make_context(steps)
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=True, replay_index=0,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(result['steps']), 1)
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_called_once()
 
 
 def _make_case(owner):
