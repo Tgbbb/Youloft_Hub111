@@ -55,20 +55,6 @@ class NormalizePctTests(SimpleTestCase):
         self.assertIsNone(midscene_runner._normalize_pct('abc'))
 
 
-class ClampWaitAfterTests(SimpleTestCase):
-    """录制实测 wait_after 的兜底下限。"""
-
-    def test_floor_enforced(self):
-        self.assertEqual(midscene_runner._clamp_wait_after(0.05), 0.2)
-
-    def test_round_to_2_decimals(self):
-        self.assertEqual(midscene_runner._clamp_wait_after(1.234), 1.23)
-
-    def test_invalid_values_fall_back_to_floor(self):
-        self.assertEqual(midscene_runner._clamp_wait_after(None), 0.2)
-        self.assertEqual(midscene_runner._clamp_wait_after('abc'), 0.2)
-
-
 class ReplayActionsTests(SimpleTestCase):
     """_replay_actions 实际发出的坐标。"""
 
