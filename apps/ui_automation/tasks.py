@@ -12,6 +12,25 @@ logger = logging.getLogger(__name__)
 from .midscene_runner import run_midscene_test
 
 
+def _append_replay_entry(midscene_case, entry, result):
+    """把本次录制写入用例 replay_data：新条目插队首，不限制条数，自动命名。
+    返回保存后的总条数。"""
+    passed = result.get('passedSteps', 0)
+    failed = result.get('failedSteps', 0)
+    total = result.get('totalSteps', 0)
+    entry.setdefault('name', f"录制 {timezone.now().strftime('%m-%d %H:%M')}")
+    entry['result'] = f'{passed}/{total} 通过' + (f'，{failed} 失败' if failed else '')
+    existing = midscene_case.replay_data
+    if isinstance(existing, dict):
+        existing = [existing]
+    elif not isinstance(existing, list):
+        existing = []
+    existing.insert(0, entry)
+    midscene_case.replay_data = existing
+    midscene_case.save(update_fields=['replay_data'])
+    return len(existing)
+
+
 def _send_progress_update(execution_id, status, progress, message=''):
     """通过 Django Channels 推送进度到前端"""
     try:
@@ -133,20 +152,12 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution.steps_detail = result.get('steps', [])
         execution.save()
 
-        # ---- 录制: 成功后加入列表，保留最近3条 ----
-        if record_mode and result.get('replay_data') and result['status'] == 'passed':
+        # ---- 录制: 无论通过/失败/停止都保留本次录制，不限制条数 ----
+        if record_mode and result.get('replay_data'):
             midscene_case.refresh_from_db()
             entry = result['replay_data']
-            entry['result'] = f'{result["passedSteps"]}/{result["totalSteps"]} passed'
-            existing = midscene_case.replay_data
-            if isinstance(existing, dict):
-                existing = [existing]
-            elif not isinstance(existing, list):
-                existing = []
-            existing.insert(0, entry)
-            midscene_case.replay_data = existing[:3]
-            midscene_case.save(update_fields=['replay_data'])
-            logger.info(f'[Task] 回放数据已保存到用例 {midscene_case.id}（共{len(existing[:3])}条）')
+            count = _append_replay_entry(midscene_case, entry, result)
+            logger.info(f'[Task] 回放数据已保存到用例 {midscene_case.id}（共{count}条）')
 
         if result['status'] == 'stopped':
             _send_progress_update(execution.id, 'stopped', execution.progress or 0, '用户已停止执行')

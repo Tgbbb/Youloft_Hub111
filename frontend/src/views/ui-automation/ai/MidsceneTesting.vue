@@ -137,9 +137,15 @@
               </span>
             </div>
             <div class="ms-cmd-strip__right">
-              <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" class="ms-select" style="width:170px">
-                <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.recorded_at?.substring(5,16) || '未知'} ${r.result || ''}`" :value="i" />
+              <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" class="ms-select" style="width:210px">
+                <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.name || r.recorded_at?.substring(5,16) || '未命名'} ${r.result || ''}`" :value="i" />
               </el-select>
+              <el-button v-if="replayList.length > 0" size="small" text @click="showReplayDetail = true" class="ms-btn--text">
+                <el-icon><View /></el-icon>&nbsp;明细
+              </el-button>
+              <el-button v-if="replayList.length > 0" size="small" text @click="renameReplayEntry" class="ms-btn--text">
+                <el-icon><EditPen /></el-icon>
+              </el-button>
               <el-button v-if="replayList.length > 0" size="small" type="danger" text @click="deleteReplayEntry" class="ms-btn--text">
                 <el-icon><Delete /></el-icon>
               </el-button>
@@ -299,6 +305,39 @@
         <el-button type="primary" @click="submitFolder" :loading="folderSaving">确定</el-button>
       </template>
     </el-dialog>
+
+    <!-- 录制明细抽屉 -->
+    <el-drawer v-model="showReplayDetail" :title="`录制明细${selectedReplay ? '：' + (selectedReplay.name || '未命名') : ''}`" size="48%">
+      <div v-if="!selectedReplay" style="color:#909399;font-size:13px">暂无录制数据</div>
+      <div v-else class="ms-detail">
+        <div class="ms-detail__head">
+          <span v-if="selectedReplay.result" class="ms-detail__result">{{ selectedReplay.result }}</span>
+          <span v-if="selectedReplay.device?.name" class="ms-detail__meta">
+            {{ selectedReplay.device.platform }} · {{ selectedReplay.device.name }}
+            <template v-if="selectedReplay.device.resolution"> · {{ selectedReplay.device.resolution.width }}x{{ selectedReplay.device.resolution.height }}</template>
+          </span>
+          <span v-if="selectedReplay.recorded_at" class="ms-detail__meta">{{ selectedReplay.recorded_at?.substring(0, 19).replace('T', ' ') }}</span>
+        </div>
+        <div v-for="(s, si) in (selectedReplay.steps || [])" :key="si" class="ms-detail-step">
+          <div class="ms-detail-step__head">
+            <span class="ms-detail-step__no">步骤 {{ si + 1 }}</span>
+            <span class="ms-detail-step__text">{{ s?.instruction || '（未录制）' }}</span>
+            <el-tag v-if="s?.actions?.length" size="small">{{ s.actions.length }} 个动作</el-tag>
+            <el-tag v-else-if="s?.after_hash" size="small" type="info">跳过</el-tag>
+          </div>
+          <div v-if="s?.after_hash" class="ms-detail-step__meta">校验指纹 after_hash: {{ s.after_hash }}</div>
+          <div v-if="s?.actions?.length" class="ms-detail-actions">
+            <div v-for="(a, ai) in s.actions" :key="ai" class="ms-detail-action">
+              <el-tag size="small" :type="a.conditional ? 'warning' : 'primary'" class="ms-detail-action__type">{{ a.action }}</el-tag>
+              <el-tag v-if="a.conditional" size="small" type="warning" effect="plain">障碍动作</el-tag>
+              <span class="ms-detail-action__desc">{{ actionDesc(a) }}</span>
+              <span class="ms-detail-action__meta">等待 {{ a.wait_after }}s</span>
+              <span v-if="a.before_hash" class="ms-detail-action__meta">前置 {{ String(a.before_hash).slice(0, 8) }}…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -306,7 +345,7 @@
 // ====== Entire script unchanged ======
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection, ArrowRight, Folder, FolderAdd, EditPen } from '@element-plus/icons-vue'
+import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection, ArrowRight, Folder, FolderAdd, EditPen, View } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 
 const cases = ref([])
@@ -409,6 +448,7 @@ const networkDevices = computed(() => devices.value.filter(d => d.platform === '
 const isRunning = computed(() => execution.value && ['pending', 'running'].includes(execution.value.status))
 const canExecute = computed(() => form.ai_prompt && selectedDeviceId.value && form.ai_model_config_id)
 const selectedReplayIndex = ref(0)
+const showReplayDetail = ref(false)
 const replayList = computed(() => {
   if (!currentCaseId.value) return []
   const c = cases.value.find(c => c.id === currentCaseId.value)
@@ -416,6 +456,16 @@ const replayList = computed(() => {
   if (Array.isArray(c.replay_data)) return c.replay_data
   return [c.replay_data]
 })
+const selectedReplay = computed(() => replayList.value[selectedReplayIndex.value] || null)
+const fmtNum = (v) => (v === undefined || v === null || v === '') ? '?' : v
+const actionDesc = (a) => {
+  if (!a) return ''
+  const t = a.action
+  if (t === 'input') return `文本: ${a.text || ''}`
+  if (t === 'swipe') return `(${fmtNum(a.x1_pct)}%,${fmtNum(a.y1_pct)}%) → (${fmtNum(a.x2_pct)}%,${fmtNum(a.y2_pct)}%)`
+  if (['tap', 'click', 'long_press'].includes(t)) return `(${fmtNum(a.x_pct)}%,${fmtNum(a.y_pct)}%) px(${fmtNum(a.x)},${fmtNum(a.y)})`
+  return t
+}
 const statusTagType = computed(() => {
   const m = { pending: 'info', running: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
   return m[execution.value?.status] || 'info'
@@ -443,6 +493,19 @@ const discoverDevices = async () => {
 const deleteReplayEntry = async () => {
   if (!currentCaseId.value) return
   try { await ElMessageBox.confirm('确定删除？', '确认', { type: 'warning' }); await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/delete_replay/`, { index: selectedReplayIndex.value }); if (selectedReplayIndex.value > 0) selectedReplayIndex.value--; await loadCases(); ElMessage.success('已删除') } catch (e) { if (e !== 'cancel') ElMessage.error('删除失败') }
+}
+const renameReplayEntry = async () => {
+  if (!currentCaseId.value) return
+  const cur = replayList.value[selectedReplayIndex.value]
+  try {
+    const { value } = await ElMessageBox.prompt('输入录制名称，用于在回放下拉中快速区分', '重命名录制', {
+      inputValue: cur?.name || '',
+      inputValidator: (v) => (v || '').trim() ? true : '名称不能为空',
+    })
+    await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/rename_replay/`, { index: selectedReplayIndex.value, name: value.trim() })
+    await loadCases()
+    ElMessage.success('已重命名')
+  } catch (e) { if (e !== 'cancel') ElMessage.error('重命名失败') }
 }
 const connectNetwork = async () => {
   if (!networkForm.ip.trim()) { ElMessage.warning('请输入 IP'); return }
@@ -969,6 +1032,45 @@ onUnmounted(() => stopPolling())
   &.badge-failed { background: rgba(245,108,108,.06); border-color: rgba(245,108,108,.2); color: #c03939; }
   &.badge-running { border-color: var(--ms-signal); color: #666; animation: ms-pulse 1s infinite; }
   &__mark { font-weight: 700; margin-right: 2px; }
+}
+
+/* ============================================
+   录制明细抽屉
+   ============================================ */
+.ms-detail {
+  font-size: 13px;
+  &__head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding-bottom: 14px; margin-bottom: 14px;
+    border-bottom: 1px solid #ececec;
+  }
+  &__result { font-weight: 700; color: #1a8051; }
+  &__meta { color: #909399; font-size: 12px; }
+}
+
+.ms-detail-step {
+  padding: 12px 0; border-bottom: 1px dashed #ececec;
+  &:last-child { border-bottom: none; }
+  &__head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  }
+  &__no {
+    font-weight: 700; color: #333;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+  }
+  &__text { flex: 1; min-width: 200px; color: #303133; line-height: 1.5; }
+  &__meta { margin-top: 4px; color: #909399; font-size: 11px; }
+}
+
+.ms-detail-actions {
+  margin-top: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+
+.ms-detail-action {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 10px; background: #f7f7f5;
+  &__desc { color: #303133; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; }
+  &__meta { color: #909399; font-size: 11px; }
 }
 
 /* ============================================

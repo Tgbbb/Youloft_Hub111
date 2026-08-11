@@ -3,10 +3,17 @@
 import io
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
 from PIL import Image
+from rest_framework.test import APIClient
 
+from apps.projects.models import Project
 from apps.ui_automation import midscene_runner
+from apps.ui_automation.models import MidsceneProject, MidsceneCase
+
+
+User = get_user_model()
 
 
 class CoordResolveTests(SimpleTestCase):
@@ -46,6 +53,20 @@ class NormalizePctTests(SimpleTestCase):
         self.assertEqual(midscene_runner._normalize_pct('50'), 50)
         self.assertIsNone(midscene_runner._normalize_pct(None))
         self.assertIsNone(midscene_runner._normalize_pct('abc'))
+
+
+class ClampWaitAfterTests(SimpleTestCase):
+    """录制实测 wait_after 的兜底下限。"""
+
+    def test_floor_enforced(self):
+        self.assertEqual(midscene_runner._clamp_wait_after(0.05), 0.2)
+
+    def test_round_to_2_decimals(self):
+        self.assertEqual(midscene_runner._clamp_wait_after(1.234), 1.23)
+
+    def test_invalid_values_fall_back_to_floor(self):
+        self.assertEqual(midscene_runner._clamp_wait_after(None), 0.2)
+        self.assertEqual(midscene_runner._clamp_wait_after('abc'), 0.2)
 
 
 class ReplayActionsTests(SimpleTestCase):
@@ -234,3 +255,95 @@ class GatedReplayTests(SimpleTestCase):
         stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
         self.assertEqual(stats, {'played': 1, 'skipped': 0})
         self.assertEqual(len(self._tap_calls()), 1)
+
+
+def _make_case(owner):
+    main = Project.objects.create(name='测试主项目', owner=owner)
+    project = MidsceneProject.objects.create(
+        name='Midscene项目', owner=owner, main_project=main,
+    )
+    return MidsceneCase.objects.create(
+        project=project, name='用例A', ai_prompt='打开应用', created_by=owner,
+    )
+
+
+class ReplayEntrySaveTests(TestCase):
+    """tasks._append_replay_entry：失败也保留、不限条数、自动命名。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-rp', password='pass')
+        self.case = _make_case(self.owner)
+
+    def test_failed_result_still_saved_with_name(self):
+        from apps.ui_automation import tasks
+        tasks._append_replay_entry(
+            self.case, {'steps': []},
+            {'passedSteps': 1, 'failedSteps': 2, 'totalSteps': 3},
+        )
+        self.case.refresh_from_db()
+        self.assertEqual(len(self.case.replay_data), 1)
+        entry = self.case.replay_data[0]
+        self.assertTrue(entry['name'])
+        self.assertEqual(entry['result'], '1/3 通过，2 失败')
+
+    def test_no_limit_and_newest_first(self):
+        from apps.ui_automation import tasks
+        for i in range(5):
+            tasks._append_replay_entry(
+                self.case, {'steps': [i]},
+                {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+            )
+        self.case.refresh_from_db()
+        self.assertEqual(len(self.case.replay_data), 5)
+        self.assertEqual(self.case.replay_data[0]['steps'], [4])
+
+    def test_existing_dict_normalized_to_list(self):
+        from apps.ui_automation import tasks
+        self.case.replay_data = {'steps': []}
+        self.case.save(update_fields=['replay_data'])
+        tasks._append_replay_entry(
+            self.case, {'steps': ['new']},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        self.case.refresh_from_db()
+        self.assertEqual(len(self.case.replay_data), 2)
+        self.assertEqual(self.case.replay_data[0]['steps'], ['new'])
+
+
+class ReplayRenameApiTests(TestCase):
+    """录制条目重命名接口。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-rn', password='pass')
+        self.case = _make_case(self.owner)
+        self.case.replay_data = [
+            {'name': '旧名称', 'steps': [{'instruction': '打开应用'}]},
+        ]
+        self.case.save(update_fields=['replay_data'])
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def test_rename_replay(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/rename_replay/',
+            {'index': 0, 'name': '登录流程'}, format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.replay_data[0]['name'], '登录流程')
+
+    def test_rename_replay_empty_name_rejected(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/rename_replay/',
+            {'index': 0, 'name': '   '}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.replay_data[0]['name'], '旧名称')
+
+    def test_rename_replay_invalid_index_rejected(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/rename_replay/',
+            {'index': 5, 'name': '新名称'}, format='json',
+        )
+        self.assertEqual(resp.status_code, 400)

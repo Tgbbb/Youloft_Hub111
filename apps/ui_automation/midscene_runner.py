@@ -189,6 +189,21 @@ def _build_action_rec(action, png):
     return rec
 
 
+# 回放动作的默认等待（实测缺失时的兜底；实测值按动作执行到下一次截图的实际耗时记录）
+_DEFAULT_WAIT_AFTER = {
+    'tap': 2.0, 'click': 2.0, 'long_press': 0.5, 'back': 0.5,
+    'home': 0.5, 'input': 0.2, 'swipe': 1.5, 'wait': 3.0,
+}
+
+
+def _clamp_wait_after(seconds, floor=0.2):
+    """录制实测 wait_after 兜底：至少 0.2s，避免回放动作连发导致页面未稳定。"""
+    try:
+        return max(round(float(seconds), 2), floor)
+    except (TypeError, ValueError):
+        return floor
+
+
 def _resolve_coord(a, coord, ref):
     """回放坐标解析：优先用百分比按当前设备分辨率换算（分辨率无关），
     百分比缺失/无效时退回旧录制的像素值，兼容 10x 百分比。"""
@@ -838,6 +853,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             last_png = None  # 录制用: 最后截图的原始字节
             step_before_png = None  # 录制用: 本步骤第一轮发送给VLM的截图（动作执行前的页面状态）
             last_action = ''
+            last_exec_time = None  # 录制用: 上一动作执行完成时刻（实测 wait_after 起点）
+            last_rec_idx = None    # 录制用: 上一动作在 step_actions 中的索引
             # 重复动作检测（每步独立）
             last_action_fp = ''
             repeat_count = 0
@@ -852,6 +869,11 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',
                                         'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped'})
                         break
+                    # 录制: 实测上一动作的 wait_after（动作执行完成 → 本次截图开始）
+                    if record_mode and last_exec_time is not None and last_rec_idx is not None:
+                        step_actions[last_rec_idx]['wait_after'] = _clamp_wait_after(time.time() - last_exec_time)
+                        last_exec_time = None
+                        last_rec_idx = None
                     # 截图（分平台）
                     png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                     last_png = png
@@ -981,6 +1003,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if t == 'swipe':
                         if ios_dev: ios_dev.execute_action(action)
                         else: adb_execute(device_id, action)
+                        if record_mode and step_actions:
+                            last_exec_time = time.time()
+                            last_rec_idx = len(step_actions) - 1
                     elif t == 'assert':
                         if not action.get('passed',True): raise AssertionError(f'断言失败: {reason}')
                         if is_ai_act and prev_action == 'assert':
@@ -993,6 +1018,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     else:  # tap/click/long_press/input/back
                         if ios_dev: ios_dev.execute_action(action)
                         else: adb_execute(device_id, action)
+                        if record_mode and step_actions:
+                            last_exec_time = time.time()
+                            last_rec_idx = len(step_actions) - 1
 
                     # 2. 智能等待 + tap 自动重试
                     if t in ('tap', 'click'):
@@ -1061,11 +1089,16 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     # 确保 recording 列表足够长（step_idx 是当前步骤在 steps 中的索引）
                     while len(recording) <= step_idx:
                         recording.append(None)
+                    after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                    # 最后一个动作后直接结束（done/assert/query 收尾）: 用本步最终截图补实测等待
+                    if last_exec_time is not None and last_rec_idx is not None and step_actions:
+                        step_actions[last_rec_idx]['wait_after'] = _clamp_wait_after(time.time() - last_exec_time)
+                        last_exec_time = None
+                        last_rec_idx = None
+                    # 无实测（旧路径兜底）: 用默认等待
                     if step_actions:
                         for a in step_actions:
-                            a['wait_after'] = {'tap':2,'click':2,'long_press':0.5,'back':0.5,
-                                               'input':0.2,'swipe':1.5,'wait':3}.get(a['action'], 0.5)
-                    after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                            a.setdefault('wait_after', _DEFAULT_WAIT_AFTER.get(a['action'], 0.5))
                     after_hash = str(_phash(after_png))
                     rec_data = {
                         'instruction': instruction,
@@ -1105,6 +1138,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
               'status':'stopped' if stopped else ('passed' if failed==0 else 'failed')}
     if record_mode and any(r is not None for r in recording):
         result['replay_data'] = {
+            'name': f"录制 {datetime.now().strftime('%m-%d %H:%M')}",
             'device': {'name': device.name or device.device_id, 'platform': platform,
                        'resolution': {'width': width, 'height': height}},
             'recorded_at': datetime.now().isoformat(),

@@ -414,6 +414,27 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         midscene_case.save(update_fields=['replay_data'])
         return Response({'message': '已删除', 'replay_data': midscene_case.replay_data})
 
+    @action(detail=True, methods=['post'], url_path='rename_replay')
+    def rename_replay(self, request, pk=None):
+        """重命名指定录制条目"""
+        midscene_case = self.get_object()
+        index = request.data.get('index', 0)
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的索引'}, status=400)
+        name = str(request.data.get('name', '')).strip()
+        if not name:
+            return Response({'error': '名称不能为空'}, status=400)
+        existing = midscene_case.replay_data
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not isinstance(existing, list) or index < 0 or index >= len(existing):
+            return Response({'error': '无效的索引'}, status=400)
+        existing[index]['name'] = name
+        midscene_case.save(update_fields=['replay_data'])
+        return Response({'message': '已重命名', 'replay_data': midscene_case.replay_data})
+
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         """执行 Midscene 用例"""
