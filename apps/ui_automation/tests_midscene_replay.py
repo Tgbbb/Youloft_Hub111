@@ -104,36 +104,6 @@ class WaitScreenStableTests(SimpleTestCase):
         self.assertFalse(ok)
 
 
-class WaitConditionTargetTests(SimpleTestCase):
-    """条件步骤目标页预检：加载/动画期间中间帧不匹配时等待重试，任一匹配即通过。"""
-
-    def setUp(self):
-        self.sleep = mock.patch('time.sleep', return_value=None)
-        self.sleep.start()
-        self.addCleanup(self.sleep.stop)
-
-    def test_matches_on_first_attempt(self):
-        with mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png'):
-            with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=True):
-                ok = midscene_runner._wait_condition_target('dev', None, 'H', max_attempts=3)
-        self.assertTrue(ok)
-
-    def test_matches_on_retry(self):
-        # 首次截到加载中间帧不匹配，等待后重试匹配
-        with mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png'):
-            with mock.patch.object(midscene_runner, '_is_same_page_by_hash',
-                                   side_effect=[False, True]):
-                ok = midscene_runner._wait_condition_target('dev', None, 'H', max_attempts=3)
-        self.assertTrue(ok)
-
-    def test_all_mismatch_returns_false(self):
-        # 重试耗尽仍不匹配 → 判定条件不满足
-        with mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png'):
-            with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-                ok = midscene_runner._wait_condition_target('dev', None, 'H', max_attempts=3)
-        self.assertFalse(ok)
-
-
 class ReplayActionsTests(SimpleTestCase):
     """_replay_actions 实际发出的坐标。"""
 
@@ -323,8 +293,10 @@ class GatedReplayTests(SimpleTestCase):
 
 
 class ConditionalNextCondReplayTests(TestCase):
-    """条件步骤后紧跟条件步骤：动作播放后的结果页受路径分叉影响（如关闭会员页后
-    可能有/无挽留弹窗），不再用 after_hash 苛求一致，直接交给下一步条件判断。
+    """条件步骤三态模型（对齐 main 分支）：
+    1) 满足 → act_before_hash 匹配，播放录制动作并校验 after_hash；
+    2) 跳过 → 录制时条件不满足(无动作)，after_hash 即"跳过"指纹；
+    3) 未知 → 指纹不匹配/缺字段，降级 VLM 看图判断，不盲目跳过。
     对应 41/43 号用例：'如果展示会员购买页…' 后跟 '如果展示会员挽留弹窗…'。"""
 
     def setUp(self):
@@ -340,11 +312,6 @@ class ConditionalNextCondReplayTests(TestCase):
         self.shot = mock.patch.object(midscene_runner, 'adb_screenshot')
         self.shot.start()
         self.addCleanup(self.shot.stop)
-        self.stable = mock.patch.object(
-            midscene_runner, '_wait_screen_stable', return_value=True,
-        )
-        self.stable_mock = self.stable.start()
-        self.addCleanup(self.stable.stop)
         self.save = mock.patch.object(
             midscene_runner, 'save_screenshot',
             return_value='/media/midscene/1/step_1.png',
@@ -379,13 +346,9 @@ class ConditionalNextCondReplayTests(TestCase):
             'steps': steps if steps is not None else [
                 {
                     'instruction': '如果展示会员购买页，就点击左上角关闭',
-                    'actions': [{
-                        'action': 'tap', 'x_pct': 10, 'y_pct': 10,
-                        'x': 108, 'y': 216, 'before_hash': 'H1_BEFORE',
-                        'conditional': False,
-                    }],
+                    'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
                     'after_hash': 'H1_AFTER',
-                    'act_before_hash': 'H1_BEFORE',
+                    'act_before_hash': 'H1_ACT',
                 },
                 {
                     'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
@@ -407,9 +370,7 @@ class ConditionalNextCondReplayTests(TestCase):
         model.api_key = 'k'
         return mc, execution, device, model
 
-    def test_cond_step_with_next_cond_skips_after_hash(self):
-        # 步骤1 门控匹配→播放关闭，播后页面与录制 after_hash 不同（分叉），
-        # 因下一步是条件步骤 → 直接通过，不降级 VLM；步骤2 跳过指纹匹配 → 通过
+    def _run(self, steps, ai_prompt, hash_match):
         pngs = [self._img_png(i) for i in (1, 2, 3, 4)]
         state = {'i': 0}
         def shot(*_args):
@@ -417,230 +378,109 @@ class ConditionalNextCondReplayTests(TestCase):
             state['i'] += 1
             return frame
         self.shot.side_effect = shot
-
-        def hash_match(_png, expected):
-            return expected in ('H1_BEFORE', 'H2_SKIP')
         with mock.patch.object(midscene_runner, '_is_same_page_by_hash', side_effect=hash_match):
-            _, execution, device, model = self._make_context()
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员购买页，就点击左上角关闭\n'
-                          '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-                device=device,
-                model_config=model,
-                execution_record=execution,
-                replay_mode=True,
-                replay_index=0,
+            _, execution, device, model = self._make_context(steps)
+            return midscene_runner.run_midscene_test(
+                ai_prompt=ai_prompt, device=device, model_config=model,
+                execution_record=execution, replay_mode=True, replay_index=0,
             )
-        self.assertEqual(result['status'], 'passed')
-        self.assertEqual(len(result['steps']), 2)
-        self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
-        self.vlm_mock.assert_not_called()
-        # 条件步骤判定前必须等待页面稳定，防止加载画面被误判为"条件不满足"
-        self.stable_mock.assert_called()
 
-    def test_new_format_all_gated_skip_passes_without_vlm(self):
-        # 新格式：条件步骤动作全部被门控跳过（目标页没出现）→ 条件不满足，直接跳过通过
+    def test_act_hash_match_plays_and_passes(self):
+        # 条件满足：act_before_hash 匹配 → 播放动作 → after_hash 匹配 → 通过，不调 VLM
         steps = [{
             'instruction': '如果展示会员购买页，就点击左上角关闭',
-            'actions': [{
-                'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216,
-                'before_hash': 'H1', 'conditional': False,
-            }],
-            'after_hash': 'H1_AFTER',
-            'act_before_hash': 'H1',
-        }]
-        pngs = [self._img_png(i) for i in (1, 2, 3)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员购买页，就点击左上角关闭',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
-        self.assertEqual(result['status'], 'passed')
-        self.assertEqual(len(result['steps']), 1)
-        self.assertEqual(result['steps'][0]['status'], 'passed')
-        self.vlm_mock.assert_not_called()
-
-    def test_old_format_act_hash_mismatch_skips_without_vlm(self):
-        # 旧格式：有 act_before_hash 但当前页不是目标页 → 条件不满足，直接跳过通过
-        steps = [{
-            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
             'after_hash': 'H_AFTER',
             'act_before_hash': 'H_ACT',
         }]
-        pngs = [self._img_png(i) for i in (1, 2)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
-        self.assertEqual(result['status'], 'passed')
-        self.assertEqual(len(result['steps']), 1)
-        self.assertEqual(result['steps'][0]['status'], 'passed')
-        self.vlm_mock.assert_not_called()
-
-    def test_old_format_missing_act_hash_falls_back_to_vlm(self):
-        # 极旧数据：连 act_before_hash 都没有，无法比对目标页 → 保持降级 VLM 判断
-        steps = [{
-            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
-            'after_hash': 'H_AFTER',
-        }]
-        pngs = [self._img_png(i) for i in (1, 2)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
-        self.assertEqual(result['status'], 'passed')
-        self.assertEqual(len(result['steps']), 1)
-        self.assertEqual(result['steps'][0]['status'], 'passed')
-        self.vlm_mock.assert_called_once()
-
-    def test_new_format_retry_matches_then_plays(self):
-        # 新格式：页面加载/动画中间帧导致首次预检不匹配 → 重试后匹配 → 正常播放动作并通过
-        steps = [{
-            'instruction': '如果展示会员购买页，就点击左上角关闭',
-            'actions': [{
-                'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216,
-                'before_hash': 'H1', 'conditional': False,
-            }],
-            'after_hash': 'H1_AFTER',
-            'act_before_hash': 'H1',
-        }]
-        pngs = [self._img_png(i) for i in (1, 2, 3)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        calls = {'n': 0}
-        def hash_match(_png, expected):
-            calls['n'] += 1
-            return calls['n'] >= 2  # 首次预检失败，第二次起匹配（含门控与 after_hash 校验）
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', side_effect=hash_match):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员购买页，就点击左上角关闭',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: expected in ('H_ACT', 'H_AFTER'))
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['steps'][0]['status'], 'passed')
         self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '108', '216')
         self.vlm_mock.assert_not_called()
 
-    def test_new_format_retry_all_fail_skips(self):
-        # 新格式：预检重试 3 次仍不匹配 → 条件不满足，直接跳过通过，不播放动作也不降级 VLM
+    def test_after_hash_mismatch_falls_back_to_vlm(self):
+        # 动作已播放但结果页与录制不符 → 不重复播放，降级 VLM 看图确认
         steps = [{
             'instruction': '如果展示会员购买页，就点击左上角关闭',
-            'actions': [{
-                'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216,
-                'before_hash': 'H1', 'conditional': False,
-            }],
-            'after_hash': 'H1_AFTER',
-            'act_before_hash': 'H1',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
         }]
-        pngs = [self._img_png(i) for i in (1, 2, 3)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员购买页，就点击左上角关闭',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: expected == 'H_ACT')
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['steps'][0]['status'], 'passed')
-        self.adb_mock.assert_not_called()
-        self.vlm_mock.assert_not_called()
+        self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '108', '216')
+        self.vlm_mock.assert_called_once()
 
-    def test_old_format_retry_matches_then_plays(self):
-        # 旧格式：act_before_hash 首检不匹配（加载画面）→ 重试后匹配 → 播放动作并通过
+    def test_act_hash_mismatch_falls_back_to_vlm(self):
+        # 有 act_before_hash 但当前页不是录制状态 → 未知，降级 VLM，不做盲目播放/跳过
         steps = [{
             'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
             'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
             'after_hash': 'H_AFTER',
             'act_before_hash': 'H_ACT',
         }]
-        pngs = [self._img_png(i) for i in (1, 2, 3)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        calls = {'n': 0}
-        def hash_match(_png, expected):
-            calls['n'] += 1
-            return calls['n'] >= 2
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', side_effect=hash_match):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
-        self.assertEqual(result['status'], 'passed')
-        self.assertEqual(result['steps'][0]['status'], 'passed')
-        self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '540', '1642')
-        self.vlm_mock.assert_not_called()
-
-    def test_old_format_retry_all_fail_skips(self):
-        # 旧格式：act_before_hash 预检重试 3 次仍不匹配 → 条件不满足，直接跳过通过
-        steps = [{
-            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 76, 'x': 540, 'y': 1641}],
-            'after_hash': 'H_AFTER',
-            'act_before_hash': 'H_ACT',
-        }]
-        pngs = [self._img_png(i) for i in (1, 2, 3)]
-        state = {'i': 0}
-        def shot(*_args):
-            frame = pngs[state['i'] % len(pngs)]
-            state['i'] += 1
-            return frame
-        self.shot.side_effect = shot
-        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
-            _, execution, device, model = self._make_context(steps)
-            result = midscene_runner.run_midscene_test(
-                ai_prompt='如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
-                device=device, model_config=model, execution_record=execution,
-                replay_mode=True, replay_index=0,
-            )
+        result = self._run(steps, '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                           lambda _png, expected: False)
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['steps'][0]['status'], 'passed')
         self.adb_mock.assert_not_called()
+        self.vlm_mock.assert_called_once()
+
+    def test_no_actions_after_hash_match_skips_without_vlm(self):
+        # 录制时条件不满足(无动作)：当前页匹配"跳过"指纹 → 跳过通过，不调 VLM
+        steps = [{
+            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            'actions': [],
+            'after_hash': 'H_SKIP',
+        }]
+        result = self._run(steps, '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                           lambda _png, expected: expected == 'H_SKIP')
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_not_called()
+
+    def test_no_actions_after_hash_mismatch_falls_back_to_vlm(self):
+        # 无动作但当前页不是"跳过"指纹 → 未知（可能条件满足或路径不同），降级 VLM
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [],
+            'after_hash': 'H_SKIP',
+        }]
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: False)
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_called_once()
+
+    def test_missing_act_hash_falls_back_to_vlm(self):
+        # 极旧数据：连 act_before_hash 都没有，无法比对目标页 → 保持降级 VLM 判断
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+        }]
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: False)
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_called_once()
+
+    def test_two_cond_steps_three_state(self):
+        # 41/43 场景：步骤1 匹配播放并通过，步骤2 无动作匹配"跳过"指纹 → 跳过通过，全程不调 VLM
+        result = self._run(
+            None,
+            '如果展示会员购买页，就点击左上角关闭\n'
+            '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            lambda _png, expected: expected in ('H1_ACT', 'H1_AFTER', 'H2_SKIP'),
+        )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(result['steps']), 2)
+        self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
+        self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '108', '216')
         self.vlm_mock.assert_not_called()
 
 
