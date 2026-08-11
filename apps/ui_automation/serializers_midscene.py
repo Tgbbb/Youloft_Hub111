@@ -5,7 +5,8 @@ Midscene AI 移动端自动化 - 序列化器
 from rest_framework import serializers
 from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
-    MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneExecutionRecord
+    MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
+    MidsceneExecutionRecord
 )
 
 
@@ -71,6 +72,7 @@ class MidsceneDeviceSimpleSerializer(serializers.ModelSerializer):
 
 class MidsceneCaseSerializer(serializers.ModelSerializer):
     project_name = serializers.SerializerMethodField()
+    folder_name = serializers.SerializerMethodField()
     model_config_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     latest_result = serializers.SerializerMethodField()
@@ -78,7 +80,7 @@ class MidsceneCaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = MidsceneCase
         fields = [
-            'id', 'project', 'project_name', 'name', 'description',
+            'id', 'project', 'project_name', 'folder', 'folder_name', 'name', 'description',
             'ai_prompt', 'ai_act_context', 'ai_model_config', 'model_config_name',
             'max_steps', 'action_delay',
             'app_package', 'app_activity',
@@ -90,6 +92,9 @@ class MidsceneCaseSerializer(serializers.ModelSerializer):
 
     def get_project_name(self, obj):
         return obj.project.name if obj.project else None
+
+    def get_folder_name(self, obj):
+        return obj.folder.name if obj.folder else None
 
     def get_model_config_name(self, obj):
         return obj.ai_model_config.name if obj.ai_model_config else None
@@ -112,27 +117,68 @@ class MidsceneCaseSerializer(serializers.ModelSerializer):
 class MidsceneCaseCreateSerializer(serializers.ModelSerializer):
     """创建 Midscene 用例"""
     project_id = serializers.IntegerField(required=False, allow_null=True)
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
     ai_model_config_id = serializers.IntegerField(required=False, allow_null=True)
 
     class Meta:
         model = MidsceneCase
         fields = [
-            'name', 'description', 'project_id', 'ai_prompt',
+            'name', 'description', 'project_id', 'folder_id', 'ai_prompt',
             'ai_act_context',
             'ai_model_config_id', 'max_steps', 'action_delay',
             'app_package', 'app_activity',
         ]
 
+    def validate(self, attrs):
+        folder_id = attrs.get('folder_id') or self.initial_data.get('folder_id')
+        project_id = attrs.get('project_id') or self.initial_data.get('project_id')
+        if folder_id:
+            try:
+                folder = MidsceneCaseFolder.objects.get(id=folder_id)
+            except MidsceneCaseFolder.DoesNotExist:
+                raise serializers.ValidationError({'folder_id': '文件夹不存在'})
+            if project_id and folder.project_id and folder.project_id != int(project_id):
+                raise serializers.ValidationError({'folder_id': '文件夹不属于当前项目'})
+        return attrs
+
     def create(self, validated_data):
         project_id = validated_data.pop('project_id', None)
+        folder_id = validated_data.pop('folder_id', None)
         ai_model_config_id = validated_data.pop('ai_model_config_id', None)
 
         if project_id:
             validated_data['project_id'] = project_id
+        if folder_id:
+            validated_data['folder_id'] = folder_id
         if ai_model_config_id:
             validated_data['ai_model_config_id'] = ai_model_config_id
 
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        folder_id = validated_data.pop('folder_id', None)
+        if folder_id:
+            validated_data['folder_id'] = folder_id
+        elif 'folder_id' in self.initial_data:
+            # 显式传空表示移出文件夹
+            instance.folder_id = None
+            instance.save(update_fields=['folder'])
+        return super().update(instance, validated_data)
+
+
+class MidsceneCaseFolderSerializer(serializers.ModelSerializer):
+    case_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneCaseFolder
+        fields = [
+            'id', 'project', 'parent_folder', 'name',
+            'case_count', 'created_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+
+    def get_case_count(self, obj):
+        return obj.midscene_cases.count()
 
 
 class MidsceneExecutionRecordSerializer(serializers.ModelSerializer):

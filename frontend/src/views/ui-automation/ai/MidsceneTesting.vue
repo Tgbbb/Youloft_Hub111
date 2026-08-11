@@ -17,33 +17,62 @@
       </div>
 
       <div class="ms-rail__list">
-        <button
-          v-for="(c, idx) in filteredCases"
-          :key="c.id"
-          class="ms-case-item"
-          :class="{ 'is-active': c.id === currentCaseId, 'is-draft': c._draft }"
-          @click="loadCase(c)"
-        >
-          <span class="ms-case-item__num">{{ String(idx + 1).padStart(2, '0') }}</span>
-          <span class="ms-case-item__body">
-            <span class="ms-case-item__name">{{ c.name }}</span>
-            <span class="ms-case-item__row">
-              <span class="ms-case-item__steps">{{ getStepCount(c.ai_prompt) }} 步</span>
-              <span v-if="!c._draft && c.latest_result" class="ms-case-item__rate" :class="c.latest_result.status === 'passed' ? 'rate-pass' : 'rate-fail'">
-                {{ c.latest_result.pass_rate }}%
+        <template v-for="item in railItems" :key="item.type + (item.folder ? item.folder.id : (item.case ? item.case.id : item.label))">
+          <button
+            v-if="item.type !== 'divider'"
+            class="ms-case-item"
+            :class="{
+              'is-active': item.case && item.case.id === currentCaseId,
+              'is-draft': item.case && item.case._draft,
+              'ms-folder-row': item.type === 'folder',
+              'ms-folder-row--active': item.type === 'folder' && item.folder.id === activeFolderId,
+              'ms-case-item--in-folder': item.inFolder
+            }"
+            @click="item.type === 'folder' ? toggleFolder(item.folder.id) : loadCase(item.case)"
+          >
+            <template v-if="item.type === 'folder'">
+              <span class="ms-folder-row__arrow">
+                <el-icon :class="{ 'is-open': isFolderOpen(item.folder.id) }"><ArrowRight /></el-icon>
               </span>
-              <span v-else-if="c._draft" class="ms-case-item__draft-mark">草稿</span>
-            </span>
-            <span class="ms-case-item__proj" v-if="getProjectName(c.project)">{{ getProjectName(c.project) }}</span>
-          </span>
-          <span class="ms-case-item__del" @click.stop="deleteCase(c)" title="删除"><el-icon><Delete /></el-icon></span>
-        </button>
-        <div v-if="filteredCases.length === 0" class="ms-rail__empty">
+              <span class="ms-folder-row__icon"><el-icon><Folder /></el-icon></span>
+              <span class="ms-case-item__name ms-folder-row__name">{{ item.folder.name }}</span>
+              <span class="ms-folder-row__count">{{ getFolderCount(item.folder.id) }}</span>
+              <span class="ms-folder-row__ops">
+                <el-icon class="ms-folder-row__op" @click.stop="openRenameFolder(item.folder)" title="重命名"><EditPen /></el-icon>
+                <el-icon class="ms-folder-row__op ms-folder-row__op--del" @click.stop="deleteFolder(item.folder)" title="删除"><Delete /></el-icon>
+              </span>
+            </template>
+            <template v-else>
+              <span class="ms-case-item__num">{{ String(item.idx).padStart(2, '0') }}</span>
+              <span class="ms-case-item__body">
+                <span class="ms-case-item__name">{{ item.case.name }}</span>
+                <span class="ms-case-item__row">
+                  <span class="ms-case-item__steps">{{ getStepCount(item.case.ai_prompt) }} 步</span>
+                  <span v-if="!item.case._draft && item.case.latest_result" class="ms-case-item__rate" :class="item.case.latest_result.status === 'passed' ? 'rate-pass' : 'rate-fail'">
+                    {{ item.case.latest_result.pass_rate }}%
+                  </span>
+                  <span v-else-if="item.case._draft" class="ms-case-item__draft-mark">草稿</span>
+                </span>
+                <span class="ms-case-item__proj" v-if="getProjectName(item.case.project)">{{ getProjectName(item.case.project) }}</span>
+              </span>
+              <span class="ms-case-item__del" @click.stop="deleteCase(item.case)" title="删除"><el-icon><Delete /></el-icon></span>
+            </template>
+          </button>
+          <div v-else class="ms-folder-divider">
+            <span class="ms-folder-divider__label">{{ item.label }}</span>
+            <span class="ms-folder-divider__count">{{ item.count }}</span>
+          </div>
+        </template>
+        <div v-if="filteredCases.length === 0 && filteredFolders.length === 0" class="ms-rail__empty">
           {{ filterProjectId ? '该项目暂无用例' : '暂无用例，点击下方新建' }}
+        </div>
+        <div v-else-if="filteredCases.length === 0 && !filterProjectId" class="ms-rail__empty">
+          文件夹暂无用例
         </div>
       </div>
 
       <div class="ms-rail__foot">
+        <el-button @click="openNewFolder" :icon="FolderAdd" class="ms-btn--full ms-btn--ghost">新建文件夹</el-button>
         <el-button @click="newCase" :icon="Plus" class="ms-btn--full">新建用例</el-button>
       </div>
     </nav>
@@ -61,6 +90,9 @@
             <el-input v-model="form.name" placeholder="用例名称" class="ms-input" />
             <el-select v-model="form.project_id" placeholder="所属项目" clearable class="ms-select">
               <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+            </el-select>
+            <el-select v-model="form.folder_id" placeholder="所属文件夹" clearable class="ms-select">
+              <el-option v-for="f in folderOptions" :key="f.id" :label="f.name" :value="f.id" />
             </el-select>
             <el-select v-model="form.ai_model_config_id" placeholder="AI 模型" class="ms-select">
               <el-option v-for="m in visionModels" :key="m.id" :label="m.name" :value="m.id" />
@@ -105,9 +137,15 @@
               </span>
             </div>
             <div class="ms-cmd-strip__right">
-              <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" class="ms-select" style="width:170px">
-                <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.recorded_at?.substring(5,16) || '未知'} ${r.result || ''}`" :value="i" />
+              <el-select v-if="replayList.length > 0" v-model="selectedReplayIndex" size="small" class="ms-select" style="width:210px">
+                <el-option v-for="(r, i) in replayList" :key="i" :label="`${r.name || r.recorded_at?.substring(5,16) || '未命名'} ${r.result || ''}`" :value="i" />
               </el-select>
+              <el-button v-if="replayList.length > 0" size="small" text @click="showReplayDetail = true" class="ms-btn--text">
+                <el-icon><View /></el-icon>&nbsp;明细
+              </el-button>
+              <el-button v-if="replayList.length > 0" size="small" text @click="renameReplayEntry" class="ms-btn--text">
+                <el-icon><EditPen /></el-icon>
+              </el-button>
               <el-button v-if="replayList.length > 0" size="small" type="danger" text @click="deleteReplayEntry" class="ms-btn--text">
                 <el-icon><Delete /></el-icon>
               </el-button>
@@ -250,6 +288,56 @@
         <el-button type="primary" @click="connectNetwork" :loading="connecting">连接</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showFolderDialog" :title="folderDialogMode === 'create' ? '新建文件夹' : '重命名文件夹'" width="420px">
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="名称">
+          <el-input v-model="folderDialogForm.name" placeholder="输入文件夹名称" maxlength="50" @keyup.enter="submitFolder" />
+        </el-form-item>
+        <el-form-item v-if="folderDialogMode === 'create'" label="所属项目">
+          <el-select v-model="folderDialogForm.project" placeholder="不选则为通用文件夹" clearable style="width:100%">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showFolderDialog = false">取消</el-button>
+        <el-button type="primary" @click="submitFolder" :loading="folderSaving">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 录制明细抽屉 -->
+    <el-drawer v-model="showReplayDetail" :title="`录制明细${selectedReplay ? '：' + (selectedReplay.name || '未命名') : ''}`" size="48%">
+      <div v-if="!selectedReplay" style="color:#909399;font-size:13px">暂无录制数据</div>
+      <div v-else class="ms-detail">
+        <div class="ms-detail__head">
+          <span v-if="selectedReplay.result" class="ms-detail__result">{{ selectedReplay.result }}</span>
+          <span v-if="selectedReplay.device?.name" class="ms-detail__meta">
+            {{ selectedReplay.device.platform }} · {{ selectedReplay.device.name }}
+            <template v-if="selectedReplay.device.resolution"> · {{ selectedReplay.device.resolution.width }}x{{ selectedReplay.device.resolution.height }}</template>
+          </span>
+          <span v-if="selectedReplay.recorded_at" class="ms-detail__meta">{{ selectedReplay.recorded_at?.substring(0, 19).replace('T', ' ') }}</span>
+        </div>
+        <div v-for="(s, si) in (selectedReplay.steps || [])" :key="si" class="ms-detail-step">
+          <div class="ms-detail-step__head">
+            <span class="ms-detail-step__no">步骤 {{ si + 1 }}</span>
+            <span class="ms-detail-step__text">{{ s?.instruction || '（未录制）' }}</span>
+            <el-tag v-if="s?.actions?.length" size="small">{{ s.actions.length }} 个动作</el-tag>
+            <el-tag v-else-if="s?.after_hash" size="small" type="info">跳过</el-tag>
+          </div>
+          <div v-if="s?.after_hash" class="ms-detail-step__meta">校验指纹 after_hash: {{ s.after_hash }}</div>
+          <div v-if="s?.actions?.length" class="ms-detail-actions">
+            <div v-for="(a, ai) in s.actions" :key="ai" class="ms-detail-action">
+              <el-tag size="small" :type="a.conditional ? 'warning' : 'primary'" class="ms-detail-action__type">{{ a.action }}</el-tag>
+              <el-tag v-if="a.conditional" size="small" type="warning" effect="plain">障碍动作</el-tag>
+              <span class="ms-detail-action__desc">{{ actionDesc(a) }}</span>
+              <span class="ms-detail-action__meta">等待 {{ a.wait_after }}s</span>
+              <span v-if="a.before_hash" class="ms-detail-action__meta">前置 {{ String(a.before_hash).slice(0, 8) }}…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -257,10 +345,11 @@
 // ====== Entire script unchanged ======
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection } from '@element-plus/icons-vue'
+import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection, ArrowRight, Folder, FolderAdd, EditPen, View } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 
 const cases = ref([])
+const folders = ref([])
 const projects = ref([])
 const currentCaseId = ref(null)
 const visionModels = ref([])
@@ -279,6 +368,12 @@ const recordMode = ref(false)
 const replayMode = ref(false)
 const clearAppData = ref(false)
 const filterProjectId = ref(null)
+const expandedFolders = ref([])
+const activeFolderId = ref(null)
+const showFolderDialog = ref(false)
+const folderDialogMode = ref('create')
+const folderDialogForm = reactive({ id: null, name: '', project: null })
+const folderSaving = ref(false)
 
 const isIosDevice = computed(() => {
   if (!selectedDeviceId.value) return false
@@ -289,6 +384,42 @@ const filteredCases = computed(() => {
   if (!filterProjectId.value) return cases.value
   return cases.value.filter(c => c.project === filterProjectId.value)
 })
+const filteredFolders = computed(() => {
+  if (!filterProjectId.value) return folders.value
+  return folders.value.filter(f => f.project === filterProjectId.value)
+})
+const uncategorizedCases = computed(() => {
+  return cases.value.filter(c => !c.folder && (!filterProjectId.value || c.project === filterProjectId.value))
+})
+const folderOptions = computed(() => {
+  if (!form.project_id) return folders.value
+  return folders.value.filter(f => !f.project || f.project === form.project_id)
+})
+const getFolderCases = (folderId) => cases.value.filter(c => c.folder === folderId && (!filterProjectId.value || c.project === filterProjectId.value))
+const getFolderCount = (folderId) => getFolderCases(folderId).length
+const isFolderOpen = (folderId) => expandedFolders.value.includes(folderId)
+const toggleFolder = (folderId) => {
+  activeFolderId.value = folderId
+  expandedFolders.value = expandedFolders.value.includes(folderId)
+    ? expandedFolders.value.filter(id => id !== folderId)
+    : [...expandedFolders.value, folderId]
+}
+const railItems = computed(() => {
+  const items = []
+  for (const f of filteredFolders.value) {
+    items.push({ type: 'folder', folder: f })
+    if (isFolderOpen(f.id)) {
+      getFolderCases(f.id).forEach((c, i) => items.push({ type: 'case', case: c, inFolder: true, idx: i + 1 }))
+    }
+  }
+  if (filteredFolders.value.length > 0) {
+    items.push({ type: 'divider', label: '未分组', count: uncategorizedCases.value.length })
+    uncategorizedCases.value.forEach((c, i) => items.push({ type: 'case', case: c, inFolder: false, idx: i + 1 }))
+  } else {
+    uncategorizedCases.value.forEach((c, i) => items.push({ type: 'case', case: c, inFolder: false, idx: i + 1 }))
+  }
+  return items
+})
 const getProjectName = (projectId) => {
   if (!projectId) return ''
   return projects.value.find(p => p.id === projectId)?.name || ''
@@ -298,7 +429,7 @@ const caseStatusClass = (c) => {
   return c.latest_result.status === 'passed' ? 'passed' : 'failed'
 }
 const form = reactive({
-  name: '', project_id: null, ai_prompt: '', ai_model_config_id: null,
+  name: '', project_id: null, folder_id: null, ai_prompt: '', ai_model_config_id: null,
   max_steps: 30, action_delay: 0.5, app_package: '', ai_act_context: '',
 })
 const showAiGen = ref(false)
@@ -317,6 +448,7 @@ const networkDevices = computed(() => devices.value.filter(d => d.platform === '
 const isRunning = computed(() => execution.value && ['pending', 'running'].includes(execution.value.status))
 const canExecute = computed(() => form.ai_prompt && selectedDeviceId.value && form.ai_model_config_id)
 const selectedReplayIndex = ref(0)
+const showReplayDetail = ref(false)
 const replayList = computed(() => {
   if (!currentCaseId.value) return []
   const c = cases.value.find(c => c.id === currentCaseId.value)
@@ -324,6 +456,16 @@ const replayList = computed(() => {
   if (Array.isArray(c.replay_data)) return c.replay_data
   return [c.replay_data]
 })
+const selectedReplay = computed(() => replayList.value[selectedReplayIndex.value] || null)
+const fmtNum = (v) => (v === undefined || v === null || v === '') ? '?' : v
+const actionDesc = (a) => {
+  if (!a) return ''
+  const t = a.action
+  if (t === 'input') return `文本: ${a.text || ''}`
+  if (t === 'swipe') return `(${fmtNum(a.x1_pct)}%,${fmtNum(a.y1_pct)}%) → (${fmtNum(a.x2_pct)}%,${fmtNum(a.y2_pct)}%)`
+  if (['tap', 'click', 'long_press'].includes(t)) return `(${fmtNum(a.x_pct)}%,${fmtNum(a.y_pct)}%) px(${fmtNum(a.x)},${fmtNum(a.y)})`
+  return t
+}
 const statusTagType = computed(() => {
   const m = { pending: 'info', running: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
   return m[execution.value?.status] || 'info'
@@ -331,6 +473,7 @@ const statusTagType = computed(() => {
 const draftId = '__draft__'
 
 const loadCases = async () => { try { const { data } = await api.get('/ui-automation/midscene/cases/'); cases.value = data.results || [] } catch (e) {} }
+const loadFolders = async () => { try { const { data } = await api.get('/ui-automation/midscene/folders/'); folders.value = data.results || [] } catch (e) {} }
 const loadProjects = async () => { try { const { data } = await api.get('/ui-automation/midscene/projects/'); projects.value = data.results || [] } catch (e) {} }
 const loadDevices = async () => { try { const { data } = await api.get('/ui-automation/midscene/devices/'); devices.value = data.results || [] } catch (e) {} }
 const loadVisionModels = async () => {
@@ -351,6 +494,19 @@ const deleteReplayEntry = async () => {
   if (!currentCaseId.value) return
   try { await ElMessageBox.confirm('确定删除？', '确认', { type: 'warning' }); await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/delete_replay/`, { index: selectedReplayIndex.value }); if (selectedReplayIndex.value > 0) selectedReplayIndex.value--; await loadCases(); ElMessage.success('已删除') } catch (e) { if (e !== 'cancel') ElMessage.error('删除失败') }
 }
+const renameReplayEntry = async () => {
+  if (!currentCaseId.value) return
+  const cur = replayList.value[selectedReplayIndex.value]
+  try {
+    const { value } = await ElMessageBox.prompt('输入录制名称，用于在回放下拉中快速区分', '重命名录制', {
+      inputValue: cur?.name || '',
+      inputValidator: (v) => (v || '').trim() ? true : '名称不能为空',
+    })
+    await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/rename_replay/`, { index: selectedReplayIndex.value, name: value.trim() })
+    await loadCases()
+    ElMessage.success('已重命名')
+  } catch (e) { if (e !== 'cancel') ElMessage.error('重命名失败') }
+}
 const connectNetwork = async () => {
   if (!networkForm.ip.trim()) { ElMessage.warning('请输入 IP'); return }
   connecting.value = true
@@ -360,8 +516,45 @@ const connectNetwork = async () => {
 }
 const disconnectDevice = async (device) => { dialogDisconnecting[device.id] = true; try { await api.post(`/ui-automation/midscene/devices/${device.id}/disconnect_network/`); ElMessage.success('已断开'); await loadDevices() } catch (e) { ElMessage.error('断开失败') } finally { dialogDisconnecting[device.id] = false } }
 const reconnectDialogDevice = async (device) => { dialogConnecting[device.id] = true; try { const { data } = await api.post('/ui-automation/midscene/devices/connect_network/', { ip: device.ip_address, port: device.port || 5555 }); if (data.success) ElMessage.success(data.message || '已连接'); else ElMessage.error(data.message || '连接失败'); await loadDevices() } catch (e) { ElMessage.error(e.response?.data?.message || '连接失败') } finally { dialogConnecting[device.id] = false } }
-const newCase = () => { if (cases.value.some(c => c.id === draftId)) return; currentCaseId.value = draftId; cases.value.unshift({ id: draftId, name: '新建用例', ai_prompt: '', project: filterProjectId.value, _draft: true }); form.name = ''; form.ai_prompt = ''; form.project_id = filterProjectId.value || null; recordMode.value = false; replayMode.value = false; clearAppData.value = false }
-const loadCase = (c) => { currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30; form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || '' }
+const newCase = () => {
+  if (cases.value.some(c => c.id === draftId)) return
+  currentCaseId.value = draftId
+  cases.value.unshift({ id: draftId, name: '新建用例', ai_prompt: '', project: filterProjectId.value, folder: null, _draft: true })
+  form.name = ''; form.ai_prompt = ''
+  form.project_id = filterProjectId.value || null
+  const activeFolder = folders.value.find(f => f.id === activeFolderId.value)
+  form.folder_id = activeFolder && (!activeFolder.project || !form.project_id || activeFolder.project === form.project_id) ? activeFolder.id : null
+  recordMode.value = false; replayMode.value = false; clearAppData.value = false
+}
+const loadCase = (c) => { currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.folder_id = c.folder; form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30; form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || '' }
+const openNewFolder = () => { folderDialogMode.value = 'create'; folderDialogForm.id = null; folderDialogForm.name = ''; folderDialogForm.project = filterProjectId.value || null; showFolderDialog.value = true }
+const openRenameFolder = (f) => { folderDialogMode.value = 'rename'; folderDialogForm.id = f.id; folderDialogForm.name = f.name; folderDialogForm.project = f.project; showFolderDialog.value = true }
+const submitFolder = async () => {
+  if (!folderDialogForm.name.trim()) { ElMessage.warning('请输入文件夹名称'); return }
+  folderSaving.value = true
+  try {
+    if (folderDialogMode.value === 'create') {
+      const { data } = await api.post('/ui-automation/midscene/folders/', { name: folderDialogForm.name.trim(), project: folderDialogForm.project || null })
+      expandedFolders.value.push(data.id)
+      ElMessage.success('文件夹已创建')
+    } else {
+      await api.patch(`/ui-automation/midscene/folders/${folderDialogForm.id}/`, { name: folderDialogForm.name.trim() })
+      ElMessage.success('已重命名')
+    }
+    showFolderDialog.value = false
+    await loadFolders()
+  } catch (e) { ElMessage.error('操作失败: ' + (e.response?.data?.error || e.message)) }
+  finally { folderSaving.value = false }
+}
+const deleteFolder = async (f) => {
+  try {
+    await ElMessageBox.confirm(`删除文件夹「${f.name}」？文件夹内的 ${getFolderCount(f.id)} 个用例将移到未分组。`, '确认删除', { type: 'warning' })
+    await api.delete(`/ui-automation/midscene/folders/${f.id}/`)
+    if (activeFolderId.value === f.id) activeFolderId.value = null
+    await loadFolders()
+    ElMessage.success('已删除')
+  } catch (e) { if (e !== 'cancel') ElMessage.error('删除失败') }
+}
 const saveCase = async () => {
   if (!form.name.trim()) { ElMessage.warning('请输入用例名称'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
@@ -393,10 +586,11 @@ const doExecute = async () => {
   finally { executing.value = false }
 }
 const stopExecution = async () => { if (!execution.value?.id) return; try { await api.post(`/ui-automation/midscene/executions/${execution.value.id}/stop/`); execution.value.status = 'stopped'; ElMessage.info('已停止') } catch (e) {} }
-const startPolling = (execId) => { stopPolling(); const poll = async () => { try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) stopPolling() } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const startPolling = (execId) => { stopPolling(); const poll = async () => { try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) { stopPolling(); refreshAfterExecution() } } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const refreshAfterExecution = async () => { if (recordMode.value) selectedReplayIndex.value = 0; await loadCases() }
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
 const previewStep = (s) => { if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true } }
-onMounted(() => { loadCases(); loadProjects(); loadDevices(); loadVisionModels() })
+onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
 onUnmounted(() => stopPolling())
 </script>
 
@@ -472,6 +666,10 @@ onUnmounted(() => stopPolling())
   }
   &__foot {
     padding: 14px 16px; border-top: 1px solid #e8e8e2;
+    display: flex; flex-direction: column; gap: 8px;
+    .ms-btn--full {
+      display: flex; justify-content: center; align-items: center;
+    }
   }
 }
 
@@ -542,6 +740,66 @@ onUnmounted(() => stopPolling())
     &:hover { color: #e04040; }
   }
   &:hover &__del { opacity: 1; }
+}
+
+/* Folder rows inside the rail */
+.ms-folder-row {
+  padding: 12px 14px 12px 10px;
+  background: #f5f5f1;
+  border-bottom: 1px solid #e6e6e0;
+  &:hover { background: #efefe9; }
+
+  &--active {
+    background: #fefde8;
+    border-left: 3px solid #ffd700;
+    padding-left: 7px;
+  }
+
+  &__arrow {
+    width: 18px; flex-shrink: 0; color: #b0b0a8;
+    display: inline-flex; align-items: center;
+    .el-icon { transition: transform .15s; }
+    .el-icon.is-open { transform: rotate(90deg); }
+  }
+  &__icon {
+    width: 20px; flex-shrink: 0; color: #c9a227;
+    display: inline-flex; align-items: center;
+    margin-right: 4px;
+  }
+  &__name {
+    flex: 1; min-width: 0; font-weight: 600; font-size: 13px; color: #444;
+  }
+  &__count {
+    font-size: 11px; font-family: "Space Grotesk", system-ui, sans-serif;
+    color: #a0a098; background: #eceae4; padding: 1px 6px;
+    letter-spacing: .03em;
+  }
+  &__ops {
+    display: inline-flex; gap: 2px; opacity: 0; margin-left: 6px;
+    transition: opacity .15s;
+  }
+  &:hover &__ops { opacity: 1; }
+  &__op {
+    color: #b8b8b0; padding: 2px; cursor: pointer;
+    &:hover { color: #191919; }
+    &--del:hover { color: #e04040; }
+  }
+}
+
+.ms-folder-divider {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px 6px;
+  font-size: 10px; color: #b0b0a8;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .1em;
+  background: #fafaf8;
+  &__label { flex: 1; }
+  &__count { color: #c8c8c0; }
+}
+
+.ms-case-item--in-folder {
+  padding-left: 30px;
+  .ms-case-item__num { color: #d0d0c8; }
 }
 
 /* Pale rail select override */
@@ -629,6 +887,10 @@ onUnmounted(() => stopPolling())
   border-radius: 0 !important; font-size: 12px;
   font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .05em;
   &--full { width: 100%; border-radius: 0 !important; }
+  &--ghost {
+    color: #666; background: transparent; border-color: #d8d8d2;
+    &:hover { color: #191919; border-color: #191919; background: transparent; }
+  }
   &--save { border-radius: 0 !important; font-weight: 600; letter-spacing: .06em; }
   &--text { color: #999; }
 }
@@ -771,6 +1033,45 @@ onUnmounted(() => stopPolling())
   &.badge-failed { background: rgba(245,108,108,.06); border-color: rgba(245,108,108,.2); color: #c03939; }
   &.badge-running { border-color: var(--ms-signal); color: #666; animation: ms-pulse 1s infinite; }
   &__mark { font-weight: 700; margin-right: 2px; }
+}
+
+/* ============================================
+   录制明细抽屉
+   ============================================ */
+.ms-detail {
+  font-size: 13px;
+  &__head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding-bottom: 14px; margin-bottom: 14px;
+    border-bottom: 1px solid #ececec;
+  }
+  &__result { font-weight: 700; color: #1a8051; }
+  &__meta { color: #909399; font-size: 12px; }
+}
+
+.ms-detail-step {
+  padding: 12px 0; border-bottom: 1px dashed #ececec;
+  &:last-child { border-bottom: none; }
+  &__head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  }
+  &__no {
+    font-weight: 700; color: #333;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+  }
+  &__text { flex: 1; min-width: 200px; color: #303133; line-height: 1.5; }
+  &__meta { margin-top: 4px; color: #909399; font-size: 11px; }
+}
+
+.ms-detail-actions {
+  margin-top: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+
+.ms-detail-action {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 10px; background: #f7f7f5;
+  &__desc { color: #303133; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 12px; }
+  &__meta { color: #909399; font-size: 11px; }
 }
 
 /* ============================================

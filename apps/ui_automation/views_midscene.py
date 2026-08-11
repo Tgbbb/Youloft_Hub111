@@ -16,7 +16,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 from .models import (
-    MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneExecutionRecord
+    MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
+    MidsceneExecutionRecord
 )
 from .serializers_midscene import (
     MidsceneProjectSerializer,
@@ -24,6 +25,7 @@ from .serializers_midscene import (
     MidsceneDeviceSimpleSerializer,
     MidsceneCaseSerializer,
     MidsceneCaseCreateSerializer,
+    MidsceneCaseFolderSerializer,
     MidsceneExecutionRecordSerializer,
 )
 
@@ -412,6 +414,27 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         midscene_case.save(update_fields=['replay_data'])
         return Response({'message': '已删除', 'replay_data': midscene_case.replay_data})
 
+    @action(detail=True, methods=['post'], url_path='rename_replay')
+    def rename_replay(self, request, pk=None):
+        """重命名指定录制条目"""
+        midscene_case = self.get_object()
+        index = request.data.get('index', 0)
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的索引'}, status=400)
+        name = str(request.data.get('name', '')).strip()
+        if not name:
+            return Response({'error': '名称不能为空'}, status=400)
+        existing = midscene_case.replay_data
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not isinstance(existing, list) or index < 0 or index >= len(existing):
+            return Response({'error': '无效的索引'}, status=400)
+        existing[index]['name'] = name
+        midscene_case.save(update_fields=['replay_data'])
+        return Response({'message': '已重命名', 'replay_data': midscene_case.replay_data})
+
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         """执行 Midscene 用例"""
@@ -537,6 +560,40 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f'AI 生成步骤失败: {e}')
             return Response({'error': str(e)}, status=500)
+
+
+class MidsceneCaseFolderViewSet(viewsets.ModelViewSet):
+    """Midscene 用例文件夹"""
+    queryset = MidsceneCaseFolder.objects.all()
+    serializer_class = MidsceneCaseFolderSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['project', 'parent_folder']
+    search_fields = ['name']
+    ordering_fields = ['name', 'created_at']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        accessible = MidsceneProject.objects.filter(
+            db_models.Q(owner=user) | db_models.Q(members=user)
+        ).distinct()
+        return qs.filter(
+            db_models.Q(project__in=accessible) |
+            db_models.Q(project__isnull=True)
+        ).select_related('project')
+
+    def perform_create(self, serializer):
+        project = serializer.validated_data.get('project')
+        if project is not None:
+            if not MidsceneProject.objects.filter(
+                db_models.Q(owner=self.request.user) |
+                db_models.Q(members=self.request.user),
+                id=project.id,
+            ).exists():
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('无权在此项目下创建文件夹')
+        serializer.save(created_by=self.request.user)
 
 
 class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.DestroyModelMixin):

@@ -291,6 +291,16 @@ python manage.py runserver
 celery -A backend worker -l info
 ```
 
+### 代码更新后（升级数据库）
+
+从 Git 拉取新代码后，如果本次变更包含数据库结构修改（新增表、字段等），必须执行迁移，否则相关接口会报 500：
+
+```bash
+python manage.py migrate
+```
+
+> 示例：Midscene 用例文件夹功能新增了 `midscene_case_folders` 表以及 `midscene_cases.folder` 字段。未执行迁移时，`/api/ui-automation/midscene/cases/` 和 `/api/ui-automation/midscene/folders/` 会返回 500。
+
 ### 数据工厂模块初始化
 
 数据工厂模块需要创建数据库表：
