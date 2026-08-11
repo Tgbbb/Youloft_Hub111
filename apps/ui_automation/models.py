@@ -1175,6 +1175,11 @@ class MidsceneCase(models.Model):
     """Midscene AI 测试用例（自然语言驱动）"""
     project = models.ForeignKey(MidsceneProject, on_delete=models.CASCADE, null=True, blank=True,
                                 related_name='midscene_cases', verbose_name='所属项目')
+    folder = models.ForeignKey(
+        'MidsceneCaseFolder', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='midscene_cases', verbose_name='所属文件夹',
+        help_text='将用例归入文件夹，删除文件夹后用例回到未分组'
+    )
     name = models.CharField(max_length=200, verbose_name='用例名称')
     description = models.TextField(blank=True, default='', verbose_name='用例描述')
 
@@ -1218,6 +1223,30 @@ class MidsceneCase(models.Model):
         verbose_name = 'Midscene用例'
         verbose_name_plural = 'Midscene用例'
         ordering = ['-updated_at']
+
+    def __str__(self):
+        return self.name
+
+
+class MidsceneCaseFolder(models.Model):
+    """Midscene 用例文件夹（跟随项目组织用例）"""
+    project = models.ForeignKey(MidsceneProject, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='midscene_folders', verbose_name='所属项目')
+    parent_folder = models.ForeignKey(
+        'self', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='children', verbose_name='父文件夹'
+    )
+    name = models.CharField(max_length=200, verbose_name='文件夹名称')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
+                                   related_name='created_midscene_folders', verbose_name='创建人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_case_folders'
+        verbose_name = 'Midscene用例文件夹'
+        verbose_name_plural = 'Midscene用例文件夹'
+        ordering = ['name']
 
     def __str__(self):
         return self.name

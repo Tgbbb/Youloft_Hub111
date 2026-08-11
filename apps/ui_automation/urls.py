@@ -26,7 +26,7 @@ from .views import (
 from .views_config import EnvironmentConfigViewSet, AIIntelligentModeConfigViewSet
 from .views_midscene import (
     MidsceneProjectViewSet, MidsceneDeviceViewSet,
-    MidsceneCaseViewSet, MidsceneExecutionRecordViewSet,
+    MidsceneCaseViewSet, MidsceneCaseFolderViewSet, MidsceneExecutionRecordViewSet,
 )
 
 router = DefaultRouter()
@@ -61,6 +61,7 @@ router.register(r'ai-models', AIIntelligentModeConfigViewSet, basename='ai-model
 router.register(r'midscene/projects', MidsceneProjectViewSet, basename='midscene-projects')
 router.register(r'midscene/devices', MidsceneDeviceViewSet, basename='midscene-devices')
 router.register(r'midscene/cases', MidsceneCaseViewSet, basename='midscene-cases')
+router.register(r'midscene/folders', MidsceneCaseFolderViewSet, basename='midscene-folders')
 router.register(r'midscene/executions', MidsceneExecutionRecordViewSet, basename='midscene-executions')
 
 urlpatterns = [
