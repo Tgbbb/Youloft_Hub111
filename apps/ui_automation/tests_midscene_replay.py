@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""回放坐标解析测试：百分比优先、旧像素兜底、10x 百分比兼容。"""
+"""回放坐标解析与动作级门控测试：百分比优先、旧像素兜底、10x 百分比兼容、障碍动作条件化。"""
+import io
 from unittest import mock
 
 from django.test import SimpleTestCase
+from PIL import Image
 
 from apps.ui_automation import midscene_runner
 
@@ -91,3 +93,144 @@ class ReplayActionsTests(SimpleTestCase):
         self.assertEqual(args[-4], '1728')
         self.assertEqual(args[-3], '972')
         self.assertEqual(args[-2], '432')
+
+
+class BuildActionRecTests(SimpleTestCase):
+    """录制条目构造：before_hash / conditional / pct 归一化。"""
+
+    def _img_png(self, seed):
+        import random
+        rnd = random.Random(seed)
+        img = Image.new('L', (64, 64))
+        img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    def test_rec_fields_and_before_hash(self):
+        png = self._img_png(1)
+        rec = midscene_runner._build_action_rec(
+            {'action': 'tap', 'x_pct': 600, 'y_pct': 50, 'x': 648, 'y': 1080,
+             'text': '', 'step_status': 'in_progress'},
+            png,
+        )
+        self.assertEqual(rec['action'], 'tap')
+        self.assertEqual(rec['x_pct'], 60)  # 10x 归一化
+        self.assertEqual(rec['y_pct'], 50)
+        self.assertEqual(rec['x'], 648)
+        self.assertTrue(rec['conditional'])
+        self.assertEqual(rec['before_hash'], str(midscene_runner._phash(png)))
+
+    def test_done_is_not_conditional(self):
+        rec = midscene_runner._build_action_rec(
+            {'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'step_status': 'done'},
+            self._img_png(2),
+        )
+        self.assertFalse(rec['conditional'])
+
+    def test_missing_step_status_defaults_to_done(self):
+        rec = midscene_runner._build_action_rec(
+            {'action': 'tap', 'x_pct': 50, 'y_pct': 50},
+            self._img_png(3),
+        )
+        self.assertFalse(rec['conditional'])
+
+    def test_pure_color_hash_empty(self):
+        buf = io.BytesIO()
+        Image.new('L', (8, 8), 255).save(buf, format='PNG')
+        rec = midscene_runner._build_action_rec(
+            {'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'step_status': 'in_progress'},
+            buf.getvalue(),
+        )
+        self.assertEqual(rec['before_hash'], '')
+
+
+class GatedReplayTests(SimpleTestCase):
+    """_replay_actions 动作级门控。"""
+
+    def setUp(self):
+        self.calls = []
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep.start()
+        self.adb = mock.patch.object(
+            midscene_runner, '_adb',
+            side_effect=lambda *args, **kw: self.calls.append(args),
+        )
+        self.adb.start()
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png-bytes')
+        self.shot.start()
+        self.addCleanup(self.sleep.stop)
+        self.addCleanup(self.adb.stop)
+        self.addCleanup(self.shot.stop)
+
+    def _patch_match(self, matching):
+        patcher = mock.patch.object(
+            midscene_runner, '_is_same_page_by_hash',
+            side_effect=lambda png, expected: str(expected) in matching,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _tap_calls(self):
+        return [c for c in self.calls if 'tap' in c]
+
+    def _action(self, x_pct, y_pct, before_hash='', conditional=False):
+        return {'action': 'tap', 'x_pct': x_pct, 'y_pct': y_pct,
+                'x': 0, 'y': 0, 'before_hash': before_hash,
+                'conditional': conditional}
+
+    def test_obstacle_skipped_target_played(self):
+        # 43 号用例场景：权限弹窗不在 → 障碍动作跳过，目标动作照播
+        self._patch_match({'H_TARGET'})
+        actions = [
+            self._action(50, 56, before_hash='H_POPUP', conditional=True),
+            self._action(50, 62, before_hash='H_TARGET', conditional=False),
+        ]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
+        self.assertEqual(stats, {'played': 1, 'skipped': 1})
+        taps = self._tap_calls()
+        self.assertEqual(len(taps), 1)
+        self.assertEqual(taps[0][-2:], ('540', '1339'))  # round(62% * 2160)
+
+    def test_obstacle_played_when_page_matches(self):
+        # 权限弹窗在 → 障碍动作与目标动作都播
+        self._patch_match({'H_POPUP', 'H_TARGET'})
+        actions = [
+            self._action(50, 56, before_hash='H_POPUP', conditional=True),
+            self._action(50, 62, before_hash='H_TARGET', conditional=False),
+        ]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
+        self.assertEqual(stats, {'played': 2, 'skipped': 0})
+        self.assertEqual(len(self._tap_calls()), 2)
+
+    def test_target_unconditional_even_with_hash(self):
+        # 普通步骤目标动作：即使前置指纹不匹配也执行
+        self._patch_match(set())
+        actions = [self._action(50, 50, before_hash='H_X', conditional=False)]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
+        self.assertEqual(stats, {'played': 1, 'skipped': 0})
+        self.assertEqual(len(self._tap_calls()), 1)
+
+    def test_gate_all_gates_target_action(self):
+        # 条件步骤（gate_all=True）：目标动作也按指纹门控
+        self._patch_match(set())
+        actions = [self._action(50, 50, before_hash='H_X', conditional=False)]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160,
+                                                gate_all=True)
+        self.assertEqual(stats, {'played': 0, 'skipped': 1})
+        self.assertEqual(self._tap_calls(), [])
+
+    def test_old_format_unconditional(self):
+        # 旧数据：无 before_hash/conditional → 无条件执行
+        actions = [{'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'x': 0, 'y': 0}]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
+        self.assertEqual(stats, {'played': 1, 'skipped': 0})
+        self.assertEqual(len(self._tap_calls()), 1)
+
+    def test_empty_before_hash_no_gate(self):
+        # before_hash 为空（纯色页）→ 不加门控，无条件执行
+        self._patch_match(set())
+        actions = [self._action(50, 50, before_hash='', conditional=True)]
+        stats = midscene_runner._replay_actions('dev', None, actions, 1080, 2160)
+        self.assertEqual(stats, {'played': 1, 'skipped': 0})
+        self.assertEqual(len(self._tap_calls()), 1)

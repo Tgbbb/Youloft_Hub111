@@ -161,6 +161,34 @@ def _normalize_pct(v):
     return v / 10.0 if v > 100 else v
 
 
+def _build_action_rec(action, png):
+    """把 VLM 动作 + 执行前截图转成录制条目（调用方已过滤 assert/query/done）。
+    新增 before_hash（动作执行前页面指纹；纯色页 phash=0 时不加门控）与 conditional（障碍处理标记）。"""
+    t = action.get('action', '')
+    before = str(_phash(png))
+    rec = {
+        'action': t,
+        # 只有模型真实返回百分比才存；缺失时存 0，回放退回像素值
+        'x_pct': _normalize_pct(action.get('x_pct')) or 0,
+        'y_pct': _normalize_pct(action.get('y_pct')) or 0,
+        'x': action.get('x', 0),
+        'y': action.get('y', 0),
+        'text': action.get('text', ''),
+        'before_hash': before if before != '0' else '',
+        'conditional': action.get('step_status') == 'in_progress',
+    }
+    if t == 'swipe':
+        rec['x1_pct'] = _normalize_pct(action.get('x1_pct', 0)) or 0
+        rec['y1_pct'] = _normalize_pct(action.get('y1_pct', 0)) or 0
+        rec['x2_pct'] = _normalize_pct(action.get('x2_pct', 0)) or 0
+        rec['y2_pct'] = _normalize_pct(action.get('y2_pct', 0)) or 0
+        rec['x1'] = action.get('x1', 0)
+        rec['y1'] = action.get('y1', 0)
+        rec['x2'] = action.get('x2', 0)
+        rec['y2'] = action.get('y2', 0)
+    return rec
+
+
 def _resolve_coord(a, coord, ref):
     """回放坐标解析：优先用百分比按当前设备分辨率换算（分辨率无关），
     百分比缺失/无效时退回旧录制的像素值，兼容 10x 百分比。"""
@@ -174,9 +202,54 @@ def _resolve_coord(a, coord, ref):
         return 0
 
 
-def _replay_actions(device_id, ios_dev, actions, width, height):
+def _execute_replay_action(device_id, ios_dev, a):
+    """执行单个回放动作（坐标已解析为像素）。"""
+    action_type = a.get('action', 'tap')
+    if action_type in ('tap', 'click'):
+        if ios_dev:
+            ios_dev.tap(a['x'], a['y'])
+        else:
+            _adb(device_id, 'shell', 'input', 'tap', str(a['x']), str(a['y']))
+    elif action_type == 'swipe':
+        if ios_dev:
+            ios_dev.execute_action(a)
+        else:
+            adb_execute(device_id, a)
+    elif action_type == 'input':
+        if ios_dev:
+            ios_dev.execute_action(a)
+        else:
+            adb_input_text(device_id, a.get('text', ''))
+    elif action_type == 'back':
+        if ios_dev:
+            ios_dev.execute_action(a)
+        else:
+            _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
+    elif action_type == 'home':
+        if ios_dev:
+            ios_dev.execute_action(a)
+        else:
+            _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME')
+    elif action_type == 'long_press':
+        if ios_dev:
+            ios_dev.execute_action(a)
+        else:
+            adb_execute(device_id, a)
+    # swipe 动画需要更长等待
+    if action_type in ('swipe',):
+        time.sleep(1.5)
+    else:
+        time.sleep(a.get('wait_after', 2.0))
+
+
+def _replay_actions(device_id, ios_dev, actions, width, height, gate_all=False):
     """回放动作序列（条件和普通步骤共用）：支持 tap/click、swipe、input、back、home、long_press。
-    坐标优先用百分比按当前设备分辨率换算，兼容旧录制像素值与 10x 百分比；swipe 动画加长等待。"""
+    坐标优先用百分比按当前设备分辨率换算，兼容旧录制像素值与 10x 百分比。
+    门控规则：旧数据（无 before_hash）与普通步骤的目标动作（conditional=false）无条件执行；
+    障碍动作（conditional=true），或 gate_all=True 的条件步骤内所有动作，按 before_hash 门控——
+    当前页面匹配才执行，不匹配跳过该动作继续。返回 {'played': n, 'skipped': m}。"""
+    played = 0
+    skipped = 0
     for raw in actions:
         a = dict(raw)
         action_type = a.get('action', 'tap')
@@ -189,41 +262,21 @@ def _replay_actions(device_id, ios_dev, actions, width, height):
                 ref = width if coord.startswith('x') else height
                 a[coord] = _resolve_coord(a, coord, ref)
 
-        if action_type in ('tap', 'click'):
-            if ios_dev:
-                ios_dev.tap(a['x'], a['y'])
-            else:
-                _adb(device_id, 'shell', 'input', 'tap', str(a['x']), str(a['y']))
-        elif action_type == 'swipe':
-            if ios_dev:
-                ios_dev.execute_action(a)
-            else:
-                adb_execute(device_id, a)
-        elif action_type == 'input':
-            if ios_dev:
-                ios_dev.execute_action(a)
-            else:
-                adb_input_text(device_id, a.get('text', ''))
-        elif action_type == 'back':
-            if ios_dev:
-                ios_dev.execute_action(a)
-            else:
-                _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
-        elif action_type == 'home':
-            if ios_dev:
-                ios_dev.execute_action(a)
-            else:
-                _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME')
-        elif action_type == 'long_press':
-            if ios_dev:
-                ios_dev.execute_action(a)
-            else:
-                adb_execute(device_id, a)
-        # swipe 动画需要更长等待
-        if action_type in ('swipe',):
-            time.sleep(1.5)
-        else:
-            time.sleep(a.get('wait_after', 2.0))
+        cond_flag = a.get('conditional')
+        if isinstance(cond_flag, str):
+            cond_flag = cond_flag.lower() == 'true'
+        need_gate = bool(a.get('before_hash')) and (cond_flag or gate_all)
+        if need_gate:
+            png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+            if not _is_same_page_by_hash(png, a['before_hash']):
+                skipped += 1
+                logger.info(f'[Runner] 回放跳过动作 {action_type}: 前置页面不匹配')
+                time.sleep(0.5)  # 留页面稳定余量
+                continue
+
+        _execute_replay_action(device_id, ios_dev, a)
+        played += 1
+    return {'played': played, 'skipped': skipped}
 
 def adb_screenshot(device_id):
     result = subprocess.run(['adb','-s',device_id,'exec-out','screencap','-p'], capture_output=True, timeout=15, **_SUBPROCESS_KWARGS)
@@ -663,8 +716,31 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         act_hash = r_step.get('act_before_hash', '')
                         after_hash = r_step.get('after_hash', '')
                         if r_actions:
-                            # 录制时条件满足：判断当前页是否就是动作执行前的状态
-                            if act_hash and _is_same_page_by_hash(png, act_hash):
+                            # 新录制（动作带 before_hash）：动作级门控，不再用步骤级 act_before_hash 门
+                            if any(a.get('before_hash') for a in r_actions):
+                                r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height, gate_all=True)
+                                if r_stats['skipped']:
+                                    logger.info(f'[Runner] 条件步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配动作')
+                                # 动作后校验本步骤 after_hash
+                                png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                if after_hash and _is_same_page_by_hash(png_after, after_hash):
+                                    replay_pass += 1
+                                    screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径-动作级)'],
+                                                    'action': r_actions[-1].get('action', 'tap')})
+                                    if record_mode:
+                                        while len(recording) <= step_idx: recording.append(None)
+                                        recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                      r_actions[-1].get('action', 'tap') if r_actions else '')
+                                    prev_png = png_after; step_idx += 1
+                                    logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径-动作级)')
+                                    continue
+                                # 动作已播放但结果页与录制不符 → 不重复播放，直接降至VLM
+                                replay_fail += 1
+                                logger.warning(f'[Runner] 条件步骤{step_idx+1} 动作执行后pHash不匹配，降至VLM')
+                            elif act_hash and _is_same_page_by_hash(png, act_hash):
                                 # 同条件路径 → 播放录制动作
                                 _replay_actions(device_id, ios_dev, r_actions, width, height)
                                 # 动作后校验本步骤 after_hash
@@ -708,8 +784,10 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             replay_fail += 1
                             logger.info(f'[Runner] 条件步骤 {step_idx+1} 页面与录制跳过状态不符，降至VLM')
                     else:
-                        # 普通步骤：播放动作序列
-                        _replay_actions(device_id, ios_dev, r_actions, width, height)
+                        # 普通步骤：播放动作序列（障碍动作按前置指纹门控，目标动作必播）
+                        r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height)
+                        if r_stats['skipped']:
+                            logger.info(f'[Runner] 步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配的障碍动作')
 
                         if progress_callback:
                             progress_callback(step_idx+1, len(steps), {
@@ -881,25 +959,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
                     # 录制: 保存动作参数（wait_after在执行后确定）
                     if record_mode and t not in ('assert', 'query', 'done'):
-                        rec = {
-                            'action': t,
-                            # 只有模型真实返回百分比才存；缺失时存 0，回放退回像素值
-                            'x_pct': _normalize_pct(action.get('x_pct')) or 0,
-                            'y_pct': _normalize_pct(action.get('y_pct')) or 0,
-                            'x': action.get('x', 0),
-                            'y': action.get('y', 0),
-                            'text': action.get('text', ''),
-                        }
-                        if t == 'swipe':
-                            rec['x1_pct'] = _normalize_pct(action.get('x1_pct', 0)) or 0
-                            rec['y1_pct'] = _normalize_pct(action.get('y1_pct', 0)) or 0
-                            rec['x2_pct'] = _normalize_pct(action.get('x2_pct', 0)) or 0
-                            rec['y2_pct'] = _normalize_pct(action.get('y2_pct', 0)) or 0
-                            rec['x1'] = action.get('x1', 0)
-                            rec['y1'] = action.get('y1', 0)
-                            rec['x2'] = action.get('x2', 0)
-                            rec['y2'] = action.get('y2', 0)
-                        step_actions.append(rec)
+                        step_actions.append(_build_action_rec(action, png))
                     prev_action = last_action
                     last_action = t
 
