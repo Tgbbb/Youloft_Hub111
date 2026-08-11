@@ -69,6 +69,41 @@ class ClampWaitAfterTests(SimpleTestCase):
         self.assertEqual(midscene_runner._clamp_wait_after('abc'), 0.2)
 
 
+class WaitScreenStableTests(SimpleTestCase):
+    """启动首帧稳定等待：连续两帧相同提前返回，持续变化则超时。"""
+
+    def setUp(self):
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+
+    def _img_png(self, seed):
+        import random
+        rnd = random.Random(seed)
+        img = Image.new('L', (64, 64))
+        img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    def test_stable_detected(self):
+        png = self._img_png(1)
+        with mock.patch.object(midscene_runner, 'adb_screenshot', return_value=png):
+            ok = midscene_runner._wait_screen_stable('dev', None, timeout=5)
+        self.assertTrue(ok)
+
+    def test_timeout_returns_false(self):
+        frames = [self._img_png(i) for i in (1, 2, 3, 4)]
+        state = {'i': 0}
+        def shot(*_args):
+            frame = frames[state['i'] % len(frames)]
+            state['i'] += 1
+            return frame
+        with mock.patch.object(midscene_runner, 'adb_screenshot', side_effect=shot):
+            ok = midscene_runner._wait_screen_stable('dev', None, timeout=0.1)
+        self.assertFalse(ok)
+
+
 class ReplayActionsTests(SimpleTestCase):
     """_replay_actions 实际发出的坐标。"""
 

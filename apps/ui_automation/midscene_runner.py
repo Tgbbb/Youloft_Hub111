@@ -375,6 +375,25 @@ def _smart_wait(device_id, ios_dev, before_png, max_wait=2.0, check_interval=0.5
         before_png = png
         time.sleep(check_interval)
 
+
+def _wait_screen_stable(device_id, ios_dev, timeout=15.0, check_interval=0.8):
+    """等待启动后首帧稳定：连续两次截图相同（pHash 距离 <3）即认为页面稳定。
+    用于替代固定的启动 sleep，冷启动/首屏广告慢时能等到页面稳定再开始第一步。
+    超时返回 False，不阻塞执行（交给 VLM 自行判断当前页面）。"""
+    deadline = time.time() + timeout
+    time.sleep(check_interval)  # 先等第一帧
+    prev = None
+    while time.time() < deadline:
+        png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        if prev is not None and _is_same_page(prev, png):
+            logger.info(f'[Runner] 启动画面已稳定，等待耗时 {timeout - max(deadline - time.time(), 0):.1f}s')
+            return True
+        prev = png
+        time.sleep(check_interval)
+    logger.warning(f'[Runner] 等待启动画面稳定超时({timeout}s)，继续执行')
+    return False
+
+
 def _is_same_page_by_hash(png_bytes, expected_hash):
     """比较截图pHash与预期hash"""
     try:
@@ -641,7 +660,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     time.sleep(1)
                 grant_permissions(device_id, app_pkg)
                 _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
-                time.sleep(2)
+                _wait_screen_stable(device_id, None)
         elif platform == 'ios':
             # iOS: 用例包名 → 项目iOS Bundle ID
             ios_bid = (mc.app_package if mc and mc.app_package
@@ -655,7 +674,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
                               json={'bundleId': ios_bid}, timeout=5)
                 except Exception: pass
-                time.sleep(1)
+                _wait_screen_stable(None, ios_dev)
 
         # 启动的包名（Android app_pkg / iOS ios_bid），供"打开应用"快捷分支与 aiAct 使用
         app_package = app_pkg if platform == 'android' else (ios_bid if platform == 'ios' else '')
