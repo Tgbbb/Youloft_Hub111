@@ -774,7 +774,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         recording[step_idx] = dict(r_step)
                                     _push_step_memory(step_memory, step_idx + 1, instruction)
                                     prev_png = png_after; step_idx += 1
-                                    logger.info(f'[Runner] 条件步骤 {step_idx+1} 跳过(条件不满足-动作门控)')
+                                    logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足-动作门控)')
                                     continue
                                 if next_cond and r_stats['played'] > 0:
                                     # 动作已播放且下一步是条件步骤：结果页分叉，直接通过
@@ -857,7 +857,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         recording[step_idx] = dict(r_step)
                                     _push_step_memory(step_memory, step_idx + 1, instruction)
                                     prev_png = png; step_idx += 1
-                                    logger.info(f'[Runner] 条件步骤 {step_idx+1} 跳过(条件不满足)')
+                                    logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足)')
                                     continue
                                 # 缺 act_before_hash 的极旧数据：无法比对目标页，保持降级 VLM 判断
                                 replay_fail += 1
