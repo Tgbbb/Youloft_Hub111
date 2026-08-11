@@ -376,21 +376,21 @@ def _smart_wait(device_id, ios_dev, before_png, max_wait=2.0, check_interval=0.5
         time.sleep(check_interval)
 
 
-def _wait_screen_stable(device_id, ios_dev, timeout=15.0, check_interval=0.8):
-    """等待启动后首帧稳定：连续两次截图相同（pHash 距离 <3）即认为页面稳定。
-    用于替代固定的启动 sleep，冷启动/首屏广告慢时能等到页面稳定再开始第一步。
-    超时返回 False，不阻塞执行（交给 VLM 自行判断当前页面）。"""
+def _wait_screen_stable(device_id, ios_dev, timeout=15.0, check_interval=0.8, label='页面'):
+    """等待页面稳定：连续两次截图相同（pHash 距离 <3）即认为页面稳定。
+    用于启动后等待首帧稳定、条件步骤判定前等待跳转/加载完成等场景。
+    超时返回 False，不阻塞执行（交给后续逻辑/VLM 自行判断当前页面）。"""
     deadline = time.time() + timeout
     time.sleep(check_interval)  # 先等第一帧
     prev = None
     while time.time() < deadline:
         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
         if prev is not None and _is_same_page(prev, png):
-            logger.info(f'[Runner] 启动画面已稳定，等待耗时 {timeout - max(deadline - time.time(), 0):.1f}s')
+            logger.info(f'[Runner] {label}已稳定，等待耗时 {timeout - max(deadline - time.time(), 0):.1f}s')
             return True
         prev = png
         time.sleep(check_interval)
-    logger.warning(f'[Runner] 等待启动画面稳定超时({timeout}s)，继续执行')
+    logger.warning(f'[Runner] 等待{label}稳定超时({timeout}s)，继续执行')
     return False
 
 
@@ -404,6 +404,22 @@ def _is_same_page_by_hash(png_bytes, expected_hash):
     if h == 0:
         return False
     return (h ^ expected).bit_count() < 3
+
+
+def _wait_condition_target(device_id, ios_dev, expected_hash, max_attempts=3, interval=1.5):
+    """条件步骤目标页预检：页面加载/动画期间可能截到中间帧，目标页未匹配时
+    等待 interval 后重试比对，最多 max_attempts 次。任一尝试匹配即返回 True；
+    全部不匹配返回 False（调用方据此判定条件不满足/跳过）。"""
+    for attempt in range(1, max_attempts + 1):
+        png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        if _is_same_page_by_hash(png, expected_hash):
+            if attempt > 1:
+                logger.info(f'[Runner] 条件目标页匹配(第{attempt}次重试)')
+            return True
+        if attempt < max_attempts:
+            logger.info(f'[Runner] 条件目标页未匹配(第{attempt}/{max_attempts}次)，{interval}s后重试')
+            time.sleep(interval)
+    return False
 
 def _action_fingerprint(action):
     """动作指纹：覆盖 swipe 四坐标与 input 文本，用于卡死判定（对齐 aiAct）。"""
@@ -660,7 +676,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     time.sleep(1)
                 grant_permissions(device_id, app_pkg)
                 _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
-                _wait_screen_stable(device_id, None)
+                _wait_screen_stable(device_id, None, label='启动画面')
         elif platform == 'ios':
             # iOS: 用例包名 → 项目iOS Bundle ID
             ios_bid = (mc.app_package if mc and mc.app_package
@@ -674,7 +690,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
                               json={'bundleId': ios_bid}, timeout=5)
                 except Exception: pass
-                _wait_screen_stable(None, ios_dev)
+                _wait_screen_stable(None, ios_dev, label='启动画面')
 
         # 启动的包名（Android app_pkg / iOS ios_bid），供"打开应用"快捷分支与 aiAct 使用
         app_package = app_pkg if platform == 'android' else (ios_bid if platform == 'ios' else '')
@@ -760,7 +776,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         if r_actions:
                             # 新录制（动作带 before_hash）：动作级门控，不再用步骤级 act_before_hash 门
                             if any(a.get('before_hash') for a in r_actions):
-                                r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height, gate_all=True)
+                                # 门控前先对第一个目标动作的 before_hash 预检：页面加载/动画期间
+                                # 可能截到中间帧，不匹配时等待重试，避免把尚未加载完的目标页误判为条件不满足
+                                first_hash = next(a['before_hash'] for a in r_actions if a.get('before_hash'))
+                                if _wait_condition_target(device_id, ios_dev, first_hash):
+                                    r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height, gate_all=True)
+                                else:
+                                    # 重试后仍不是目标页 → 条件不满足，视为动作全部被门控跳过
+                                    r_stats = {'played': 0, 'skipped': sum(1 for a in r_actions if a.get('before_hash'))}
                                 if r_stats['skipped']:
                                     logger.info(f'[Runner] 条件步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配动作')
                                 # 动作后校验本步骤 after_hash
@@ -810,7 +833,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 # 动作已播放但结果页与录制不符 → 不重复播放，直接降至VLM
                                 replay_fail += 1
                                 logger.warning(f'[Runner] 条件步骤{step_idx+1} 动作执行后pHash不匹配，降至VLM')
-                            elif act_hash and _is_same_page_by_hash(png, act_hash):
+                            elif act_hash and _wait_condition_target(device_id, ios_dev, act_hash):
                                 # 同条件路径 → 播放录制动作
                                 _replay_actions(device_id, ios_dev, r_actions, width, height)
                                 # 动作后校验本步骤 after_hash
@@ -849,8 +872,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 logger.warning(f'[Runner] 条件步骤{step_idx+1} 动作执行后pHash不匹配，降至VLM')
                             else:
                                 if act_hash:
-                                    # 有 act_before_hash 但当前页不是目标页 → 条件不满足，直接跳过通过
+                                    # 有 act_before_hash 但预检重试后仍不是目标页 → 条件不满足，直接跳过通过
                                     replay_pass += 1
+                                    png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                                     screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
                                     results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                     'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)']})
