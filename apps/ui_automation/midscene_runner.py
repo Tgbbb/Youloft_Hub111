@@ -152,30 +152,53 @@ def adb_execute(device_id, action):
     elif t == 'launch':
         _adb(device_id, 'shell', 'monkey', '-p', action.get('package',''), '1')
 
+def _normalize_pct(v):
+    """把模型输出的百分比归一化为 0-100；>100 视为旧模型(qwen3-vl-plus)的 10x 格式。"""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v / 10.0 if v > 100 else v
+
+
+def _resolve_coord(a, coord, ref):
+    """回放坐标解析：优先用百分比按当前设备分辨率换算（分辨率无关），
+    百分比缺失/无效时退回旧录制的像素值，兼容 10x 百分比。"""
+    pct = a.get(f'{coord}_pct')
+    pct_v = _normalize_pct(pct)
+    if pct_v is not None and pct_v > 0:
+        return int(round(pct_v / 100.0 * ref))
+    try:
+        return int(float(a.get(coord, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _replay_actions(device_id, ios_dev, actions, width, height):
     """回放动作序列（条件和普通步骤共用）：支持 tap/click、swipe、input、back、home、long_press。
-    坐标兼容旧录制（像素值）和新录制（百分比），swipe 动画加长等待。"""
-    for a in actions:
+    坐标优先用百分比按当前设备分辨率换算，兼容旧录制像素值与 10x 百分比；swipe 动画加长等待。"""
+    for raw in actions:
+        a = dict(raw)
         action_type = a.get('action', 'tap')
-        if action_type in ('tap', 'click'):
-            x = int(a.get('x', 0) or (float(a.get('x_pct', 50)) / 100 * width))
-            y = int(a.get('y', 0) or (float(a.get('y_pct', 50)) / 100 * height))
-            if ios_dev:
-                ios_dev.tap(x, y)
-            else:
-                _adb(device_id, 'shell', 'input', 'tap', str(x), str(y))
+        # 坐标统一解析：优先百分比，缺失/无效退回像素
+        if action_type in ('tap', 'click', 'long_press'):
+            a['x'] = _resolve_coord(a, 'x', width)
+            a['y'] = _resolve_coord(a, 'y', height)
         elif action_type == 'swipe':
-            # 兼容旧录制(无像素坐标)和新录制(有像素坐标)
-            swipe_a = dict(a)
-            if not swipe_a.get('x1'):
-                for pfx in ('x1','y1','x2','y2'):
-                    v = float(swipe_a.get(pfx, 0) or swipe_a.get(f'{pfx}_pct', 0))
-                    ref = width if pfx.startswith('x') else height
-                    swipe_a[pfx] = int(v / 100.0 * ref) if v <= 100 else int(v / 10.0 / 100.0 * ref)
+            for coord in ('x1', 'y1', 'x2', 'y2'):
+                ref = width if coord.startswith('x') else height
+                a[coord] = _resolve_coord(a, coord, ref)
+
+        if action_type in ('tap', 'click'):
             if ios_dev:
-                ios_dev.execute_action(swipe_a)
+                ios_dev.tap(a['x'], a['y'])
             else:
-                adb_execute(device_id, swipe_a)
+                _adb(device_id, 'shell', 'input', 'tap', str(a['x']), str(a['y']))
+        elif action_type == 'swipe':
+            if ios_dev:
+                ios_dev.execute_action(a)
+            else:
+                adb_execute(device_id, a)
         elif action_type == 'input':
             if ios_dev:
                 ios_dev.execute_action(a)
@@ -627,7 +650,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             # ---- 回放尝试（每步独立） ----
             if replay_available and step_idx < len(replay_data['steps']):
                 r_step = replay_data['steps'][step_idx]
-                if r_step.get('instruction', '').strip() == instruction.strip():
+                # r_step 可能为 None：未录制到的步骤保留占位，保证与 ai_prompt 步骤索引一一对应
+                if r_step and r_step.get('instruction', '').strip() == instruction.strip():
                     r_actions = r_step.get('actions', [])
                     is_cond = instruction.startswith('如果') or instruction.startswith('若')
                     # 条件步骤三态模型：
@@ -859,17 +883,18 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if record_mode and t not in ('assert', 'query', 'done'):
                         rec = {
                             'action': t,
-                            'x_pct': action.get('x_pct', action.get('x', 0)),
-                            'y_pct': action.get('y_pct', action.get('y', 0)),
+                            # 只有模型真实返回百分比才存；缺失时存 0，回放退回像素值
+                            'x_pct': _normalize_pct(action.get('x_pct')) or 0,
+                            'y_pct': _normalize_pct(action.get('y_pct')) or 0,
                             'x': action.get('x', 0),
                             'y': action.get('y', 0),
                             'text': action.get('text', ''),
                         }
                         if t == 'swipe':
-                            rec['x1_pct'] = action.get('x1_pct', 0)
-                            rec['y1_pct'] = action.get('y1_pct', 0)
-                            rec['x2_pct'] = action.get('x2_pct', 0)
-                            rec['y2_pct'] = action.get('y2_pct', 0)
+                            rec['x1_pct'] = _normalize_pct(action.get('x1_pct', 0)) or 0
+                            rec['y1_pct'] = _normalize_pct(action.get('y1_pct', 0)) or 0
+                            rec['x2_pct'] = _normalize_pct(action.get('x2_pct', 0)) or 0
+                            rec['y2_pct'] = _normalize_pct(action.get('y2_pct', 0)) or 0
                             rec['x1'] = action.get('x1', 0)
                             rec['y1'] = action.get('y1', 0)
                             rec['x2'] = action.get('x2', 0)
@@ -1018,13 +1043,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     logger.info(f'[Runner] 执行完成: {passed}/{total} 通过')
     result = {'totalSteps':total,'passedSteps':passed,'failedSteps':failed,'steps':results,
               'status':'stopped' if stopped else ('passed' if failed==0 else 'failed')}
-    if record_mode and recording:
-        valid_recording = [r for r in recording if r is not None]
-        if valid_recording:
-            result['replay_data'] = {
-                'device': {'name': device.name or device.device_id, 'platform': platform,
-                           'resolution': {'width': width, 'height': height}},
-                'recorded_at': datetime.now().isoformat(),
-                'steps': valid_recording,
-            }
+    if record_mode and any(r is not None for r in recording):
+        result['replay_data'] = {
+            'device': {'name': device.name or device.device_id, 'platform': platform,
+                       'resolution': {'width': width, 'height': height}},
+            'recorded_at': datetime.now().isoformat(),
+            # 保留 None 占位：步骤与 ai_prompt 索引一一对应，避免"打开应用"等快捷分支导致错位
+            'steps': recording,
+        }
     return result
