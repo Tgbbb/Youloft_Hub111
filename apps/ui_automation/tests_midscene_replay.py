@@ -292,6 +292,116 @@ class GatedReplayTests(SimpleTestCase):
         self.assertEqual(len(self._tap_calls()), 1)
 
 
+class ConditionalNextCondReplayTests(TestCase):
+    """条件步骤后紧跟条件步骤：动作播放后的结果页受路径分叉影响（如关闭会员页后
+    可能有/无挽留弹窗），不再用 after_hash 苛求一致，直接交给下一步条件判断。
+    对应 41/43 号用例：'如果展示会员购买页…' 后跟 '如果展示会员挽留弹窗…'。"""
+
+    def setUp(self):
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+        self.adb = mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0))
+        self.adb.start()
+        self.addCleanup(self.adb.stop)
+        self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
+        self.size.start()
+        self.addCleanup(self.size.stop)
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot')
+        self.shot.start()
+        self.addCleanup(self.shot.stop)
+        self.save = mock.patch.object(
+            midscene_runner, 'save_screenshot',
+            return_value='/media/midscene/1/step_1.png',
+        )
+        self.save.start()
+        self.addCleanup(self.save.stop)
+        self.vlm = mock.patch.object(
+            midscene_runner, 'call_vlm',
+            return_value={'action': 'done', 'reasoning': 'x'},
+        )
+        self.vlm_mock = self.vlm.start()
+        self.addCleanup(self.vlm.stop)
+
+    def _img_png(self, seed):
+        import random
+        rnd = random.Random(seed)
+        img = Image.new('L', (64, 64))
+        img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    def _make_context(self):
+        mc = mock.Mock()
+        mc.ai_act_context = ''
+        mc.app_package = ''
+        mc.project = mock.Mock(default_app_package='')
+        mc.use_locate = True
+        mc.max_steps = 30
+        mc.action_delay = 0.5
+        mc.replay_data = [{
+            'steps': [
+                {
+                    'instruction': '如果展示会员购买页，就点击左上角关闭',
+                    'actions': [{
+                        'action': 'tap', 'x_pct': 10, 'y_pct': 10,
+                        'x': 108, 'y': 216, 'before_hash': 'H1_BEFORE',
+                        'conditional': False,
+                    }],
+                    'after_hash': 'H1_AFTER',
+                    'act_before_hash': 'H1_BEFORE',
+                },
+                {
+                    'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                    'actions': [],
+                    'after_hash': 'H2_SKIP',
+                },
+            ],
+        }]
+        execution = mock.Mock()
+        execution.id = 1
+        execution.midscene_case = mc
+        execution.auto_plan = False
+        execution.status = 'running'
+        device = mock.Mock()
+        device.platform = 'android'
+        device.adb_serial = 'dev'
+        device.name = '设备'
+        model = mock.Mock()
+        model.api_key = 'k'
+        return mc, execution, device, model
+
+    def test_cond_step_with_next_cond_skips_after_hash(self):
+        # 步骤1 门控匹配→播放关闭，播后页面与录制 after_hash 不同（分叉），
+        # 因下一步是条件步骤 → 直接通过，不降级 VLM；步骤2 跳过指纹匹配 → 通过
+        pngs = [self._img_png(i) for i in (1, 2, 3, 4)]
+        state = {'i': 0}
+        def shot(*_args):
+            frame = pngs[state['i'] % len(pngs)]
+            state['i'] += 1
+            return frame
+        self.shot.side_effect = shot
+
+        def hash_match(_png, expected):
+            return expected in ('H1_BEFORE', 'H2_SKIP')
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', side_effect=hash_match):
+            _, execution, device, model = self._make_context()
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员购买页，就点击左上角关闭\n'
+                          '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                device=device,
+                model_config=model,
+                execution_record=execution,
+                replay_mode=True,
+                replay_index=0,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(result['steps']), 2)
+        self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
+        self.vlm_mock.assert_not_called()
+
+
 def _make_case(owner):
     main = Project.objects.create(name='测试主项目', owner=owner)
     project = MidsceneProject.objects.create(

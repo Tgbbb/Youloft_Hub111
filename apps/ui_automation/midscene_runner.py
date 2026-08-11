@@ -746,6 +746,11 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     #   2) 跳过 → 录制时条件不满足(无动作)，当前页匹配 after_hash 即"跳过"指纹
                     #   3) 未知 → 不匹配/缺字段(旧数据)，replay_fail+1 后落到 VLM 判断，不做盲目播放
                     if is_cond:
+                        # 下一步是条件步骤 → 当前步执行后的页面受路径分叉影响（如关闭会员页后可能有/无挽留弹窗），
+                        # 播放动作后不做 after_hash 校验，页面状态交给下一步条件判断
+                        next_cond = (step_idx + 1 < len(steps)
+                                     and (steps[step_idx + 1]['instruction'].startswith('如果')
+                                          or steps[step_idx + 1]['instruction'].startswith('若')))
                         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         act_hash = r_step.get('act_before_hash', '')
                         after_hash = r_step.get('after_hash', '')
@@ -757,6 +762,21 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     logger.info(f'[Runner] 条件步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配动作')
                                 # 动作后校验本步骤 after_hash
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                if next_cond and r_stats['played'] > 0:
+                                    # 动作已播放且下一步是条件步骤：结果页分叉，直接通过
+                                    replay_pass += 1
+                                    screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径-动作级)'],
+                                                    'action': r_actions[-1].get('action', 'tap')})
+                                    if record_mode:
+                                        while len(recording) <= step_idx: recording.append(None)
+                                        recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                      r_actions[-1].get('action', 'tap') if r_actions else '')
+                                    prev_png = png_after; step_idx += 1
+                                    logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(动作已播放,下一步条件判断)')
+                                    continue
                                 if after_hash and _is_same_page_by_hash(png_after, after_hash):
                                     replay_pass += 1
                                     screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
@@ -779,6 +799,21 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 _replay_actions(device_id, ios_dev, r_actions, width, height)
                                 # 动作后校验本步骤 after_hash
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                if next_cond:
+                                    # 动作已播放且下一步是条件步骤：结果页分叉，直接通过
+                                    replay_pass += 1
+                                    screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                                    'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
+                                                    'action': r_actions[-1].get('action', 'tap')})
+                                    if record_mode:
+                                        while len(recording) <= step_idx: recording.append(None)
+                                        recording[step_idx] = dict(r_step)
+                                    _push_step_memory(step_memory, step_idx + 1, instruction,
+                                                      r_actions[-1].get('action', 'tap') if r_actions else '')
+                                    prev_png = png_after; step_idx += 1
+                                    logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(动作已播放,下一步条件判断)')
+                                    continue
                                 if after_hash and _is_same_page_by_hash(png_after, after_hash):
                                     replay_pass += 1
                                     screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
