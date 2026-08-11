@@ -310,6 +310,11 @@ class ConditionalNextCondReplayTests(TestCase):
         self.shot = mock.patch.object(midscene_runner, 'adb_screenshot')
         self.shot.start()
         self.addCleanup(self.shot.stop)
+        self.stable = mock.patch.object(
+            midscene_runner, '_wait_screen_stable', return_value=True,
+        )
+        self.stable_mock = self.stable.start()
+        self.addCleanup(self.stable.stop)
         self.save = mock.patch.object(
             midscene_runner, 'save_screenshot',
             return_value='/media/midscene/1/step_1.png',
@@ -400,6 +405,8 @@ class ConditionalNextCondReplayTests(TestCase):
         self.assertEqual(len(result['steps']), 2)
         self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
         self.vlm_mock.assert_not_called()
+        # 条件步骤判定前必须等待页面稳定，防止加载画面被误判为"条件不满足"
+        self.stable_mock.assert_called()
 
     def test_new_format_all_gated_skip_passes_without_vlm(self):
         # 新格式：条件步骤动作全部被门控跳过（目标页没出现）→ 条件不满足，直接跳过通过

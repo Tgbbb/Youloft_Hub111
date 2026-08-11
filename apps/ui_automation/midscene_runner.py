@@ -752,6 +752,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         next_cond = (step_idx + 1 < len(steps)
                                      and (steps[step_idx + 1]['instruction'].startswith('如果')
                                           or steps[step_idx + 1]['instruction'].startswith('若')))
+                        # 等待上一步页面跳转/加载稳定后再判定条件，避免把加载画面误判为"条件不满足"
+                        _wait_screen_stable(device_id, ios_dev, timeout=5.0, check_interval=0.6)
                         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         act_hash = r_step.get('act_before_hash', '')
                         after_hash = r_step.get('after_hash', '')
