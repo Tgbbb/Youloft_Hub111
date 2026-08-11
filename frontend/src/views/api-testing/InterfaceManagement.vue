@@ -1107,6 +1107,7 @@ const onSearch = async (value) => {
 
 const selectSearchResult = (item) => {
   selectedRequest.value = item
+  selectedEnvironment.value = item.environment ?? null
   searchKeyword.value = ''
   filteredCollections.value = []
 }
@@ -1115,6 +1116,7 @@ const onProjectChange = async (projectId) => {
   if (!projectId) return
 
   try {
+    selectedEnvironment.value = null
     await loadCollections(projectId)
     await loadEnvironments(projectId)
   } catch (error) {
@@ -1130,6 +1132,7 @@ const loadProjects = async () => {
     projects.value = response.data.results || response.data || []
     if (projects.value.length > 0) {
       selectedProject.value = projects.value[0].id
+      selectedEnvironment.value = null
       await loadCollections(selectedProject.value)
       await loadEnvironments(selectedProject.value)
     }
@@ -1347,6 +1350,7 @@ const onNodeClick = async (data) => {
 
       response.value = null
       selectedRequest.value = requestData
+      selectedEnvironment.value = requestData.environment ?? null
     } catch (error) {
       ElMessage.error('加载请求失败')
       console.error('加载请求失败:', error)
@@ -1391,6 +1395,7 @@ const createEmptyRequest = () => {
   }
 
   selectedRequest.value = newRequest
+  selectedEnvironment.value = null
 }
 
 const openCreateCollectionDialog = () => {
@@ -1847,6 +1852,7 @@ const saveRequest = async () => {
 
     const requestData = {
       ...selectedRequest.value,
+      environment: selectedEnvironment.value,
       params: Array.isArray(selectedRequest.value.params) ? convertKeyValueArrayToObject(selectedRequest.value.params || []) : selectedRequest.value.params,
       headers: finalHeaders
     }
@@ -1864,6 +1870,7 @@ const saveRequest = async () => {
     }
 
     selectedRequest.value = response.data
+    selectedEnvironment.value = response.data.environment ?? null
     await loadCollections(selectedProject.value)
     ElMessage.success('保存成功')
   } catch (error) {

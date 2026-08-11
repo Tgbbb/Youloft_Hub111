@@ -371,7 +371,10 @@ class ApiRequestViewSet(viewsets.ModelViewSet):
         api_request = self.get_object()
         environment_id = request.data.get('environment_id')
         env = None
-        if environment_id:
+        if environment_id is None and api_request.environment_id:
+            # 未显式指定环境时，回退到接口绑定的默认环境
+            env = api_request.environment
+        elif environment_id:
             try:
                 env = Environment.objects.get(id=environment_id)
             except Environment.DoesNotExist:

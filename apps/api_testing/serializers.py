@@ -100,14 +100,19 @@ class ApiRequestSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+    environment = serializers.PrimaryKeyRelatedField(
+        queryset=Environment.objects.all(),
+        required=False,
+        allow_null=True
+    )
 
     class Meta:
         model = ApiRequest
         fields = [
             'id', 'name', 'description', 'request_type', 'method', 'url',
             'headers', 'params', 'body', 'auth', 'pre_request_script',
-            'post_request_script', 'assertions', 'collection', 'order', 'created_by',
-            'created_at', 'updated_at'
+            'post_request_script', 'assertions', 'collection', 'environment',
+            'order', 'created_by', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
 
