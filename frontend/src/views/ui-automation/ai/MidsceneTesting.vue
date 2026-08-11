@@ -602,6 +602,10 @@ onUnmounted(() => stopPolling())
   }
   &__foot {
     padding: 14px 16px; border-top: 1px solid #e8e8e2;
+    display: flex; flex-direction: column; gap: 8px;
+    .ms-btn--full {
+      display: flex; justify-content: center; align-items: center;
+    }
   }
 }
 
@@ -821,7 +825,6 @@ onUnmounted(() => stopPolling())
   &--full { width: 100%; border-radius: 0 !important; }
   &--ghost {
     color: #666; background: transparent; border-color: #d8d8d2;
-    margin-bottom: 8px;
     &:hover { color: #191919; border-color: #191919; background: transparent; }
   }
   &--save { border-radius: 0 !important; font-weight: 600; letter-spacing: .06em; }
