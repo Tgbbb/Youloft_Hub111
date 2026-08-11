@@ -111,12 +111,12 @@ class VariableResolver:
             'validate_expression': self._call_crontab_tool,
             
             # 时间日期函数
-            'timestamp': self._timestamp,
-            'timestamp_sec': self._timestamp_sec,
-            'datetime': self._datetime,
-            'date': self._date,
-            'time': self._time,
-            'date_offset': self._date_offset,
+            'timestamp': self._call_time_tool,
+            'timestamp_sec': self._call_time_tool,
+            'datetime': self._call_time_tool,
+            'date': self._call_time_tool,
+            'time': self._call_time_tool,
+            'date_offset': self._call_time_tool,
         }
     
     def resolve(self, text):
@@ -536,6 +536,31 @@ class VariableResolver:
             return result
         
         return None
+
+    def _call_time_tool(self, func_name, args):
+        """调用时间日期函数（统一 (func_name, args) 调用约定）。
+
+        时间日期函数不接收 func_name/args 参数，这里负责拆包转换，
+        否则 ${timestamp()} 等占位符会因 TypeError 解析失败而原样保留。
+        """
+        if func_name == 'timestamp':
+            return self._timestamp()
+        if func_name == 'timestamp_sec':
+            return self._timestamp_sec()
+        if func_name == 'datetime':
+            return self._datetime(args[0] if args else '%Y-%m-%d %H:%M:%S')
+        if func_name == 'date':
+            return self._date(args[0] if args else '%Y-%m-%d')
+        if func_name == 'time':
+            return self._time(args[0] if args else '%H:%M:%S')
+        if func_name == 'date_offset':
+            return self._date_offset(
+                days=args[0] if len(args) > 0 else 0,
+                hours=args[1] if len(args) > 1 else 0,
+                minutes=args[2] if len(args) > 2 else 0,
+                format_str=args[3] if len(args) > 3 else '%Y-%m-%d %H:%M:%S',
+            )
+        raise ValueError(f"未知时间日期函数: {func_name}")
     
     # ========== 时间日期函数 ==========
     

@@ -137,6 +137,33 @@ def require_project(ctx: RunContextWrapper[TestHubContext], project_id: Optional
         raise ToolPermissionError(f"当前用户无权访问项目 {project_id}")
 
 
+def resolve_main_project(
+    ctx: RunContextWrapper[TestHubContext], project_id: int
+) -> Any:
+    """解析 project_id 为主项目：优先按主项目ID匹配，兼容直接传 API 项目ID。
+
+    list_api_projects 返回的是 API 项目ID（api_project_id），而创建集合/接口等
+    工具需要主项目ID（main_project_id）。为避免两套 ID 混淆导致
+    "Project matching query does not exist"，这里同时支持两种 ID：
+    先查主项目，查不到再按 API 项目反查其主项目。
+    """
+    from apps.projects.models import Project
+    from apps.api_testing.models import ApiProject
+
+    project = Project.objects.filter(id=project_id).first()
+    if project is None:
+        api_project = (
+            ApiProject.objects.filter(id=project_id)
+            .select_related("main_project")
+            .first()
+        )
+        if api_project is None or api_project.main_project_id is None:
+            raise Project.DoesNotExist(f"项目 {project_id} 不存在")
+        project = api_project.main_project
+    require_project(ctx, project.id)
+    return project
+
+
 def _module_access(user: Any, obj: Any) -> bool:
     """模块级项目（ApiProject/MidsceneProject 等）的 owner/members 校验。"""
     if user is None:
@@ -309,14 +336,12 @@ def get_project_overview(ctx: RunContextWrapper[TestHubContext], project_id: int
     """获取项目概览：接口数、用例数、执行状态等。
 
     Args:
-        project_id: 项目ID。
+        project_id: 主项目ID（也可传 API 项目ID，自动解析到主项目）。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.testcases.models import TestCase
     from apps.api_testing.models import ApiProject, ApiRequest, TestExecution
 
-    project = Project.objects.get(id=project_id)
+    project = resolve_main_project(ctx, project_id)
     testcase_count = TestCase.objects.filter(project_id=project_id).count()
 
     api_projects = list(ApiProject.objects.filter(main_project=project)[:3])
@@ -399,15 +424,13 @@ def search_apis(
     """搜索API接口，按名称/URL/方法匹配。
 
     Args:
-        project_id: 项目ID。
+        project_id: 主项目ID（也可传 API 项目ID，自动解析到主项目）。
         keyword: 关键词，匹配名称/URL/方法。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.api_testing.models import ApiProject, ApiRequest
     from django.db.models import Q
 
-    main_project = Project.objects.get(id=project_id)
+    main_project = resolve_main_project(ctx, project_id)
     api_project_ids = list(
         ApiProject.objects.filter(main_project=main_project).values_list("id", flat=True)[:5]
     )
@@ -623,7 +646,7 @@ def create_api_test(
     """创建API接口测试，含URL、方法、请求头、参数、请求体、断言。
 
     Args:
-        project_id: 项目ID。
+        project_id: 主项目ID（也可传 API 项目ID，自动解析到主项目）。
         name: 接口名称。
         method: GET/POST/PUT/DELETE/PATCH。
         url: 请求URL。
@@ -633,11 +656,9 @@ def create_api_test(
         body: 请求体JSON。
         assertions: 断言规则列表。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.api_testing.models import ApiProject, ApiCollection, ApiRequest
 
-    main_project = Project.objects.get(id=project_id)
+    main_project = resolve_main_project(ctx, project_id)
     api_project = ApiProject.objects.filter(main_project=main_project).first()
     if not api_project:
         api_project = ApiProject.objects.create(
@@ -736,16 +757,14 @@ def create_collection(
     """创建接口集合（文件夹）。
 
     Args:
-        project_id: 项目ID。
+        project_id: 主项目ID（也可传 API 项目ID，自动解析到主项目）。
         name: 集合名称。
         description: 描述。
         parent_id: 父集合ID（嵌套用）。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.api_testing.models import ApiProject, ApiCollection
 
-    main_project = Project.objects.get(id=project_id)
+    main_project = resolve_main_project(ctx, project_id)
     api_project = ApiProject.objects.filter(main_project=main_project).first()
     if not api_project:
         api_project = ApiProject.objects.create(
@@ -993,16 +1012,14 @@ def create_test_suite(
     """创建自动化测试套件，用于把接口组织成执行用例批次。
 
     Args:
-        project_id: TestHub主项目ID。
+        project_id: TestHub主项目ID（也可传 API 项目ID，自动解析到主项目）。
         name: 套件名称。
         description: 套件描述。
         environment_id: 执行环境ID（可选，属于该接口项目）。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.api_testing.models import ApiProject, Environment, TestSuite
 
-    main_project = Project.objects.get(id=project_id)
+    main_project = resolve_main_project(ctx, project_id)
     api_project = ApiProject.objects.filter(main_project=main_project).first()
     if not api_project:
         return {
@@ -1040,13 +1057,11 @@ def list_test_suites(
     """列出项目下的自动化测试套件。
 
     Args:
-        project_id: TestHub主项目ID。
+        project_id: TestHub主项目ID（也可传 API 项目ID，自动解析到主项目）。
     """
-    require_project(ctx, project_id)
-    from apps.projects.models import Project
     from apps.api_testing.models import ApiProject, TestSuite
 
-    main_project = Project.objects.get(id=project_id)
+    main_project = resolve_main_project(ctx, project_id)
     api_project = ApiProject.objects.filter(main_project=main_project).first()
     if not api_project:
         return {"total": 0, "count": 0, "results": []}
@@ -1450,21 +1465,42 @@ def list_api_projects(
 ) -> Dict:
     """列出当前用户可访问的API测试项目。
 
+    注意 ID 体系：返回里的 api_project_id 是接口模块项目ID（list_api_projects
+    自身的 ID），main_project_id 才是 TestHub 主项目ID。创建集合/接口、查看
+    项目概览、创建测试套件等操作的 project_id 参数请使用 main_project_id
+    （工具也兼容直接传 api_project_id，会自动解析到主项目）。
+
     Args:
         keyword: 按名称筛选。
     """
     from apps.api_testing.models import ApiProject
+    from apps.projects.models import ProjectMember
     from django.db.models import Q
 
     user = ctx.context.user
-    queryset = ApiProject.objects.all() if getattr(user, "is_superuser", False) else ApiProject.objects.filter(
-        Q(owner=user) | Q(members=user)
-    )
+    if getattr(user, "is_superuser", False):
+        queryset = ApiProject.objects.all()
+    else:
+        member_project_ids = ProjectMember.objects.filter(user=user).values_list(
+            "project_id", flat=True
+        )
+        queryset = ApiProject.objects.filter(
+            Q(owner=user)
+            | Q(members=user)
+            | Q(main_project_id__in=member_project_ids)
+        )
     if keyword:
         queryset = queryset.filter(name__icontains=keyword)
     total = queryset.count()
     results = [
-        {"id": p.id, "name": p.name, "status": p.status}
+        {
+            "id": p.id,
+            "api_project_id": p.id,
+            "main_project_id": p.main_project_id,
+            "main_project_name": p.main_project.name if p.main_project_id else None,
+            "name": p.name,
+            "status": p.status,
+        }
         for p in queryset[:10]
     ]
     resp = {"total": total, "count": len(results), "results": results}

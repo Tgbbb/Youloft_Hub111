@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -89,6 +90,48 @@ class AssistantToolPermissionTests(TestCase):
     def test_require_project_denies_outsider(self):
         with self.assertRaises(tools.ToolPermissionError):
             tools.require_project(_ctx(self.outsider), self.project.id)
+
+    def test_resolve_main_project_accepts_api_project_id(self):
+        project = tools.resolve_main_project(_ctx(self.member), self.api_project.id)
+        self.assertEqual(project.id, self.project.id)
+
+    def test_resolve_main_project_denies_outsider(self):
+        with self.assertRaises(tools.ToolPermissionError):
+            tools.resolve_main_project(_ctx(self.outsider), self.api_project.id)
+
+    def test_list_api_projects_returns_main_project_id(self):
+        resp = tools.list_api_projects(_ctx(self.owner))
+        item = next(
+            r for r in resp["results"] if r["api_project_id"] == self.api_project.id
+        )
+        self.assertEqual(item["main_project_id"], self.project.id)
+        self.assertEqual(item["main_project_name"], "P1")
+
+    def test_list_api_projects_visible_to_main_project_member(self):
+        resp = tools.list_api_projects(_ctx(self.member))
+        ids = [r["api_project_id"] for r in resp["results"]]
+        self.assertIn(self.api_project.id, ids)
+
+    def test_create_collection_with_api_project_id(self):
+        resp = tools.create_collection(
+            _ctx(self.member), project_id=self.api_project.id, name="集合A"
+        )
+        self.assertTrue(resp["success"])
+        self.assertEqual(resp["api_project_id"], self.api_project.id)
+
+    def test_get_project_overview_with_api_project_id(self):
+        resp = tools.get_project_overview(_ctx(self.member), self.api_project.id)
+        self.assertEqual(resp["project_name"], "P1")
+
+    def test_create_api_test_with_api_project_id(self):
+        resp = tools.create_api_test(
+            _ctx(self.member),
+            project_id=self.api_project.id,
+            name="R2",
+            method="GET",
+            url="https://example.com/r2",
+        )
+        self.assertTrue(resp["success"])
 
     def test_require_api_access_denies_outsider(self):
         with self.assertRaises(tools.ToolPermissionError):
@@ -400,6 +443,32 @@ class AgentStreamEventTests(TestCase):
         agent._achat = fake_achat.__get__(agent)
         events = list(agent.chat("hi"))
         self.assertEqual([e["type"] for e in events], ["message_delta", "run_done"])
+
+    def test_sync_bridge_cancels_background_run_on_generator_close(self):
+        """消费端提前关闭生成器（客户端断开）时，后台 Agent 回合应立即被取消，
+        不能继续在独立线程里跑完整轮，避免进程退出时撞上 interpreter shutdown。"""
+        agent = TestHubAgent()
+        started = threading.Event()
+        cancelled = threading.Event()
+
+        async def fake_achat(self, message, history=None):
+            yield {"type": "message_delta", "content": "hi"}
+            started.set()
+            try:
+                while True:
+                    await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        agent._achat = fake_achat.__get__(agent)
+        gen = agent.chat("hi")
+        first = next(gen)
+        self.assertEqual(first["type"], "message_delta")
+        self.assertTrue(started.wait(3), "后台运行未启动")
+
+        gen.close()
+        self.assertTrue(cancelled.wait(5), "关闭生成器后后台运行未被取消")
 
 
 class ToolRegistryTests(TestCase):

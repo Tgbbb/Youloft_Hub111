@@ -357,6 +357,21 @@ class TestHubAgent:
                 "max_turns_exceeded": True,
             }
 
+        except RuntimeError as e:
+            # 进程/解释器正在退出（服务重启、Ctrl+C、部署收尾）时，
+            # 事件循环已无法调度新任务，属于正常收尾，不再产出错误事件。
+            if "interpreter shutdown" in str(e):
+                logger.info(f"Agent run interrupted by interpreter shutdown: {e}")
+                return
+            logger.error(f"Agent run failed: {e}", exc_info=True)
+            yield {"type": "error", "content": f"Agent 处理出错: {e}"}
+            yield {
+                "type": "run_done",
+                "final_output": full_text,
+                "tool_calls": tool_calls,
+                "error": True,
+            }
+
         except Exception as e:
             logger.error(f"Agent run failed: {e}", exc_info=True)
             yield {"type": "error", "content": f"Agent 处理出错: {e}"}
@@ -398,6 +413,7 @@ class TestHubAgent:
         # （asgiref.async_to_sync 不支持 async generator，故手动桥接）
         sentinel = object()
         events: _queue.Queue = _queue.Queue()
+        cancel_event = threading.Event()
 
         def _run() -> None:
             loop = asyncio.new_event_loop()
@@ -408,22 +424,61 @@ class TestHubAgent:
                     async for ev in self._achat(message, history):
                         events.put(ev)
 
-                loop.run_until_complete(_consume())
+                task = loop.create_task(_consume())
+
+                async def _watch_cancel() -> None:
+                    # 消费端退出（客户端断开/生成器被关闭）时取消后台运行，
+                    # 避免线程在服务重启/进程退出时仍在执行 Agent 回合。
+                    while not cancel_event.is_set() and not task.done():
+                        await asyncio.sleep(0.2)
+                    if cancel_event.is_set() and not task.done():
+                        task.cancel()
+
+                watcher = loop.create_task(_watch_cancel())
+                loop.run_until_complete(
+                    asyncio.gather(task, watcher, return_exceptions=True)
+                )
             except Exception as e:
                 logger.error(f"Agent bridge error: {e}", exc_info=True)
-                events.put({"type": "error", "content": f"Agent 处理出错: {e}"})
-                events.put({"type": "run_done", "final_output": "", "tool_calls": []})
+                try:
+                    events.put({"type": "error", "content": f"Agent 处理出错: {e}"})
+                    events.put({"type": "run_done", "final_output": "", "tool_calls": []})
+                except Exception:
+                    pass
             finally:
-                events.put(sentinel)
+                try:
+                    events.put(sentinel)
+                except Exception:
+                    pass
+                # 关闭事件循环前清理残留任务，避免 executor 在进程退出时仍被引用
+                try:
+                    pending = [
+                        t for t in asyncio.all_tasks(loop) if not t.done()
+                    ]
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
                 loop.close()
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
-        while True:
-            ev = events.get()
-            if ev is sentinel:
-                break
-            yield ev
+        try:
+            while True:
+                ev = events.get()
+                if ev is sentinel:
+                    break
+                yield ev
+        finally:
+            # 生成器被提前关闭（客户端断开/SSE 中断）：通知后台线程取消，
+            # 不要让它继续把整个 Agent 回合跑完。
+            if thread.is_alive():
+                cancel_event.set()
+                thread.join(timeout=5)
 
     def chat_sync(self, message: str, history: Optional[List[Dict]] = None) -> str:
         """同步对话（非流式），返回完整回复文本。"""
