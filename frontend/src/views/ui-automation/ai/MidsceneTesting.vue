@@ -586,7 +586,8 @@ const doExecute = async () => {
   finally { executing.value = false }
 }
 const stopExecution = async () => { if (!execution.value?.id) return; try { await api.post(`/ui-automation/midscene/executions/${execution.value.id}/stop/`); execution.value.status = 'stopped'; ElMessage.info('已停止') } catch (e) {} }
-const startPolling = (execId) => { stopPolling(); const poll = async () => { try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) stopPolling() } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const startPolling = (execId) => { stopPolling(); const poll = async () => { try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) { stopPolling(); refreshAfterExecution() } } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const refreshAfterExecution = async () => { if (recordMode.value) selectedReplayIndex.value = 0; await loadCases() }
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
 const previewStep = (s) => { if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true } }
 onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
