@@ -196,10 +196,11 @@ _DEFAULT_WAIT_AFTER = {
 }
 
 
-def _clamp_wait_after(seconds, floor=0.2):
-    """录制实测 wait_after 兜底：至少 0.2s，避免回放动作连发导致页面未稳定。"""
+def _clamp_wait_after(seconds, floor=0.2, ceil=5.0):
+    """录制实测 wait_after 兜底：下限 0.2s、上限 5s。
+    实测值会包含录制时的 VLM 思考时间，若不设上限会被原样重放（几十秒空等）。"""
     try:
-        return max(round(float(seconds), 2), floor)
+        return max(min(round(float(seconds), 2), ceil), floor)
     except (TypeError, ValueError):
         return floor
 
@@ -250,11 +251,12 @@ def _execute_replay_action(device_id, ios_dev, a):
             ios_dev.execute_action(a)
         else:
             adb_execute(device_id, a)
-    # swipe 动画需要更长等待
+    # swipe 动画需要更长等待（基线），之后统一走页面稳定等待
     if action_type in ('swipe',):
         time.sleep(1.5)
-    else:
-        time.sleep(a.get('wait_after', 2.0))
+    # 等页面稳定：稳定即继续，最多 5s 超时（超时不阻塞，交给后续校验/VLM 兜底）。
+    # 不再重放录制 wait_after 绝对值——它含录制时 VLM 思考时间，且录制环境快慢不代表回放。
+    _wait_screen_stable(device_id, ios_dev, timeout=5.0, check_interval=0.5, label='动作后页面')
 
 
 def _replay_actions(device_id, ios_dev, actions, width, height, gate_all=False):
@@ -807,6 +809,11 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     #   主路径:   指纹未命中（如录制到加载帧）→ 元素级 VLM 确认，等待加载完成，存在→播放，稳定不存在→跳过
                     #   兜底:     确认失败/无法判定 → replay_fail+1 落到 VLM 判断，不做盲目播放
                     if is_cond:
+                        if progress_callback:
+                            progress_callback(step_idx+1, len(steps), {
+                                'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
+                                'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
+                            })
                         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         act_hash = r_step.get('act_before_hash', '')
                         after_hash = r_step.get('after_hash', '')
@@ -829,6 +836,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 _push_step_memory(step_memory, step_idx + 1, instruction,
                                                   r_actions[-1].get('action', 'tap') if r_actions else '')
                                 prev_png = png_after; step_idx += 1
+                                if progress_callback:
+                                    progress_callback(step_idx, len(steps), {
+                                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                                        'instruction': instruction, 'status': 'passed',
+                                        'screenshot': screenshot_url,
+                                        'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
+                                        'progress': int(step_idx / len(steps) * 100)
+                                    })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
                                 continue
                             # 主路径：指纹未命中 → 元素级确认（等待加载完成，避免录制到加载帧导致永久不匹配）
@@ -851,6 +866,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 _push_step_memory(step_memory, step_idx + 1, instruction,
                                                   r_actions[-1].get('action', 'tap') if r_actions else '')
                                 prev_png = png_after; step_idx += 1
+                                if progress_callback:
+                                    progress_callback(step_idx, len(steps), {
+                                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                                        'instruction': instruction, 'status': 'passed',
+                                        'screenshot': screenshot_url,
+                                        'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
+                                        'progress': int(step_idx / len(steps) * 100)
+                                    })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(元素确认-条件满足)')
                                 continue
                             if present is False:
@@ -865,6 +888,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     recording[step_idx] = dict(r_step)
                                 _push_step_memory(step_memory, step_idx + 1, instruction)
                                 prev_png = png_conf; step_idx += 1
+                                if progress_callback:
+                                    progress_callback(step_idx, len(steps), {
+                                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                                        'instruction': instruction, 'status': 'passed',
+                                        'screenshot': screenshot_url,
+                                        'aiReasoning': [f'[回放] 条件不满足-元素确认: {reasoning[:80]}'],
+                                        'progress': int(step_idx / len(steps) * 100)
+                                    })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足-元素确认)')
                                 continue
                             # 确认失败/无法判定 → 降至VLM
@@ -882,6 +913,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     recording[step_idx] = dict(r_step)
                                 _push_step_memory(step_memory, step_idx + 1, instruction)
                                 prev_png = png; step_idx += 1
+                                if progress_callback:
+                                    progress_callback(step_idx, len(steps), {
+                                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                                        'instruction': instruction, 'status': 'passed',
+                                        'screenshot': screenshot_url,
+                                        'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)'],
+                                        'progress': int(step_idx / len(steps) * 100)
+                                    })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足)')
                                 continue
                             # 当前页不是录制时的跳过状态 → 未知（可能条件满足或路径不同），降至VLM

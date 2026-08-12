@@ -16,6 +16,17 @@ from apps.ui_automation.models import MidsceneProject, MidsceneCase
 User = get_user_model()
 
 
+def _make_png(seed=1):
+    """固定种子的随机图（phash 非 0），供截图 mock 使用。"""
+    import random
+    rnd = random.Random(seed)
+    img = Image.new('L', (64, 64))
+    img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
 class CoordResolveTests(SimpleTestCase):
     """_resolve_coord 坐标解析。"""
 
@@ -68,6 +79,12 @@ class ClampWaitAfterTests(SimpleTestCase):
         self.assertEqual(midscene_runner._clamp_wait_after(None), 0.2)
         self.assertEqual(midscene_runner._clamp_wait_after('abc'), 0.2)
 
+    def test_ceil_enforced(self):
+        # 录制实测值含 VLM 思考时间，入库不得超过上限，避免回放被原样重放
+        self.assertEqual(midscene_runner._clamp_wait_after(60), 5.0)
+        self.assertEqual(midscene_runner._clamp_wait_after(6.7), 5.0)
+        self.assertEqual(midscene_runner._clamp_wait_after(0.05), 0.2)
+
 
 class WaitScreenStableTests(SimpleTestCase):
     """启动首帧稳定等待：连续两帧相同提前返回，持续变化则超时。"""
@@ -118,6 +135,11 @@ class ReplayActionsTests(SimpleTestCase):
         patcher.start()
         self.addCleanup(self.sleep.stop)
         self.addCleanup(patcher.stop)
+        self.shot = mock.patch.object(
+            midscene_runner, 'adb_screenshot', return_value=_make_png(1),
+        )
+        self.shot.start()
+        self.addCleanup(self.shot.stop)
 
     def test_tap_prefers_pct_for_other_resolution(self):
         # 录制于 1080x2160，回放于 720x1600：优先百分比换算，避免像素点偏
@@ -213,7 +235,7 @@ class GatedReplayTests(SimpleTestCase):
             side_effect=lambda *args, **kw: self.calls.append(args),
         )
         self.adb.start()
-        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png-bytes')
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=_make_png(1))
         self.shot.start()
         self.addCleanup(self.sleep.stop)
         self.addCleanup(self.adb.stop)
@@ -309,7 +331,9 @@ class ConditionalNextCondReplayTests(TestCase):
         self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
         self.size.start()
         self.addCleanup(self.size.stop)
-        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot')
+        self.shot = mock.patch.object(
+            midscene_runner, 'adb_screenshot', return_value=_make_png(1),
+        )
         self.shot.start()
         self.addCleanup(self.shot.stop)
         self.save = mock.patch.object(
@@ -370,9 +394,10 @@ class ConditionalNextCondReplayTests(TestCase):
         model.api_key = 'k'
         return mc, execution, device, model
 
-    def _run(self, steps, ai_prompt, hash_match, vlm_side_effect=None, shot_pngs=None):
+    def _run(self, steps, ai_prompt, hash_match, vlm_side_effect=None, shot_pngs=None,
+             progress_callback=None):
         if shot_pngs is None:
-            pngs = [self._img_png(i) for i in (1, 2, 3, 4)]
+            pngs = [self._img_png(1)] * 4
         else:
             pngs = shot_pngs
         state = {'i': 0}
@@ -388,6 +413,7 @@ class ConditionalNextCondReplayTests(TestCase):
             return midscene_runner.run_midscene_test(
                 ai_prompt=ai_prompt, device=device, model_config=model,
                 execution_record=execution, replay_mode=True, replay_index=0,
+                progress_callback=progress_callback,
             )
 
     def test_act_hash_match_plays_and_passes(self):
@@ -529,7 +555,8 @@ class ConditionalNextCondReplayTests(TestCase):
                                '{"present": false, "reasoning": "加载中"}',
                                '{"present": false, "reasoning": "加载中"}',
                                {'action': 'done', 'reasoning': 'x'},
-                           ])
+                           ],
+                           shot_pngs=[self._img_png(21), self._img_png(22)])
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['steps'][0]['status'], 'passed')
         self.adb_mock.assert_not_called()
@@ -548,6 +575,37 @@ class ConditionalNextCondReplayTests(TestCase):
         self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
         self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '108', '216')
         self.vlm_mock.assert_not_called()
+
+    def test_cond_fast_path_emits_progress_done(self):
+        # 条件步骤快速路径要发 step_start/step_done，否则前端步骤明细在条件步骤处停滞
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
+        }]
+        events = []
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: expected in ('H_ACT', 'H_AFTER'),
+                           progress_callback=lambda s, t, d: events.append((d.get('type'), s, d.get('status'))))
+        self.assertEqual(result['status'], 'passed')
+        self.assertIn(('step_start', 1, None), events)
+        self.assertIn(('step_done', 1, 'passed'), events)
+
+    def test_cond_skip_path_emits_progress_done(self):
+        # 条件步骤跳过出口同样要发 step_done
+        steps = [{
+            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            'actions': [],
+            'after_hash': 'H_SKIP',
+        }]
+        events = []
+        result = self._run(steps, '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                           lambda _png, expected: expected == 'H_SKIP',
+                           progress_callback=lambda s, t, d: events.append((d.get('type'), s, d.get('status'))))
+        self.assertEqual(result['status'], 'passed')
+        self.assertIn(('step_start', 1, None), events)
+        self.assertIn(('step_done', 1, 'passed'), events)
 
 
 def _make_case(owner):
