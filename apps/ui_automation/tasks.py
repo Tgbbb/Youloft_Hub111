@@ -18,7 +18,11 @@ def _append_replay_entry(midscene_case, entry, result):
     passed = result.get('passedSteps', 0)
     failed = result.get('failedSteps', 0)
     total = result.get('totalSteps', 0)
-    entry.setdefault('name', f"录制 {timezone.now().strftime('%m-%d %H:%M')}")
+    # 命名带设备名：多设备同时录制时互不混淆（缺失设备名则不加后缀）
+    dev = entry.get('device') or {}
+    device_name = str(dev.get('name', '') or '').strip()
+    name_suffix = f' [{device_name}]' if device_name else ''
+    entry.setdefault('name', f"录制 {timezone.now().strftime('%m-%d %H:%M')}{name_suffix}")
     entry['result'] = f'{passed}/{total} 通过' + (f'，{failed} 失败' if failed else '')
     existing = midscene_case.replay_data
     if isinstance(existing, dict):

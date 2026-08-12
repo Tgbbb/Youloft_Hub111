@@ -771,6 +771,33 @@ class ReplayEntrySaveTests(TestCase):
         self.assertEqual(len(self.case.replay_data), 2)
         self.assertEqual(self.case.replay_data[0]['steps'], ['new'])
 
+    def test_name_includes_device_name(self):
+        # 多设备同时录制：命名带设备名，避免同名条目无法区分
+        from apps.ui_automation import tasks
+        tasks._append_replay_entry(
+            self.case,
+            {'steps': [], 'device': {'name': 'Pixel A', 'platform': 'android'}},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        tasks._append_replay_entry(
+            self.case,
+            {'steps': [], 'device': {'name': 'Pixel B', 'platform': 'android'}},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        self.case.refresh_from_db()
+        names = [e['name'] for e in self.case.replay_data]
+        self.assertTrue(any('[Pixel A]' in n for n in names))
+        self.assertTrue(any('[Pixel B]' in n for n in names))
+
+    def test_name_without_device_name_no_suffix(self):
+        from apps.ui_automation import tasks
+        tasks._append_replay_entry(
+            self.case, {'steps': []},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        self.case.refresh_from_db()
+        self.assertNotIn('[', self.case.replay_data[0]['name'])
+
 
 class ReplayRenameApiTests(TestCase):
     """录制条目重命名接口。"""

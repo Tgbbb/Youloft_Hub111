@@ -110,7 +110,8 @@
         <div class="ms-zone__body">
           <div class="ms-cmd-strip">
             <div class="ms-cmd-strip__left">
-              <el-select v-model="selectedDeviceId" placeholder="选择设备" class="ms-select">
+              <el-select v-model="selectedDeviceIds" multiple collapse-tags collapse-tags-tooltip
+                placeholder="选择设备（可多选）" class="ms-select ms-select--devices">
                 <el-option-group label="Android">
                   <el-option v-for="d in androidDevices" :key="d.id"
                     :label="`${d.name || d.device_id} ${d.status === 'locked' ? '🔒' : ''}`"
@@ -152,8 +153,8 @@
               <el-button
                 type="primary" @click="doExecute" :loading="executing" :disabled="!canExecute"
                 :icon="VideoPlay" class="ms-btn--exec"
-              >执行</el-button>
-              <el-button v-if="isRunning" @click="stopExecution" :icon="SwitchButton" class="ms-btn--stop">停止</el-button>
+              >执行{{ selectedDeviceIds.length > 1 ? ` (${selectedDeviceIds.length})` : '' }}</el-button>
+              <el-button v-if="isRunning" @click="stopAllExecutions" :icon="SwitchButton" class="ms-btn--stop">停止</el-button>
             </div>
           </div>
         </div>
@@ -187,57 +188,74 @@
       </section>
 
       <!-- Zone D: Live Execution Stage -->
-      <section v-if="execution" class="ms-stage-live">
+      <section v-if="executions.length > 0" class="ms-stage-live">
         <header class="ms-zone__head">
           <span class="ms-zone__kicker">LIVE / 04</span>
           <span class="ms-zone__rule" aria-hidden="true"></span>
-          <span class="ms-stage-live__status">
-            <span class="ms-status-dot" :class="'dot-' + execution.status"></span>
-            {{ execution.status_display || execution.status }}
-          </span>
         </header>
 
-        <!-- Progress instrumentation -->
-        <div class="ms-progress-bar">
-          <div class="ms-progress-bar__track">
-            <div class="ms-progress-bar__fill" :style="{ width: (execution.progress || 0) + '%' }"></div>
-          </div>
-          <span class="ms-progress-bar__label">{{ currentStep }}/{{ execution.total_steps || 0 }}</span>
-        </div>
+        <el-tabs v-model="activeExecIndex" class="ms-exec-tabs">
+          <el-tab-pane v-for="(exec, idx) in executions" :key="exec.id" :name="String(idx)">
+            <template #label>
+              <span class="ms-exec-tab">
+                <span class="ms-status-dot" :class="'dot-' + exec.status"></span>
+                {{ exec.device_name || ('设备 ' + exec.device_id) }}
+                <span class="ms-exec-tab__status">{{ exec.status_display || exec.status }}</span>
+              </span>
+            </template>
+          </el-tab-pane>
+        </el-tabs>
 
-        <!-- Dual pane: screenshot + reasoning -->
-        <div class="ms-dual">
-          <div class="ms-dual__pane ms-dual__pane--screen">
-            <div class="ms-dual__label">DEVICE SCREEN</div>
-            <div class="ms-dual__stage">
-              <img v-if="currentScreenshot" :src="currentScreenshot" class="ms-screen-img" />
-              <span v-else class="ms-dual__wait">AWAITING FRAME...</span>
-            </div>
-          </div>
-          <div class="ms-dual__pane ms-dual__pane--reason">
-            <div class="ms-dual__label">AI REASONING</div>
-            <div class="ms-dual__log">
-              <div v-if="currentReasoning && currentReasoning.length > 0">
-                <div v-for="(r, i) in currentReasoning" :key="i" class="ms-log-line">{{ r }}</div>
+        <template v-if="activeExec">
+          <div class="ms-stage-live__bar">
+            <span class="ms-stage-live__status">
+              <span class="ms-status-dot" :class="'dot-' + activeExec.status"></span>
+              {{ activeExec.status_display || activeExec.status }}
+              <el-button v-if="isExecRunning(activeExec)" size="small" @click="stopExecution(activeExec)" :icon="SwitchButton" class="ms-btn--stop ms-btn--stop-inline">停止</el-button>
+            </span>
+            <div class="ms-progress-bar ms-progress-bar--inline">
+              <div class="ms-progress-bar__track">
+                <div class="ms-progress-bar__fill" :style="{ width: (activeExec.progress || 0) + '%' }"></div>
               </div>
-              <span v-else class="ms-dual__wait">AWAITING ANALYSIS...</span>
+              <span class="ms-progress-bar__label">{{ activeExec.step || 0 }}/{{ activeExec.total_steps || 0 }}</span>
             </div>
           </div>
-        </div>
 
-        <!-- Step badges -->
-        <div class="ms-step-badges">
-          <button
-            v-for="s in (execution.steps_detail || [])"
-            :key="s.step"
-            class="ms-step-badge"
-            :class="'badge-' + s.status"
-            @click="previewStep(s)"
-          >
-            <span class="ms-step-badge__mark">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✗' : '→' }}</span>
-            {{ s.step }}. {{ s.instruction?.substring(0, 24) }}{{ s.instruction?.length > 24 ? '…' : '' }}
-          </button>
-        </div>
+          <!-- Dual pane: screenshot + reasoning -->
+          <div class="ms-dual">
+            <div class="ms-dual__pane ms-dual__pane--screen">
+              <div class="ms-dual__label">DEVICE SCREEN</div>
+              <div class="ms-dual__stage">
+                <img v-if="activeExec.screenshot" :src="activeExec.screenshot" class="ms-screen-img" />
+                <span v-else class="ms-dual__wait">AWAITING FRAME...</span>
+              </div>
+            </div>
+            <div class="ms-dual__pane ms-dual__pane--reason">
+              <div class="ms-dual__label">AI REASONING</div>
+              <div class="ms-dual__log">
+                <div v-if="activeExec.reasoning && activeExec.reasoning.length > 0">
+                  <div v-for="(r, i) in activeExec.reasoning" :key="i" class="ms-log-line">{{ r }}</div>
+                </div>
+                <span v-else class="ms-dual__wait">AWAITING ANALYSIS...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step badges -->
+          <div class="ms-step-badges">
+            <button
+              v-for="s in (activeExec.steps_detail || [])"
+              :key="s.step"
+              class="ms-step-badge"
+              :class="'badge-' + s.status"
+              @click="previewStep(s)"
+            >
+              <span class="ms-step-badge__mark">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✗' : '→' }}</span>
+              {{ s.step }}. {{ s.instruction?.substring(0, 24) }}{{ s.instruction?.length > 24 ? '…' : '' }}
+            </button>
+          </div>
+        </template>
+        <div v-else class="ms-dual__wait">NO EXECUTION DATA...</div>
       </section>
     </main>
 
@@ -367,6 +385,30 @@
         <el-button type="danger" plain @click="executeAnyway">仍要执行</el-button>
       </template>
     </el-dialog>
+
+    <!-- 多设备批量匹配提醒 -->
+    <el-dialog v-model="batchMatchDialog.show" title="多设备匹配结果" width="620px">
+      <div class="ms-match">
+        <div v-for="row in batchMatchDialog.rows" :key="row.device_id" class="ms-match__row ms-match__row--batch">
+          <span class="ms-match__label">{{ row.device_name || ('设备 ' + row.device_id) }}</span>
+          <span class="ms-match__cell">
+            <el-tag :type="matchTagType(row.match_level)" size="small">{{ matchLevelText(row.match_level) }}</el-tag>
+            <template v-if="row.error">
+              <span class="ms-match__hint" style="display:inline">{{ row.error }}</span>
+            </template>
+            <template v-else-if="row.suggested_name">
+              <span class="ms-match__cell--sub">建议脚本：{{ row.suggested_name }}</span>
+            </template>
+          </span>
+        </div>
+        <div class="ms-match__hint">每台设备将使用各自最匹配的脚本执行（无候选则用当前脚本）。</div>
+      </div>
+      <template #footer>
+        <el-button @click="batchMatchDialog.show = false">取消</el-button>
+        <el-button @click="executeBatchWithCurrent">仍用当前脚本</el-button>
+        <el-button type="primary" @click="executeBatchWithMatch">用各自匹配脚本</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -383,7 +425,7 @@ const projects = ref([])
 const currentCaseId = ref(null)
 const visionModels = ref([])
 const devices = ref([])
-const selectedDeviceId = ref(null)
+const selectedDeviceIds = ref([])
 const saving = ref(false)
 const executing = ref(false)
 const discovering = ref(false)
@@ -405,9 +447,8 @@ const folderDialogForm = reactive({ id: null, name: '', project: null })
 const folderSaving = ref(false)
 
 const isIosDevice = computed(() => {
-  if (!selectedDeviceId.value) return false
-  const d = devices.value.find(d => d.id === selectedDeviceId.value)
-  return d?.platform === 'ios'
+  if (selectedDeviceIds.value.length === 0) return false
+  return selectedDeviceIds.value.some(id => devices.value.find(d => d.id === id)?.platform === 'ios')
 })
 const filteredCases = computed(() => {
   if (!filterProjectId.value) return cases.value
@@ -464,10 +505,9 @@ const form = reactive({
 const showAiGen = ref(false)
 const aiDesc = ref('')
 const genLoading = ref(false)
-const execution = ref(null)
-const currentScreenshot = ref('')
-const currentReasoning = ref([])
-const currentStep = ref(0)
+const executions = ref([])
+const activeExecIndex = ref('0')
+const activeExec = computed(() => executions.value[Number(activeExecIndex.value)] || null)
 const showPreview = ref(false)
 const previewImage = ref('')
 let pollTimer = null
@@ -475,8 +515,9 @@ let pollCaseId = null
 const androidDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.status !== 'offline'))
 const iosDevices = computed(() => devices.value.filter(d => d.platform === 'ios' && d.status !== 'offline'))
 const networkDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.ip_address))
-const isRunning = computed(() => execution.value && ['pending', 'running'].includes(execution.value.status))
-const canExecute = computed(() => form.ai_prompt && selectedDeviceId.value && form.ai_model_config_id)
+const isRunning = computed(() => executions.value.some(e => ['pending', 'running'].includes(e.status)))
+const isExecRunning = (exec) => !!exec && ['pending', 'running'].includes(exec.status)
+const canExecute = computed(() => form.ai_prompt && selectedDeviceIds.value.length > 0 && form.ai_model_config_id)
 const selectedReplayIndex = ref(0)
 const showReplayDetail = ref(false)
 const replayList = computed(() => {
@@ -488,7 +529,9 @@ const replayList = computed(() => {
 })
 const selectedReplay = computed(() => replayList.value[selectedReplayIndex.value] || null)
 const deviceMatchDialog = reactive({ show: false, current: null, selected: null, matching: [], pickIndex: null })
+const batchMatchDialog = reactive({ show: false, rows: [], perDeviceIndex: {} })
 const forceExecuteFlag = ref(false)
+const batchMatchConfirmed = ref(false)
 const fmtRes = (res) => {
   if (!res) return '分辨率未知'
   if (typeof res === 'string') return res
@@ -497,7 +540,7 @@ const fmtRes = (res) => {
 const checkReplayMatch = async () => {
   try {
     const { data } = await api.get(`/ui-automation/midscene/cases/${currentCaseId.value}/replay_match/`, {
-      params: { device_id: selectedDeviceId.value, replay_index: selectedReplayIndex.value },
+      params: { device_id: selectedDeviceIds.value[0], replay_index: selectedReplayIndex.value },
     })
     if (['exact', 'ok', 'unknown'].includes(data.match_level)) return true
     deviceMatchDialog.current = data.current_device
@@ -505,6 +548,42 @@ const checkReplayMatch = async () => {
     deviceMatchDialog.matching = data.matching || []
     deviceMatchDialog.pickIndex = deviceMatchDialog.matching[0]?.index ?? null
     deviceMatchDialog.show = true
+    return false
+  } catch (e) {
+    ElMessage.warning('设备匹配检查失败，将直接执行')
+    return true
+  }
+}
+const matchLevelText = (level) => ({ exact: '完全匹配', ok: '基本匹配', unknown: '分辨率未知', resolution_mismatch: '分辨率不匹配', platform_mismatch: '平台不匹配' }[level] || level || '未知')
+const matchTagType = (level) => ({ exact: 'success', ok: 'success', unknown: 'info', resolution_mismatch: 'warning', platform_mismatch: 'danger' }[level] || 'info')
+const deviceNameById = (id) => {
+  const d = devices.value.find(x => x.id === id)
+  return d?.name || d?.device_id || ''
+}
+const replayIndexForDevice = (deviceId) => batchMatchDialog.perDeviceIndex[deviceId] ?? selectedReplayIndex.value
+const checkReplayMatchBatch = async () => {
+  try {
+    const { data } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/replay_match_batch/`, {
+      devices: selectedDeviceIds.value,
+      replay_index: selectedReplayIndex.value,
+    })
+    const rows = (data.results || []).map(r => ({
+      device_id: r.device_id,
+      device_name: r.device_name || deviceNameById(r.device_id),
+      match_level: r.match_level || 'unknown',
+      current_device: r.current_device,
+      selected: r.selected,
+      matching: r.matching || [],
+      error: r.error,
+      suggested_index: r.matching?.[0]?.index ?? selectedReplayIndex.value,
+      suggested_name: r.matching?.[0]?.name || '',
+    }))
+    batchMatchDialog.rows = rows
+    batchMatchDialog.perDeviceIndex = {}
+    rows.forEach(r => { if (!r.error) batchMatchDialog.perDeviceIndex[r.device_id] = r.suggested_index })
+    const allFine = rows.length > 0 && rows.every(r => !r.error && ['exact', 'ok', 'unknown'].includes(r.match_level))
+    if (allFine) return true
+    batchMatchDialog.show = true
     return false
   } catch (e) {
     ElMessage.warning('设备匹配检查失败，将直接执行')
@@ -529,6 +608,17 @@ const goRecordMode = () => {
   replayMode.value = false
   ElMessage.info('已切换为录制模式，点击执行开始录制')
 }
+const executeBatchWithMatch = () => {
+  batchMatchDialog.show = false
+  batchMatchConfirmed.value = true
+  doExecute()
+}
+const executeBatchWithCurrent = () => {
+  batchMatchDialog.perDeviceIndex = {}
+  batchMatchDialog.show = false
+  batchMatchConfirmed.value = true
+  doExecute()
+}
 const fmtNum = (v) => (v === undefined || v === null || v === '') ? '?' : v
 const actionDesc = (a) => {
   if (!a) return ''
@@ -540,7 +630,7 @@ const actionDesc = (a) => {
 }
 const statusTagType = computed(() => {
   const m = { pending: 'info', running: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
-  return m[execution.value?.status] || 'info'
+  return m[activeExec.value?.status] || 'info'
 })
 const draftId = '__draft__'
 
@@ -644,28 +734,101 @@ const deleteCase = async (c) => { try { await ElMessageBox.confirm(`删除「${c
 const getStepCount = (prompt) => { if (!prompt) return 0; return prompt.trim().split('\n').filter(l => l.trim()).length }
 const generateSteps = async () => { if (!aiDesc.value.trim()) { ElMessage.warning('请输入场景描述'); return }; genLoading.value = true; try { const { data } = await api.post('/ui-automation/midscene/cases/generate_steps/', { description: aiDesc.value, model_config_id: form.ai_model_config_id }); if (data.steps) { form.ai_prompt = data.steps; showAiGen.value = false; aiDesc.value = ''; ElMessage.success('步骤已生成') } } catch (e) { ElMessage.error('生成失败: ' + (e.response?.data?.error || e.message)) } finally { genLoading.value = false } }
 const doExecute = async () => {
-  if (!selectedDeviceId.value) { ElMessage.warning('请选择设备'); return }
+  if (selectedDeviceIds.value.length === 0) { ElMessage.warning('请选择设备'); return }
   if (!form.ai_model_config_id) { ElMessage.warning('请选择 AI 模型'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
   if (replayMode.value && replayList.value.length === 0) { ElMessage.warning('暂无录制数据，请先录制'); return }
   if (replayMode.value && replayList.value.length > 0 && !forceExecuteFlag.value) {
-    const matched = await checkReplayMatch()
+    let matched
+    if (selectedDeviceIds.value.length === 1) {
+      matched = await checkReplayMatch()
+    } else if (!batchMatchConfirmed.value) {
+      matched = await checkReplayMatchBatch()
+    }
     forceExecuteFlag.value = false
-    if (!matched) return
+    batchMatchConfirmed.value = false
+    if (matched === false) return
   }
   forceExecuteFlag.value = false
+  batchMatchConfirmed.value = false
   executing.value = true
   try {
     if (!currentCaseId.value || currentCaseId.value === draftId) await saveCase()
-    const { data } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/execute/`, { device_id: selectedDeviceId.value, auto_plan: autoPlanMode.value, record: recordMode.value, replay: replayMode.value, replay_index: selectedReplayIndex.value, clear_app_data: clearAppData.value })
-    execution.value = { id: data.execution_id, status: 'pending', progress: 0, total_steps: 0, steps_detail: [], passed_steps: 0, failed_steps: 0 }
-    currentScreenshot.value = ''; currentReasoning.value = []; currentStep.value = 0
-    startPolling(data.execution_id)
+    const basePayload = { auto_plan: autoPlanMode.value, record: recordMode.value, replay: replayMode.value, replay_index: selectedReplayIndex.value, clear_app_data: clearAppData.value }
+    let data
+    if (selectedDeviceIds.value.length === 1) {
+      const { data: res } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/execute/`, { device_id: selectedDeviceIds.value[0], ...basePayload })
+      data = { executions: [{ execution_id: res.execution_id, task_id: res.task_id, device_id: selectedDeviceIds.value[0], replay_index: selectedReplayIndex.value }], failed: [] }
+    } else {
+      const devicesPayload = selectedDeviceIds.value.map(id => ({ device_id: id, replay_index: replayIndexForDevice(id) }))
+      const { data: res } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/execute/`, { devices: devicesPayload, ...basePayload })
+      data = res
+    }
+    if (data.failed?.length) ElMessage.warning(`${data.failed.length} 台设备未能启动：` + data.failed.map(f => f.error).join('；'))
+    const list = (data.executions || []).map(r => ({
+      id: r.execution_id,
+      task_id: r.task_id,
+      device_id: r.device_id,
+      device_name: deviceNameById(r.device_id),
+      replay_index: r.replay_index,
+      status: 'pending',
+      status_display: '待执行',
+      progress: 0,
+      total_steps: 0,
+      steps_detail: [],
+      passed_steps: 0,
+      failed_steps: 0,
+      screenshot: '',
+      reasoning: [],
+      step: 0,
+    }))
+    executions.value = list
+    activeExecIndex.value = '0'
+    if (list.length > 0) startPolling()
   } catch (e) { ElMessage.error('执行失败: ' + (e.response?.data?.error || e.message)) }
   finally { executing.value = false }
 }
-const stopExecution = async () => { if (!execution.value?.id) return; try { await api.post(`/ui-automation/midscene/executions/${execution.value.id}/stop/`); execution.value.status = 'stopped'; ElMessage.info('已停止') } catch (e) {} }
-const startPolling = (execId) => { stopPolling(); pollCaseId = currentCaseId.value; const poll = async () => { if (pollCaseId !== currentCaseId.value) { stopPolling(); return } try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); if (pollCaseId !== currentCaseId.value) { stopPolling(); return } execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) { stopPolling(); refreshAfterExecution() } } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const stopExecution = async (exec) => {
+  const targets = exec ? [exec] : executions.value.filter(e => ['pending', 'running'].includes(e.status))
+  if (targets.length === 0) return
+  try {
+    await Promise.all(targets.map(e => api.post(`/ui-automation/midscene/executions/${e.id}/stop/`)))
+    targets.forEach(e => { e.status = 'stopped'; e.status_display = '已停止' })
+    ElMessage.info(targets.length > 1 ? `已停止 ${targets.length} 台设备` : '已停止')
+  } catch (e) {}
+}
+const stopAllExecutions = () => stopExecution()
+const startPolling = () => {
+  stopPolling()
+  pollCaseId = currentCaseId.value
+  const poll = async () => {
+    if (pollCaseId !== currentCaseId.value) { stopPolling(); return }
+    const active = executions.value.filter(e => ['pending', 'running'].includes(e.status))
+    if (active.length === 0) { stopPolling(); refreshAfterExecution(); return }
+    const results = await Promise.allSettled(active.map(e => api.get(`/ui-automation/midscene/executions/${e.id}/`)))
+    if (pollCaseId !== currentCaseId.value) { stopPolling(); return }
+    results.forEach((r, i) => {
+      const target = executions.value.find(e => e.id === active[i].id)
+      if (!target) return
+      if (r.status === 'fulfilled') {
+        const data = r.value.data
+        Object.assign(target, data)
+        if (data.steps_detail?.length) {
+          const last = data.steps_detail[data.steps_detail.length - 1]
+          target.screenshot = last.screenshot || ''
+          target.reasoning = last.aiReasoning || []
+          target.step = last.step
+        }
+      }
+    })
+    if (!executions.value.some(e => ['pending', 'running'].includes(e.status))) {
+      stopPolling()
+      refreshAfterExecution()
+    }
+  }
+  pollTimer = setInterval(poll, 2000)
+  poll()
+}
 const refreshAfterExecution = async () => { if (recordMode.value) selectedReplayIndex.value = 0; await loadCases() }
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } pollCaseId = null }
 const previewStep = (s) => { if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true } }
@@ -684,10 +847,21 @@ onUnmounted(() => stopPolling())
   display: flex;
   gap: 8px;
 }
+.ms-match__row--batch {
+  align-items: flex-start;
+}
 .ms-match__label {
   color: #909399;
   flex-shrink: 0;
   width: 70px;
+}
+.ms-match__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  &--sub {
+    color: #606266;
+  }
 }
 .ms-match__hint {
   color: #e6a23c;
@@ -1058,6 +1232,44 @@ onUnmounted(() => stopPolling())
     text-transform: uppercase; letter-spacing: .1em; color: #666;
     display: flex; align-items: center; gap: 6px;
   }
+  &__bar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 14px 20px 0;
+  }
+}
+
+.ms-exec-tabs {
+  padding: 8px 20px 0;
+  &.el-tabs--top .el-tabs__header {
+    margin-bottom: 6px;
+  }
+  .el-tabs__nav-wrap::after {
+    height: 1px;
+    background: #e8e8e4;
+  }
+}
+.ms-exec-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  &__status {
+    color: #909399;
+    font-size: 11px;
+  }
+}
+
+.ms-progress-bar--inline {
+  flex: 1;
+  padding: 0;
+}
+
+.ms-btn--stop-inline.el-button {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
 }
 
 .ms-status-dot {

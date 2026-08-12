@@ -49,6 +49,94 @@ def _fmt_resolution(res):
     return f'{int(w)}x{int(h)}'
 
 
+def _match_device_replay(device, existing, replay_index):
+    """单台设备的回放脚本匹配检查（不依赖 request）。
+
+    device: MidsceneDevice；existing: 录制条目列表；replay_index: 当前选中索引。
+    返回匹配结果 dict（与单设备 replay_match 接口返回结构一致）；
+    existing 非列表或索引越界时返回 None。
+    """
+    if not isinstance(existing, list) or replay_index < 0 or replay_index >= len(existing):
+        return None
+    selected = existing[replay_index] or {}
+    rec_dev = selected.get('device') or {}
+    rec_res_str = _fmt_resolution(rec_dev.get('resolution'))
+    cur_res_str = None
+
+    # 当前设备分辨率：Android 走 screencap 实测；iOS 走 WDA 截图像素尺寸（与录制存的口径一致）
+    if device.platform == 'android':
+        try:
+            from .midscene_runner import adb_get_screen_size
+            w, h = adb_get_screen_size(device.adb_serial)
+            cur_res_str = f'{w}x{h}'
+        except Exception as e:
+            logger.warning(f'[ReplayMatch] 读取 Android 分辨率失败: {e}')
+    elif device.platform == 'ios':
+        try:
+            from .ios_device import IOSDevice
+            from .midscene_runner import png_size
+            wda_host = (device.wda_host or 'localhost:8100').replace('http://', '').replace('https://', '').rstrip('/')
+            host, port_str = wda_host.rsplit(':', 1) if ':' in wda_host else (wda_host, '8100')
+            ios = IOSDevice(host, int(port_str))
+            ios.connect()
+            try:
+                size = png_size(ios.screenshot())
+            finally:
+                ios.disconnect()
+            if size:
+                cur_res_str = f'{size[0]}x{size[1]}'
+        except Exception as e:
+            logger.warning(f'[ReplayMatch] 读取 iOS 分辨率失败: {e}')
+
+    cur_platform = device.platform
+    cur_model = (device.name or '').strip()
+    rec_platform = str(rec_dev.get('platform', '') or '')
+    rec_model = str(rec_dev.get('name', '') or '').strip()
+
+    # 匹配等级：分辨率一致优先于型号一致；取不到分辨率 → unknown 不阻塞
+    if rec_platform and rec_platform != cur_platform:
+        level = 'platform_mismatch'
+    elif not rec_res_str or not cur_res_str:
+        level = 'unknown'
+    elif rec_res_str == cur_res_str:
+        level = 'exact' if (cur_model and rec_model and cur_model == rec_model) else 'ok'
+    else:
+        level = 'resolution_mismatch'
+
+    # 候选：平台一致 + 分辨率一致的其他条目（型号一致优先）
+    candidates = []
+    for i, entry in enumerate(existing):
+        if i == replay_index or not entry:
+            continue
+        e_dev = entry.get('device') or {}
+        if str(e_dev.get('platform', '') or '') != cur_platform:
+            continue
+        e_res_str = _fmt_resolution(e_dev.get('resolution'))
+        if not e_res_str or not cur_res_str or e_res_str != cur_res_str:
+            continue
+        candidates.append({
+            'index': i,
+            'name': entry.get('name', ''),
+            'device': e_dev,
+        })
+    candidates.sort(key=lambda c: 0 if (c['device'].get('name') or '').strip() == cur_model else 1)
+
+    return {
+        'match_level': level,
+        'current_device': {
+            'platform': cur_platform,
+            'model': cur_model,
+            'resolution': cur_res_str,
+        },
+        'selected': {
+            'index': replay_index,
+            'name': selected.get('name', ''),
+            'device': rec_dev,
+        },
+        'matching': candidates,
+    }
+
+
 class MidsceneProjectViewSet(viewsets.ModelViewSet):
     """Midscene 移动端测试项目"""
     queryset = MidsceneProject.objects.all()
@@ -430,86 +518,49 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         existing = midscene_case.replay_data
         if isinstance(existing, dict):
             existing = [existing]
+        result = _match_device_replay(device, existing, replay_index)
+        if result is None:
+            return Response({'error': '无效的录制索引'}, status=400)
+        return Response(result)
+
+    @action(detail=True, methods=['post'], url_path='replay_match_batch')
+    def replay_match_batch(self, request, pk=None):
+        """多设备回放前批量匹配检查：一次性返回每台设备的脚本匹配结果。
+
+        入参 {devices: [id...], replay_index}，每台设备沿用单设备接口的
+        匹配逻辑（设备信息/分辨率）；adb/WDA 读不到分辨率时该台降级 unknown。
+        """
+        midscene_case = self.get_object()
+        devices = request.data.get('devices') or []
+        try:
+            replay_index = int(request.data.get('replay_index', 0) or 0)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的录制索引'}, status=400)
+        if not devices:
+            return Response({'error': '请选择执行设备'}, status=400)
+
+        existing = midscene_case.replay_data
+        if isinstance(existing, dict):
+            existing = [existing]
         if not isinstance(existing, list) or replay_index < 0 or replay_index >= len(existing):
             return Response({'error': '无效的录制索引'}, status=400)
 
-        selected = existing[replay_index] or {}
-        rec_dev = selected.get('device') or {}
-        rec_res_str = _fmt_resolution(rec_dev.get('resolution'))
-        cur_res_str = None
-
-        # 当前设备分辨率：Android 走 screencap 实测；iOS 走 WDA 截图像素尺寸（与录制存的口径一致）
-        if device.platform == 'android':
+        results = []
+        for did in devices:
             try:
-                from .midscene_runner import adb_get_screen_size
-                w, h = adb_get_screen_size(device.adb_serial)
-                cur_res_str = f'{w}x{h}'
-            except Exception as e:
-                logger.warning(f'[ReplayMatch] 读取 Android 分辨率失败: {e}')
-        elif device.platform == 'ios':
-            try:
-                from .ios_device import IOSDevice
-                from .midscene_runner import png_size
-                wda_host = (device.wda_host or 'localhost:8100').replace('http://', '').replace('https://', '').rstrip('/')
-                host, port_str = wda_host.rsplit(':', 1) if ':' in wda_host else (wda_host, '8100')
-                ios = IOSDevice(host, int(port_str))
-                ios.connect()
-                try:
-                    size = png_size(ios.screenshot())
-                finally:
-                    ios.disconnect()
-                if size:
-                    cur_res_str = f'{size[0]}x{size[1]}'
-            except Exception as e:
-                logger.warning(f'[ReplayMatch] 读取 iOS 分辨率失败: {e}')
-
-        cur_platform = device.platform
-        cur_model = (device.name or '').strip()
-        rec_platform = str(rec_dev.get('platform', '') or '')
-        rec_model = str(rec_dev.get('name', '') or '').strip()
-
-        # 匹配等级：分辨率一致优先于型号一致；取不到分辨率 → unknown 不阻塞
-        if rec_platform and rec_platform != cur_platform:
-            level = 'platform_mismatch'
-        elif not rec_res_str or not cur_res_str:
-            level = 'unknown'
-        elif rec_res_str == cur_res_str:
-            level = 'exact' if (cur_model and rec_model and cur_model == rec_model) else 'ok'
-        else:
-            level = 'resolution_mismatch'
-
-        # 候选：平台一致 + 分辨率一致的其他条目（型号一致优先）
-        candidates = []
-        for i, entry in enumerate(existing):
-            if i == replay_index or not entry:
+                device = MidsceneDevice.objects.get(id=did)
+            except MidsceneDevice.DoesNotExist:
+                results.append({'device_id': did, 'error': '设备不存在'})
                 continue
-            e_dev = entry.get('device') or {}
-            if str(e_dev.get('platform', '') or '') != cur_platform:
-                continue
-            e_res_str = _fmt_resolution(e_dev.get('resolution'))
-            if not e_res_str or not cur_res_str or e_res_str != cur_res_str:
-                continue
-            candidates.append({
-                'index': i,
-                'name': entry.get('name', ''),
-                'device': e_dev,
+            res = _match_device_replay(device, existing, replay_index)
+            if res is None:
+                res = {'error': '无效的录制索引'}
+            results.append({
+                'device_id': device.id,
+                'device_name': device.name or device.device_id,
+                **res,
             })
-        candidates.sort(key=lambda c: 0 if (c['device'].get('name') or '').strip() == cur_model else 1)
-
-        return Response({
-            'match_level': level,
-            'current_device': {
-                'platform': cur_platform,
-                'model': cur_model,
-                'resolution': cur_res_str,
-            },
-            'selected': {
-                'index': replay_index,
-                'name': selected.get('name', ''),
-                'device': rec_dev,
-            },
-            'matching': candidates,
-        })
+        return Response({'results': results})
 
     @action(detail=True, methods=['post'])
     def clear_replay(self, request, pk=None):
@@ -559,73 +610,125 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
     def execute(self, request, pk=None):
         """执行 Midscene 用例"""
         midscene_case = self.get_object()
-        device_id = request.data.get('device_id')
+        auto_plan = request.data.get('auto_plan', False)
+        record_mode = request.data.get('record', False)
+        replay_mode = request.data.get('replay', False)
+        clear_app_data = request.data.get('clear_app_data', False)
 
-        if not device_id:
-            return Response({'error': '请选择执行设备'}, status=400)
-
-        # 同一设备互斥：事务内锁设备行，校验无 pending/running 任务后才创建，
-        # 防止同一设备被重复提交导致 adb 命令互相抢占
-        with transaction.atomic():
+        # 解析设备请求：兼容单设备 device_id 与多设备 devices 数组
+        try:
+            default_replay_index = int(request.data.get('replay_index', 0) or 0)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的录制索引'}, status=400)
+        use_batch = 'devices' in request.data
+        if use_batch:
+            devices = request.data.get('devices') or []
+            if not devices:
+                return Response({'error': '请选择执行设备'}, status=400)
+            requests = []
+            for d in devices:
+                if isinstance(d, dict):
+                    did = d.get('device_id')
+                    try:
+                        ridx = int(d.get('replay_index', default_replay_index) or default_replay_index)
+                    except (TypeError, ValueError):
+                        return Response({'error': '无效的录制索引'}, status=400)
+                else:
+                    did = d
+                    ridx = default_replay_index
+                try:
+                    did = int(did)
+                except (TypeError, ValueError):
+                    return Response({'error': f'无效的设备 ID: {did}'}, status=400)
+                requests.append((did, ridx))
+        else:
+            device_id = request.data.get('device_id')
+            if not device_id:
+                return Response({'error': '请选择执行设备'}, status=400)
             try:
-                device = MidsceneDevice.objects.select_for_update().get(id=device_id)
-            except MidsceneDevice.DoesNotExist:
-                return Response({'error': '设备不存在'}, status=404)
+                requests = [(int(device_id), default_replay_index)]
+            except (TypeError, ValueError):
+                return Response({'error': '无效的设备 ID'}, status=400)
 
-            if device.status == 'locked' and device.locked_by != request.user:
-                return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+        # 同一设备互斥：事务内按 id 排序锁设备行（避免多请求锁序不同死锁），
+        # 校验无 pending/running 任务后才创建；失败设备带 error 不阻断其余。
+        # Celery 任务在事务提交后再投递，避免 worker 抢先执行读不到记录。
+        from .midscene_runner import parse_ai_prompt
+        steps = parse_ai_prompt(midscene_case.ai_prompt)
+        created = []
+        failed = []
+        with transaction.atomic():
+            for did, ridx in sorted(requests, key=lambda x: x[0]):
+                try:
+                    device = MidsceneDevice.objects.select_for_update().get(id=did)
+                except MidsceneDevice.DoesNotExist:
+                    failed.append({'device_id': did, 'status': 404, 'error': '设备不存在'})
+                    continue
 
-            # 检查设备在线状态
-            if device.status in ('offline',):
-                return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+                if device.status == 'locked' and device.locked_by != request.user:
+                    failed.append({'device_id': did, 'status': 409,
+                                   'error': f'设备已被 {device.locked_by.username} 锁定'})
+                    continue
+                if device.status in ('offline',):
+                    failed.append({'device_id': did, 'status': 400,
+                                   'error': f'设备 {device.name or device.device_id} 不在线'})
+                    continue
+                busy = MidsceneExecutionRecord.objects.filter(
+                    device=device, status__in=['pending', 'running'],
+                ).exists()
+                if busy:
+                    failed.append({
+                        'device_id': did,
+                        'status': 409,
+                        'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起',
+                    })
+                    continue
 
-            busy = MidsceneExecutionRecord.objects.filter(
-                device=device, status__in=['pending', 'running'],
-            ).exists()
-            if busy:
-                return Response(
-                    {'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'},
-                    status=409,
+                execution = MidsceneExecutionRecord.objects.create(
+                    midscene_case=midscene_case,
+                    case_name=midscene_case.name,
+                    device=device,
+                    platform=device.platform,
+                    status='pending',
+                    auto_plan=auto_plan,
+                    total_steps=len(steps),
+                    executed_by=request.user,
+                    model_config_snapshot={
+                        'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
+                        'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
+                        'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
+                    } if midscene_case.ai_model_config else {},
                 )
+                created.append((execution, ridx))
 
-            # 预计算步骤数
-            from .midscene_runner import parse_ai_prompt
-            steps = parse_ai_prompt(midscene_case.ai_prompt)
-
-            # 创建执行记录
-            auto_plan = request.data.get('auto_plan', False)
-            record_mode = request.data.get('record', False)
-            replay_mode = request.data.get('replay', False)
-            replay_index = request.data.get('replay_index', 0)
-            clear_app_data = request.data.get('clear_app_data', False)
-            execution = MidsceneExecutionRecord.objects.create(
-                midscene_case=midscene_case,
-                case_name=midscene_case.name,
-                device=device,
-                platform=device.platform,
-                status='pending',
-                auto_plan=auto_plan,
-                total_steps=len(steps),
-                executed_by=request.user,
-                model_config_snapshot={
-                    'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
-                    'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
-                    'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
-                } if midscene_case.ai_model_config else {},
-            )
-
-        # 异步执行
+        # 事务提交后投递任务（record/replay 参数各设备一致，replay_index 可逐台指定）
         from .tasks import execute_midscene_task
-        task = execute_midscene_task.delay(execution.id, record_mode=record_mode, replay_mode=replay_mode,
-                                          replay_index=replay_index, clear_app_data=clear_app_data)
+        results = []
+        for execution, ridx in created:
+            task = execute_midscene_task.delay(
+                execution.id, record_mode=record_mode, replay_mode=replay_mode,
+                replay_index=ridx, clear_app_data=clear_app_data,
+            )
+            execution.task_id = task.id
+            execution.save(update_fields=['task_id'])
+            results.append({
+                'execution_id': execution.id,
+                'task_id': task.id,
+                'device_id': execution.device_id,
+                'replay_index': ridx,
+            })
 
-        # 记录 Celery task_id
-        execution.task_id = task.id
-        execution.save(update_fields=['task_id'])
+        if not use_batch:
+            # 单设备旧格式：返回原结构（失败时保持原错误语义）
+            if not results:
+                err = failed[0] if failed else {'error': '创建执行失败'}
+                return Response(err, status=err.get('status', 400))
+            return Response({'execution_id': results[0]['execution_id'], 'task_id': results[0]['task_id'],
+                             'status': 'pending'})
 
         return Response({
-            'execution_id': execution.id,
-            'task_id': task.id,
+            'executions': results,
+            'failed': failed,
             'status': 'pending',
         })
 
