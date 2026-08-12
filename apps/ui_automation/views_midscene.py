@@ -8,6 +8,7 @@ import subprocess
 import platform as sys_platform
 from django.utils import timezone
 from django.db import models as db_models
+from django.db import transaction
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -563,43 +564,55 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         if not device_id:
             return Response({'error': '请选择执行设备'}, status=400)
 
-        try:
-            device = MidsceneDevice.objects.get(id=device_id)
-        except MidsceneDevice.DoesNotExist:
-            return Response({'error': '设备不存在'}, status=404)
+        # 同一设备互斥：事务内锁设备行，校验无 pending/running 任务后才创建，
+        # 防止同一设备被重复提交导致 adb 命令互相抢占
+        with transaction.atomic():
+            try:
+                device = MidsceneDevice.objects.select_for_update().get(id=device_id)
+            except MidsceneDevice.DoesNotExist:
+                return Response({'error': '设备不存在'}, status=404)
 
-        if device.status == 'locked' and device.locked_by != request.user:
-            return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+            if device.status == 'locked' and device.locked_by != request.user:
+                return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
 
-        # 检查设备在线状态
-        if device.status in ('offline',):
-            return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+            # 检查设备在线状态
+            if device.status in ('offline',):
+                return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
 
-        # 预计算步骤数
-        from .midscene_runner import parse_ai_prompt
-        steps = parse_ai_prompt(midscene_case.ai_prompt)
+            busy = MidsceneExecutionRecord.objects.filter(
+                device=device, status__in=['pending', 'running'],
+            ).exists()
+            if busy:
+                return Response(
+                    {'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'},
+                    status=409,
+                )
 
-        # 创建执行记录
-        auto_plan = request.data.get('auto_plan', False)
-        record_mode = request.data.get('record', False)
-        replay_mode = request.data.get('replay', False)
-        replay_index = request.data.get('replay_index', 0)
-        clear_app_data = request.data.get('clear_app_data', False)
-        execution = MidsceneExecutionRecord.objects.create(
-            midscene_case=midscene_case,
-            case_name=midscene_case.name,
-            device=device,
-            platform=device.platform,
-            status='pending',
-            auto_plan=auto_plan,
-            total_steps=len(steps),
-            executed_by=request.user,
-            model_config_snapshot={
-                'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
-                'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
-                'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
-            } if midscene_case.ai_model_config else {},
-        )
+            # 预计算步骤数
+            from .midscene_runner import parse_ai_prompt
+            steps = parse_ai_prompt(midscene_case.ai_prompt)
+
+            # 创建执行记录
+            auto_plan = request.data.get('auto_plan', False)
+            record_mode = request.data.get('record', False)
+            replay_mode = request.data.get('replay', False)
+            replay_index = request.data.get('replay_index', 0)
+            clear_app_data = request.data.get('clear_app_data', False)
+            execution = MidsceneExecutionRecord.objects.create(
+                midscene_case=midscene_case,
+                case_name=midscene_case.name,
+                device=device,
+                platform=device.platform,
+                status='pending',
+                auto_plan=auto_plan,
+                total_steps=len(steps),
+                executed_by=request.user,
+                model_config_snapshot={
+                    'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
+                    'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
+                    'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
+                } if midscene_case.ai_model_config else {},
+            )
 
         # 异步执行
         from .tasks import execute_midscene_task
