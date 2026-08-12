@@ -32,6 +32,22 @@ from .serializers_midscene import (
 logger = logging.getLogger(__name__)
 
 
+def _fmt_resolution(res):
+    """把录制条目里的 resolution 规范为 'WxH' 字符串，兼容 dict/str/None。"""
+    if not res:
+        return ''
+    if isinstance(res, str):
+        return res.strip().lower().replace(' ', '')
+    try:
+        w = res.get('width')
+        h = res.get('height')
+    except AttributeError:
+        return ''
+    if not w or not h:
+        return ''
+    return f'{int(w)}x{int(h)}'
+
+
 class MidsceneProjectViewSet(viewsets.ModelViewSet):
     """Midscene 移动端测试项目"""
     queryset = MidsceneProject.objects.all()
@@ -390,6 +406,109 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['get'], url_path='replay_match')
+    def replay_match(self, request, pk=None):
+        """回放前设备匹配检查（只读，不创建执行）。
+        返回选中录制条目与当前设备（型号=设备名、平台、分辨率）的匹配等级，
+        以及用例内更匹配的候选条目，供前端提示切换脚本/重新录制。
+        adb/WDA 读不到分辨率时降级为 unknown，不阻塞执行。"""
+        midscene_case = self.get_object()
+        device_id = request.query_params.get('device_id')
+        try:
+            replay_index = int(request.query_params.get('replay_index', 0) or 0)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的录制索引'}, status=400)
+        if not device_id:
+            return Response({'error': '请选择执行设备'}, status=400)
+        try:
+            device = MidsceneDevice.objects.get(id=device_id)
+        except MidsceneDevice.DoesNotExist:
+            return Response({'error': '设备不存在'}, status=404)
+
+        existing = midscene_case.replay_data
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not isinstance(existing, list) or replay_index < 0 or replay_index >= len(existing):
+            return Response({'error': '无效的录制索引'}, status=400)
+
+        selected = existing[replay_index] or {}
+        rec_dev = selected.get('device') or {}
+        rec_res_str = _fmt_resolution(rec_dev.get('resolution'))
+        cur_res_str = None
+
+        # 当前设备分辨率：Android 走 screencap 实测；iOS 走 WDA 截图像素尺寸（与录制存的口径一致）
+        if device.platform == 'android':
+            try:
+                from .midscene_runner import adb_get_screen_size
+                w, h = adb_get_screen_size(device.adb_serial)
+                cur_res_str = f'{w}x{h}'
+            except Exception as e:
+                logger.warning(f'[ReplayMatch] 读取 Android 分辨率失败: {e}')
+        elif device.platform == 'ios':
+            try:
+                from .ios_device import IOSDevice
+                from .midscene_runner import png_size
+                wda_host = (device.wda_host or 'localhost:8100').replace('http://', '').replace('https://', '').rstrip('/')
+                host, port_str = wda_host.rsplit(':', 1) if ':' in wda_host else (wda_host, '8100')
+                ios = IOSDevice(host, int(port_str))
+                ios.connect()
+                try:
+                    size = png_size(ios.screenshot())
+                finally:
+                    ios.disconnect()
+                if size:
+                    cur_res_str = f'{size[0]}x{size[1]}'
+            except Exception as e:
+                logger.warning(f'[ReplayMatch] 读取 iOS 分辨率失败: {e}')
+
+        cur_platform = device.platform
+        cur_model = (device.name or '').strip()
+        rec_platform = str(rec_dev.get('platform', '') or '')
+        rec_model = str(rec_dev.get('name', '') or '').strip()
+
+        # 匹配等级：分辨率一致优先于型号一致；取不到分辨率 → unknown 不阻塞
+        if rec_platform and rec_platform != cur_platform:
+            level = 'platform_mismatch'
+        elif not rec_res_str or not cur_res_str:
+            level = 'unknown'
+        elif rec_res_str == cur_res_str:
+            level = 'exact' if (cur_model and rec_model and cur_model == rec_model) else 'ok'
+        else:
+            level = 'resolution_mismatch'
+
+        # 候选：平台一致 + 分辨率一致的其他条目（型号一致优先）
+        candidates = []
+        for i, entry in enumerate(existing):
+            if i == replay_index or not entry:
+                continue
+            e_dev = entry.get('device') or {}
+            if str(e_dev.get('platform', '') or '') != cur_platform:
+                continue
+            e_res_str = _fmt_resolution(e_dev.get('resolution'))
+            if not e_res_str or not cur_res_str or e_res_str != cur_res_str:
+                continue
+            candidates.append({
+                'index': i,
+                'name': entry.get('name', ''),
+                'device': e_dev,
+            })
+        candidates.sort(key=lambda c: 0 if (c['device'].get('name') or '').strip() == cur_model else 1)
+
+        return Response({
+            'match_level': level,
+            'current_device': {
+                'platform': cur_platform,
+                'model': cur_model,
+                'resolution': cur_res_str,
+            },
+            'selected': {
+                'index': replay_index,
+                'name': selected.get('name', ''),
+                'device': rec_dev,
+            },
+            'matching': candidates,
+        })
 
     @action(detail=True, methods=['post'])
     def clear_replay(self, request, pk=None):

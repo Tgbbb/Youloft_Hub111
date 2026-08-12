@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from apps.projects.models import Project
 from apps.ui_automation import midscene_runner
-from apps.ui_automation.models import MidsceneProject, MidsceneCase
+from apps.ui_automation.models import MidsceneProject, MidsceneCase, MidsceneDevice
 
 
 User = get_user_model()
@@ -697,4 +697,103 @@ class ReplayRenameApiTests(TestCase):
             f'/api/ui-automation/midscene/cases/{self.case.id}/rename_replay/',
             {'index': 5, 'name': '新名称'}, format='json',
         )
+        self.assertEqual(resp.status_code, 400)
+
+
+class ReplayMatchApiTests(TestCase):
+    """回放前设备匹配检查 replay_match：型号=设备名、分辨率一致优先、adb 不可用降级。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-mt', password='pass')
+        self.case = _make_case(self.owner)
+        self.case.replay_data = [
+            {
+                'name': 'A设备录制',
+                'device': {'name': 'Pixel 7', 'platform': 'android',
+                           'resolution': {'width': 1080, 'height': 2160}},
+                'steps': [],
+            },
+            {
+                'name': 'B设备录制',
+                'device': {'name': 'Redmi Note 12', 'platform': 'android',
+                           'resolution': {'width': 720, 'height': 1600}},
+                'steps': [],
+            },
+        ]
+        self.case.save(update_fields=['replay_data'])
+        self.device = MidsceneDevice.objects.create(
+            platform='android', device_id='dev-001', name='Pixel 7',
+            adb_serial='SERIAL01', status='online',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160),
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+
+    def _get(self, index=0, device_id=None):
+        return self.client.get(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/replay_match/',
+            {'device_id': device_id or self.device.id, 'replay_index': index},
+        )
+
+    def _set_size(self, size):
+        self.size_patcher.stop()
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', return_value=size,
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+
+    def test_exact_match(self):
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'exact')
+        self.assertEqual(resp.data['matching'], [])
+        self.assertEqual(resp.data['current_device']['resolution'], '1080x2160')
+
+    def test_same_resolution_diff_model_is_ok(self):
+        self.device.name = 'Pixel 7 Pro'
+        self.device.save(update_fields=['name'])
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'ok')
+
+    def test_resolution_mismatch_with_candidate(self):
+        # 选中 1080x2160 的条目，但当前设备是 720x1600 → 命中 B 条目候选
+        self._set_size((720, 1600))
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'resolution_mismatch')
+        self.assertEqual([m['index'] for m in resp.data['matching']], [1])
+
+    def test_resolution_mismatch_no_candidate(self):
+        self._set_size((1440, 3200))
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'resolution_mismatch')
+        self.assertEqual(resp.data['matching'], [])
+
+    def test_adb_unavailable_unknown(self):
+        self.size_patcher.stop()
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', side_effect=RuntimeError('adb down'),
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'unknown')
+
+    def test_platform_mismatch(self):
+        self.case.replay_data[0]['device']['platform'] = 'ios'
+        self.case.save(update_fields=['replay_data'])
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'platform_mismatch')
+
+    def test_invalid_index_rejected(self):
+        resp = self._get(index=99)
         self.assertEqual(resp.status_code, 400)

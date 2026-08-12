@@ -338,6 +338,35 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 设备匹配提醒 -->
+    <el-dialog v-model="deviceMatchDialog.show" title="设备匹配提醒" width="540px">
+      <div class="ms-match">
+        <div class="ms-match__row">
+          <span class="ms-match__label">当前设备</span>
+          <span>{{ deviceMatchDialog.current?.model || '未命名' }}（{{ deviceMatchDialog.current?.platform }} · {{ deviceMatchDialog.current?.resolution || '分辨率未知' }}）</span>
+        </div>
+        <div class="ms-match__row">
+          <span class="ms-match__label">选中脚本</span>
+          <span>录制于 {{ deviceMatchDialog.selected?.device?.name || '未知设备' }}（{{ deviceMatchDialog.selected?.device?.platform }} · {{ fmtRes(deviceMatchDialog.selected?.device?.resolution) }}）</span>
+        </div>
+        <template v-if="deviceMatchDialog.matching?.length">
+          <div class="ms-match__hint">检测到更匹配的脚本，可切换后执行：</div>
+          <el-radio-group v-model="deviceMatchDialog.pickIndex">
+            <el-radio v-for="m in deviceMatchDialog.matching" :key="m.index" :label="m.index" class="ms-match__radio">
+              {{ m.name || '未命名' }}（{{ m.device?.name || '未知设备' }} · {{ fmtRes(m.device?.resolution) }}）
+            </el-radio>
+          </el-radio-group>
+        </template>
+        <div v-else class="ms-match__hint">脚本与当前设备不匹配（坐标可能偏移），可以重新录制，或仍用当前脚本尝试执行。</div>
+      </div>
+      <template #footer>
+        <el-button @click="deviceMatchDialog.show = false">取消</el-button>
+        <el-button v-if="deviceMatchDialog.matching?.length" type="primary" @click="executeWithMatch">用匹配脚本</el-button>
+        <el-button v-else @click="goRecordMode">去录制</el-button>
+        <el-button type="danger" plain @click="executeAnyway">仍要执行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -457,6 +486,48 @@ const replayList = computed(() => {
   return [c.replay_data]
 })
 const selectedReplay = computed(() => replayList.value[selectedReplayIndex.value] || null)
+const deviceMatchDialog = reactive({ show: false, current: null, selected: null, matching: [], pickIndex: null })
+const forceExecuteFlag = ref(false)
+const fmtRes = (res) => {
+  if (!res) return '分辨率未知'
+  if (typeof res === 'string') return res
+  return `${res.width}x${res.height}`
+}
+const checkReplayMatch = async () => {
+  try {
+    const { data } = await api.get(`/ui-automation/midscene/cases/${currentCaseId.value}/replay_match/`, {
+      params: { device_id: selectedDeviceId.value, replay_index: selectedReplayIndex.value },
+    })
+    if (['exact', 'ok', 'unknown'].includes(data.match_level)) return true
+    deviceMatchDialog.current = data.current_device
+    deviceMatchDialog.selected = data.selected
+    deviceMatchDialog.matching = data.matching || []
+    deviceMatchDialog.pickIndex = deviceMatchDialog.matching[0]?.index ?? null
+    deviceMatchDialog.show = true
+    return false
+  } catch (e) {
+    ElMessage.warning('设备匹配检查失败，将直接执行')
+    return true
+  }
+}
+const executeWithMatch = () => {
+  deviceMatchDialog.show = false
+  if (deviceMatchDialog.pickIndex !== null && deviceMatchDialog.pickIndex !== undefined) {
+    selectedReplayIndex.value = deviceMatchDialog.pickIndex
+  }
+  doExecute()
+}
+const executeAnyway = () => {
+  deviceMatchDialog.show = false
+  forceExecuteFlag.value = true
+  doExecute()
+}
+const goRecordMode = () => {
+  deviceMatchDialog.show = false
+  recordMode.value = true
+  replayMode.value = false
+  ElMessage.info('已切换为录制模式，点击执行开始录制')
+}
 const fmtNum = (v) => (v === undefined || v === null || v === '') ? '?' : v
 const actionDesc = (a) => {
   if (!a) return ''
@@ -575,6 +646,12 @@ const doExecute = async () => {
   if (!form.ai_model_config_id) { ElMessage.warning('请选择 AI 模型'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
   if (replayMode.value && replayList.value.length === 0) { ElMessage.warning('暂无录制数据，请先录制'); return }
+  if (replayMode.value && replayList.value.length > 0 && !forceExecuteFlag.value) {
+    const matched = await checkReplayMatch()
+    forceExecuteFlag.value = false
+    if (!matched) return
+  }
+  forceExecuteFlag.value = false
   executing.value = true
   try {
     if (!currentCaseId.value || currentCaseId.value === draftId) await saveCase()
@@ -595,8 +672,32 @@ onUnmounted(() => stopPolling())
 </script>
 
 <style scoped lang="scss">
+.ms-match {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+.ms-match__row {
+  display: flex;
+  gap: 8px;
+}
+.ms-match__label {
+  color: #909399;
+  flex-shrink: 0;
+  width: 70px;
+}
+.ms-match__hint {
+  color: #e6a23c;
+  margin-top: 4px;
+}
+.ms-match__radio {
+  display: block;
+  margin-left: 0;
+  margin-bottom: 6px;
+}
 /* =============================================
-   Endfield Complex — Midscene Testing Shell
+   Endfield Complex – Midscene Testing Shell
    ============================================= */
 .ms-shell {
   --ms-ink: #191919;
