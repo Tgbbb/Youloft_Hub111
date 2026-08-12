@@ -758,3 +758,19 @@ class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.Destr
         execution.save(update_fields=['status', 'finished_at'])
 
         return Response({'status': 'stopped'})
+
+    @action(detail=True, methods=['get'], url_path='report')
+    def report(self, request, pk=None):
+        """获取 HTML 测试报告（懒生成：首次访问生成并写 report_path，之后直接复用）。
+
+        参数 force=1 可强制重新生成。
+        """
+        execution = self.get_object()
+        force = str(request.query_params.get('force', '')).lower() in ('1', 'true', 'yes')
+        try:
+            from .midscene_report import generate_report_file
+            report_path = generate_report_file(execution, force=force)
+            return Response({'url': report_path, 'status': execution.status})
+        except Exception as e:
+            logger.error(f'[Report] 生成测试报告失败: {e}', exc_info=True)
+            return Response({'error': f'生成报告失败: {e}'}, status=500)

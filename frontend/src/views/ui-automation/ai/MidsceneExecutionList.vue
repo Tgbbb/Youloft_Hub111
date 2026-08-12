@@ -67,7 +67,7 @@
           </el-table-column>
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" @click="viewReport(row)" :disabled="!row.report_path" class="ms-btn--table">报告</el-button>
+              <el-button size="small" @click="viewReport(row)" class="ms-btn--table">报告</el-button>
               <el-button size="small" @click="viewDetail(row)" class="ms-btn--table">详情</el-button>
               <el-button size="small" type="danger" @click="deleteRecord(row)" class="ms-btn--table">删除</el-button>
             </template>
@@ -98,7 +98,11 @@
           <div v-for="step in detailRecord.steps_detail" :key="step.step" class="ms-detail-step">
             <div class="ms-detail-step__head">
               <span class="ms-step-badge--sm" :class="'sb-' + step.status">{{ step.status === 'passed' ? '✓' : '✗' }} {{ step.step }}</span>
+              <span v-if="step.action" class="ms-detail-step__action">{{ step.action }}</span>
               <span>{{ step.instruction }}</span>
+            </div>
+            <div v-if="step.aiReasoning?.length" class="ms-detail-step__reason">
+              <div v-for="(r, i) in step.aiReasoning" :key="i" class="ms-detail-step__reason-line">{{ r }}</div>
             </div>
             <img v-if="step.screenshot" :src="step.screenshot" class="ms-detail-step__thumb" @click="previewImg = step.screenshot; showImgPreview = true" />
             <div v-if="step.error" class="ms-detail-step__err">{{ step.error }}</div>
@@ -136,7 +140,19 @@ const loadExecutions = async () => {
 }
 const statusTagType = (s) => ({ pending:'info', running:'warning', passed:'success', failed:'danger', error:'danger', stopped:'info' }[s] || 'info')
 const formatDuration = (s) => { if (!s) return '-'; if (s < 60) return `${Math.round(s)}s`; const m = Math.floor(s/60); return `${m}m${Math.round(s%60)}s` }
-const viewReport = (r) => { if (r.report_path) window.open(r.report_path, '_blank') }
+const viewReport = async (r) => {
+  try {
+    let url = r.report_path
+    if (!url) {
+      const { data } = await api.get(`/ui-automation/midscene/executions/${r.id}/report/`)
+      url = data.url
+      r.report_path = url
+    }
+    window.open(url, '_blank')
+  } catch (e) {
+    ElMessage.error('报告生成失败: ' + (e.response?.data?.error || e.message))
+  }
+}
 const viewDetail = (r) => { detailRecord.value = r; showDetail.value = true }
 const onSelectionChange = (rows) => { selectedIds.value = rows.map(r => r.id) }
 const batchDelete = async () => { try { await ElMessageBox.confirm(`删除选中的 ${selectedIds.value.length} 条记录？`, '确认', { type: 'warning' }); batchDeleting.value = true; await api.post('/ui-automation/midscene/executions/batch_delete/', { ids: selectedIds.value }); ElMessage.success('已删除'); selectedIds.value = []; loadExecutions() } catch (e) { if (e !== 'cancel') ElMessage.error('删除失败') } finally { batchDeleting.value = false } }
@@ -189,6 +205,10 @@ onMounted(() => { loadProjects(); loadExecutions() })
 .ms-detail-step { padding: 8px 0; border-bottom: 1px solid #ebeef5;
   &:last-child { border-bottom: none; }
   &__head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  &__action { font-size: 11px; color: #2563eb; background: #eff6ff; border: 1px solid #bfdbfe; padding: 0 6px; border-radius: 999px; flex-shrink: 0; }
+  &__reason { margin-top: 4px; font-size: 12px; color: #666; line-height: 1.6;
+    &-line { padding: 1px 0; }
+  }
   &__thumb { margin-top: 6px; max-height: 80px; cursor: pointer; border: 1px solid #dcdfe6; }
   &__err { margin-top: 4px; color: #f56c6c; font-size: 12px; }
 }
