@@ -112,7 +112,7 @@ WorkingDirectory=/opt/testhub_platform
 Environment="DJANGO_SETTINGS_MODULE=backend.settings"
 Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=/opt/testhub_platform/.env
-ExecStart=/opt/testhub_platform/venv/bin/celery -A backend worker --loglevel=info --pool=solo --concurrency=1
+ExecStart=/opt/testhub_platform/venv/bin/celery -A backend worker --loglevel=info --pool=threads --concurrency=4
 Restart=always
 
 [Install]
@@ -278,7 +278,7 @@ WorkingDirectory=$APP_DIR
 Environment="DJANGO_SETTINGS_MODULE=backend.settings"
 Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$VENV_DIR/bin/celery -A backend worker --loglevel=info --pool=solo --concurrency=1
+ExecStart=$VENV_DIR/bin/celery -A backend worker --loglevel=info --pool=threads --concurrency=4
 Restart=always
 
 [Install]

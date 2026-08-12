@@ -50,7 +50,7 @@ pip install allure-pytest>=2.15.0
 
 ```bash
 # Windows
-celery -A backend worker -l info -P eventlet
+celery -A backend worker -l info --pool=threads --concurrency=4
 
 # Linux/macOS
 celery -A backend worker -l info
@@ -512,7 +512,7 @@ adb start-server
 **A**: 确保 Celery Worker 已启动：
 ```bash
 # 查看 Celery 日志
-celery -A backend worker -l info -P eventlet
+celery -A backend worker -l info --pool=threads --concurrency=4
 ```
 
 ### Q4: Airtest 初始化失败？

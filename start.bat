@@ -53,7 +53,7 @@ if "%DJANGO_RUNNING%"=="1" (
 
 echo.
 echo [5/6] Starting Celery worker...
-start "Celery" cmd /c "cd /d E:\TestHub\testhub_platform && call venv\Scripts\activate.bat && celery -A backend worker --loglevel=info --pool=solo"
+start "Celery" cmd /c "cd /d E:\TestHub\testhub_platform && call venv\Scripts\activate.bat && celery -A backend worker --loglevel=info --pool=threads --concurrency=4"
 timeout /t 3 /nobreak >nul
 echo   Celery worker started
 

@@ -288,7 +288,7 @@ python manage.py runserver
 10. **启动Celery服务**
 ```bash
 # 启动 Celery 开发服务(可选，用于处理APP自动化任务)
-celery -A backend worker -l info
+celery -A backend worker -l info --pool=threads --concurrency=4
 ```
 
 ### 代码更新后（升级数据库）
