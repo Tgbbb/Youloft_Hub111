@@ -234,7 +234,7 @@ class BatchReplayMatchTests(TestCase):
 
     def test_batch_returns_per_device_result(self):
         def fake_size(serial):
-            # dev_b 分辨率不同 → resolution_mismatch；dev_a 一致 → exact
+            # 只有 Pixel 1080x2160 一条录制：dev_a 匹配 exact；dev_b 无匹配 → no_match
             return (720, 1600) if serial == 'SERM1' else (1080, 2160)
 
         with mock.patch.object(midscene_runner, 'adb_get_screen_size', side_effect=fake_size):
@@ -244,9 +244,15 @@ class BatchReplayMatchTests(TestCase):
         self.assertEqual(len(results), 2)
         by_id = {r['device_id']: r for r in results}
         self.assertEqual(by_id[self.dev_a.id]['match_level'], 'exact')
-        self.assertEqual(by_id[self.dev_b.id]['match_level'], 'resolution_mismatch')
+        self.assertEqual(by_id[self.dev_a.id]['recommended_index'], 0)
+        self.assertFalse(by_id[self.dev_a.id]['needs_switch'])
+        self.assertTrue(by_id[self.dev_a.id]['has_match'])
+        self.assertEqual(by_id[self.dev_b.id]['match_level'], 'no_match')
+        self.assertFalse(by_id[self.dev_b.id]['has_match'])
+        # no_match 回退到当前选中索引（0），且不提示切换
+        self.assertEqual(by_id[self.dev_b.id]['recommended_index'], 0)
+        self.assertFalse(by_id[self.dev_b.id]['needs_switch'])
         self.assertIn('current_device', by_id[self.dev_a.id])
-        self.assertIn('matching', by_id[self.dev_a.id])
 
     def test_batch_resolution_fail_unknown(self):
         with mock.patch.object(
@@ -256,6 +262,44 @@ class BatchReplayMatchTests(TestCase):
             resp = self._post([self.dev_a.id])
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(resp.data['results'][0]['match_level'], 'unknown')
+        self.assertTrue(resp.data['results'][0]['has_match'])
+        self.assertEqual(resp.data['results'][0]['recommended_index'], 0)
+        self.assertFalse(resp.data['results'][0]['needs_switch'])
+
+    def test_batch_recommends_per_device_script(self):
+        """两条录制分别对应两台设备：每台各自推荐自己的脚本，B 需要切换。"""
+        self.case.replay_data = [
+            {
+                'name': 'Pixel 录制',
+                'device': {'name': 'Pixel', 'platform': 'android',
+                           'resolution': {'width': 1080, 'height': 2160}},
+                'steps': [],
+            },
+            {
+                'name': 'Redmi 录制',
+                'device': {'name': 'Redmi', 'platform': 'android',
+                           'resolution': {'width': 720, 'height': 1600}},
+                'steps': [],
+            },
+        ]
+        self.case.save(update_fields=['replay_data'])
+
+        def fake_size(serial):
+            return (720, 1600) if serial == 'SERM1' else (1080, 2160)
+
+        with mock.patch.object(midscene_runner, 'adb_get_screen_size', side_effect=fake_size):
+            resp = self._post([self.dev_a.id, self.dev_b.id])
+        self.assertEqual(resp.status_code, 200, resp.data)
+        by_id = {r['device_id']: r for r in resp.data['results']}
+        # dev_a (Pixel) 推荐脚本 0（当前选中，无需切换）
+        self.assertEqual(by_id[self.dev_a.id]['recommended_index'], 0)
+        self.assertEqual(by_id[self.dev_a.id]['match_level'], 'exact')
+        self.assertFalse(by_id[self.dev_a.id]['needs_switch'])
+        # dev_b (Redmi) 推荐脚本 1，与当前选中不一致 → 提示切换
+        self.assertEqual(by_id[self.dev_b.id]['recommended_index'], 1)
+        self.assertEqual(by_id[self.dev_b.id]['match_level'], 'exact')
+        self.assertTrue(by_id[self.dev_b.id]['needs_switch'])
+        self.assertEqual(by_id[self.dev_b.id]['recommended_name'], 'Redmi 录制')
 
     def test_batch_unknown_device_has_error(self):
         resp = self._post([99999])

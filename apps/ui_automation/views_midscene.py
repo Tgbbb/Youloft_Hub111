@@ -49,26 +49,14 @@ def _fmt_resolution(res):
     return f'{int(w)}x{int(h)}'
 
 
-def _match_device_replay(device, existing, replay_index):
-    """单台设备的回放脚本匹配检查（不依赖 request）。
-
-    device: MidsceneDevice；existing: 录制条目列表；replay_index: 当前选中索引。
-    返回匹配结果 dict（与单设备 replay_match 接口返回结构一致）；
-    existing 非列表或索引越界时返回 None。
-    """
-    if not isinstance(existing, list) or replay_index < 0 or replay_index >= len(existing):
-        return None
-    selected = existing[replay_index] or {}
-    rec_dev = selected.get('device') or {}
-    rec_res_str = _fmt_resolution(rec_dev.get('resolution'))
-    cur_res_str = None
-
-    # 当前设备分辨率：Android 走 screencap 实测；iOS 走 WDA 截图像素尺寸（与录制存的口径一致）
+def _read_device_resolution(device):
+    """读取当前设备实测分辨率（'WxH' 字符串），失败返回 None。
+    Android 走 screencap 实测；iOS 走 WDA 截图像素尺寸（与录制存的口径一致）。"""
     if device.platform == 'android':
         try:
             from .midscene_runner import adb_get_screen_size
             w, h = adb_get_screen_size(device.adb_serial)
-            cur_res_str = f'{w}x{h}'
+            return f'{w}x{h}'
         except Exception as e:
             logger.warning(f'[ReplayMatch] 读取 Android 分辨率失败: {e}')
     elif device.platform == 'ios':
@@ -84,9 +72,25 @@ def _match_device_replay(device, existing, replay_index):
             finally:
                 ios.disconnect()
             if size:
-                cur_res_str = f'{size[0]}x{size[1]}'
+                return f'{size[0]}x{size[1]}'
         except Exception as e:
             logger.warning(f'[ReplayMatch] 读取 iOS 分辨率失败: {e}')
+    return None
+
+
+def _match_device_replay(device, existing, replay_index):
+    """单台设备的回放脚本匹配检查（不依赖 request）。
+
+    device: MidsceneDevice；existing: 录制条目列表；replay_index: 当前选中索引。
+    返回匹配结果 dict（与单设备 replay_match 接口返回结构一致）；
+    existing 非列表或索引越界时返回 None。
+    """
+    if not isinstance(existing, list) or replay_index < 0 or replay_index >= len(existing):
+        return None
+    selected = existing[replay_index] or {}
+    rec_dev = selected.get('device') or {}
+    rec_res_str = _fmt_resolution(rec_dev.get('resolution'))
+    cur_res_str = _read_device_resolution(device)
 
     cur_platform = device.platform
     cur_model = (device.name or '').strip()
@@ -134,6 +138,75 @@ def _match_device_replay(device, existing, replay_index):
             'device': rec_dev,
         },
         'matching': candidates,
+    }
+
+
+def _pick_best_replay(device, existing):
+    """为该设备从全部录制条目中独立挑最匹配的一条（不锚定当前选中索引）。
+
+    匹配优先级：平台一致 → 分辨率一致 → 型号一致（列表靠前=最新优先）。
+    existing 非列表时返回 None；否则始终返回 dict：
+      match_level: exact/ok/unknown/no_match
+      recommended_index: 最匹配条目索引（no_match/无法推荐时为 None）
+      recommended_name, has_match, current_device
+    """
+    if not isinstance(existing, list):
+        return None
+    cur_platform = device.platform
+    cur_model = (device.name or '').strip()
+    cur_res_str = _read_device_resolution(device)
+
+    same_platform = [
+        (i, entry) for i, entry in enumerate(existing)
+        if entry and str((entry.get('device') or {}).get('platform', '') or '') == cur_platform
+    ]
+    if not same_platform:
+        return {
+            'match_level': 'no_match',
+            'recommended_index': None,
+            'recommended_name': '',
+            'has_match': False,
+            'current_device': {
+                'platform': cur_platform,
+                'model': cur_model,
+                'resolution': cur_res_str,
+            },
+        }
+
+    # 分辨率可比时优先分辨率一致（型号一致再优先）；列表顺序即最新优先
+    scored = []
+    if cur_res_str:
+        for i, entry in same_platform:
+            e_res_str = _fmt_resolution((entry.get('device') or {}).get('resolution'))
+            if e_res_str:
+                scored.append((i, entry, e_res_str))
+    if scored:
+        res_matched = [x for x in scored if x[2] == cur_res_str]
+        pool = res_matched if res_matched else scored
+        pool.sort(key=lambda x: 0 if str((x[1].get('device') or {}).get('name') or '').strip() == cur_model else 1)
+        i, entry, e_res_str = pool[0]
+        if res_matched:
+            rec_model = str((entry.get('device') or {}).get('name') or '').strip()
+            level = 'exact' if (cur_model and rec_model and rec_model == cur_model) else 'ok'
+        else:
+            level = 'no_match'
+        recommended_index = i if level != 'no_match' else None
+    else:
+        # 分辨率信息不足：取最新同平台条目兜底，unknown 不阻塞
+        i, entry = same_platform[0]
+        level = 'unknown'
+        recommended_index = i
+
+    return {
+        'match_level': level,
+        'recommended_index': recommended_index,
+        'recommended_name': entry.get('name', '') if recommended_index is not None else '',
+        'has_match': level != 'no_match',
+        'current_device': {
+            'platform': cur_platform,
+            'model': cur_model,
+            'resolution': cur_res_str,
+        },
     }
 
 
@@ -525,10 +598,12 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='replay_match_batch')
     def replay_match_batch(self, request, pk=None):
-        """多设备回放前批量匹配检查：一次性返回每台设备的脚本匹配结果。
+        """多设备回放前批量匹配检查：每台设备独立挑自己的最优脚本。
 
-        入参 {devices: [id...], replay_index}，每台设备沿用单设备接口的
-        匹配逻辑（设备信息/分辨率）；adb/WDA 读不到分辨率时该台降级 unknown。
+        入参 {devices: [id...], replay_index}。当前选中的 replay_index 只作为
+        兜底与对比基准：每台设备从全部录制条目里挑最匹配的一条
+        （平台+分辨率+型号），返回 recommended_index / needs_switch；
+        adb/WDA 读不到分辨率时该台降级 unknown 不阻塞。
         """
         midscene_case = self.get_object()
         devices = request.data.get('devices') or []
@@ -552,9 +627,22 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
             except MidsceneDevice.DoesNotExist:
                 results.append({'device_id': did, 'error': '设备不存在'})
                 continue
-            res = _match_device_replay(device, existing, replay_index)
-            if res is None:
+            pick = _pick_best_replay(device, existing)
+            if pick is None:
                 res = {'error': '无效的录制索引'}
+            else:
+                selected = existing[replay_index] or {}
+                recommended_index = pick['recommended_index']
+                res = {
+                    'match_level': pick['match_level'],
+                    'current_index': replay_index,
+                    'current_name': selected.get('name', ''),
+                    'recommended_index': recommended_index if recommended_index is not None else replay_index,
+                    'recommended_name': pick['recommended_name'] or selected.get('name', ''),
+                    'needs_switch': recommended_index is not None and recommended_index != replay_index,
+                    'has_match': pick['has_match'],
+                    'current_device': pick['current_device'],
+                }
             results.append({
                 'device_id': device.id,
                 'device_name': device.name or device.device_id,

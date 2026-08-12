@@ -396,12 +396,18 @@
             <template v-if="row.error">
               <span class="ms-match__hint" style="display:inline">{{ row.error }}</span>
             </template>
-            <template v-else-if="row.suggested_name">
-              <span class="ms-match__cell--sub">建议脚本：{{ row.suggested_name }}</span>
+            <template v-else-if="!row.has_match">
+              <span class="ms-match__hint">无匹配脚本，将回退使用当前脚本并提示风险</span>
+            </template>
+            <template v-else-if="row.needs_switch">
+              <span class="ms-match__cell--sub">推荐：{{ row.recommended_name || '未命名' }}（当前：{{ row.current_name || '未命名' }}）</span>
+            </template>
+            <template v-else>
+              <span class="ms-match__cell--sub">{{ row.current_name || '未命名' }}</span>
             </template>
           </span>
         </div>
-        <div class="ms-match__hint">每台设备将使用各自最匹配的脚本执行（无候选则用当前脚本）。</div>
+        <div class="ms-match__hint">每台设备将使用各自最匹配的脚本执行（无匹配脚本的设备回退用当前脚本并提示风险）。</div>
       </div>
       <template #footer>
         <el-button @click="batchMatchDialog.show = false">取消</el-button>
@@ -554,8 +560,8 @@ const checkReplayMatch = async () => {
     return true
   }
 }
-const matchLevelText = (level) => ({ exact: '完全匹配', ok: '基本匹配', unknown: '分辨率未知', resolution_mismatch: '分辨率不匹配', platform_mismatch: '平台不匹配' }[level] || level || '未知')
-const matchTagType = (level) => ({ exact: 'success', ok: 'success', unknown: 'info', resolution_mismatch: 'warning', platform_mismatch: 'danger' }[level] || 'info')
+const matchLevelText = (level) => ({ exact: '完全匹配', ok: '基本匹配', unknown: '分辨率未知', no_match: '无匹配脚本', resolution_mismatch: '分辨率不匹配', platform_mismatch: '平台不匹配' }[level] || level || '未知')
+const matchTagType = (level) => ({ exact: 'success', ok: 'success', unknown: 'info', no_match: 'danger', resolution_mismatch: 'warning', platform_mismatch: 'danger' }[level] || 'info')
 const deviceNameById = (id) => {
   const d = devices.value.find(x => x.id === id)
   return d?.name || d?.device_id || ''
@@ -571,17 +577,18 @@ const checkReplayMatchBatch = async () => {
       device_id: r.device_id,
       device_name: r.device_name || deviceNameById(r.device_id),
       match_level: r.match_level || 'unknown',
-      current_device: r.current_device,
-      selected: r.selected,
-      matching: r.matching || [],
+      current_index: r.current_index ?? selectedReplayIndex.value,
+      current_name: r.current_name || '',
+      recommended_index: r.recommended_index ?? selectedReplayIndex.value,
+      recommended_name: r.recommended_name || '',
+      needs_switch: !!r.needs_switch,
+      has_match: r.has_match !== false,
       error: r.error,
-      suggested_index: r.matching?.[0]?.index ?? selectedReplayIndex.value,
-      suggested_name: r.matching?.[0]?.name || '',
     }))
     batchMatchDialog.rows = rows
     batchMatchDialog.perDeviceIndex = {}
-    rows.forEach(r => { if (!r.error) batchMatchDialog.perDeviceIndex[r.device_id] = r.suggested_index })
-    const allFine = rows.length > 0 && rows.every(r => !r.error && ['exact', 'ok', 'unknown'].includes(r.match_level))
+    rows.forEach(r => { if (!r.error) batchMatchDialog.perDeviceIndex[r.device_id] = r.recommended_index })
+    const allFine = rows.length > 0 && rows.every(r => !r.error && r.has_match && !r.needs_switch)
     if (allFine) return true
     batchMatchDialog.show = true
     return false
