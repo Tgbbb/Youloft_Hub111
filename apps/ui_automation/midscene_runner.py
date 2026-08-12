@@ -196,6 +196,10 @@ _DEFAULT_WAIT_AFTER = {
 }
 
 
+class ExecutionStopped(RuntimeError):
+    """用户手动停止执行时抛出的中断异常，用于打断进行中的 VLM 调用。"""
+
+
 def _clamp_wait_after(seconds, floor=0.2, ceil=5.0):
     """录制实测 wait_after 兜底：下限 0.2s、上限 5s。
     实测值会包含录制时的 VLM 思考时间，若不设上限会被原样重放（几十秒空等）。"""
@@ -203,6 +207,30 @@ def _clamp_wait_after(seconds, floor=0.2, ceil=5.0):
         return max(min(round(float(seconds), 2), ceil), floor)
     except (TypeError, ValueError):
         return floor
+
+
+def _norm_instruction(text):
+    """规范化步骤文案：NFKC 统一全半角，去空白与常见标点，用于宽松匹配。"""
+    import unicodedata
+    t = unicodedata.normalize('NFKC', str(text or ''))
+    t = re.sub(r'[\s，。！？、,.!?；;：:"“”‘’()（）【】\[\]<>《》\-—_]+', '', t)
+    return t.strip().lower()
+
+
+def _instruction_similar(recorded, current):
+    """步骤文案宽松匹配：归一化后相等，或文本高度相似（SequenceMatcher 容忍
+    标点/空白差异与"就/请/的"等插入词）；长度悬殊不配，防止"点击同意"误配
+    "点击同意并继续"。"""
+    import difflib
+    a, b = _norm_instruction(recorded), _norm_instruction(current)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(longer) > len(shorter) * 1.5:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.88
 
 
 def _resolve_coord(a, coord, ref):
@@ -415,10 +443,11 @@ CONDITION_CONFIRM_PROMPT = (
 )
 
 
-def _ask_condition_present(png_bytes, instruction, model_config, width, height):
+def _ask_condition_present(png_bytes, instruction, model_config, width, height, stop_checker=None):
     """轻量 VLM 确认：条件步骤的目标元素是否出现在当前截图。返回 (present, reasoning)。"""
     raw = call_vlm(png_bytes, CONDITION_CONFIRM_PROMPT.format(instruction=instruction),
-                   model_config, width=width, height=height, return_raw=True, max_tokens=256)
+                   model_config, width=width, height=height, return_raw=True, max_tokens=256,
+                   stop_checker=stop_checker)
     logger.info(f'[Condition] 元素确认响应: {str(raw)[:200]}')
     m = re.search(r'"present"\s*:\s*(true|false)', raw, re.IGNORECASE)
     if not m:
@@ -431,7 +460,8 @@ def _ask_condition_present(png_bytes, instruction, model_config, width, height):
 
 
 def _confirm_condition_target(device_id, ios_dev, instruction, model_config, width, height,
-                              initial_png=None, max_attempts=2, wait_interval=2.0):
+                              initial_png=None, max_attempts=2, wait_interval=2.0,
+                              stop_checker=None):
     """条件步骤目标元素确认（带加载等待）：
     - present=true → (True, 当前截图, reasoning)，播放录制动作
     - 页面稳定且仍不存在 → (False, 当前截图, reasoning)，判定条件不满足跳过
@@ -445,7 +475,10 @@ def _confirm_condition_target(device_id, ios_dev, instruction, model_config, wid
         if png is None:
             png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
         try:
-            present, reasoning = _ask_condition_present(png, instruction, model_config, width, height)
+            present, reasoning = _ask_condition_present(
+                png, instruction, model_config, width, height, stop_checker=stop_checker)
+        except ExecutionStopped:
+            raise  # 用户停止：不降级、不重试，直接向上传递
         except Exception as e:
             logger.warning(f'[Condition] 元素确认失败({e})，降至VLM')
             return None, png, ''
@@ -605,7 +638,8 @@ def _parse_vlm_response(content):
 
 
 def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, context='',
-             system_prompt=None, return_raw=False, max_tokens=1024):
+             system_prompt=None, return_raw=False, max_tokens=1024, stop_checker=None,
+             timeout=90.0):
     """调用 VLM。system_prompt 可替换（aiAct 引擎传入规划/locate 提示词）；
     return_raw=True 时返回模型原始文本（XML 规划协议），否则返回解析后的 JSON 动作。"""
     png_bytes = _compress_png(png_bytes)
@@ -627,8 +661,10 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
     logger.info(f'[VLM] 调用模型 {model_name}: {instruction}')
     last_error = None
     for attempt in range(3):
+        if stop_checker and stop_checker():
+            raise ExecutionStopped('用户已停止执行')
         try:
-            with httpx.Client(timeout=180.0) as client:
+            with httpx.Client(timeout=timeout) as client:
                 r = client.post(api_url, headers={'Authorization': f'Bearer {api_key}','Content-Type':'application/json'},
                                 json={'model':model_name, 'messages':[
                                     {'role':'system','content':system_prompt},
@@ -638,6 +674,8 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
                                       'max_tokens':max_tokens,'temperature':0.1})
                 r.raise_for_status()
             break
+        except ExecutionStopped:
+            raise
         except Exception as e:
             last_error = e
             if attempt < 2:
@@ -660,6 +698,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                       record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False):
     steps = parse_ai_prompt(ai_prompt)
     if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
+
+    def _user_stopped():
+        """VLM 调用期间检查用户是否点了停止（避免最长 90s×3 重试无法中断）。"""
+        try:
+            execution_record.refresh_from_db()
+        except Exception:
+            return False
+        return execution_record.status == 'stopped'
 
     platform = device.platform
     mc = execution_record.midscene_case
@@ -801,7 +847,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             if replay_available and step_idx < len(replay_data['steps']):
                 r_step = replay_data['steps'][step_idx]
                 # r_step 可能为 None：未录制到的步骤保留占位，保证与 ai_prompt 步骤索引一一对应
-                if r_step and r_step.get('instruction', '').strip() == instruction.strip():
+                if r_step and _instruction_similar(r_step.get('instruction', ''), instruction):
                     r_actions = r_step.get('actions', [])
                     is_cond = instruction.startswith('如果') or instruction.startswith('若')
                     # 条件步骤判定模型：
@@ -847,8 +893,17 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
                                 continue
                             # 主路径：指纹未命中 → 元素级确认（等待加载完成，避免录制到加载帧导致永久不匹配）
-                            present, png_conf, reasoning = _confirm_condition_target(
-                                device_id, ios_dev, instruction, model_config, width, height, initial_png=png)
+                            try:
+                                present, png_conf, reasoning = _confirm_condition_target(
+                                    device_id, ios_dev, instruction, model_config, width, height,
+                                    initial_png=png, stop_checker=_user_stopped)
+                            except ExecutionStopped:
+                                stopped = True
+                                results.append({'step': step_idx+1, 'instruction': instruction,
+                                                'status': 'stopped', 'screenshot': '',
+                                                'aiReasoning': ['[停止] 用户已停止执行'],
+                                                'action': 'stopped'})
+                                break
                             if present is True:
                                 _replay_actions(device_id, ios_dev, r_actions, width, height)
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
@@ -968,6 +1023,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         else:
                             replay_fail += 1
                             logger.warning(f'[Runner] 回放步骤{step_idx+1} pHash不匹配，降至VLM')
+                else:
+                    # 文案不一致：不盲放旧脚本，直接降级 VLM，并记录差异便于排查
+                    if r_step and r_step.get('instruction'):
+                        logger.warning(
+                            f'[Runner] 步骤 {step_idx+1} 文案与录制不一致，跳过回放降至VLM'
+                            f'（录制: {r_step.get("instruction")!r} / 当前: {instruction!r}）')
             # ---- 回放结束 ----
 
             if progress_callback:
@@ -1091,7 +1152,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             prompt += f'\n{last_tap_feedback}'
                         else:
                             prompt += '\n上一次操作后页面未变化，请自行判断是否需要重试或调整。'
-                    action = call_vlm(png, prompt, model_config, width, height, ai_context)
+                    action = call_vlm(png, prompt, model_config, width, height, ai_context,
+                                      stop_checker=_user_stopped)
 
                     # 百分比→像素
                     for coord in ('x','y','x1','y1','x2','y2'):
@@ -1241,6 +1303,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 step_idx += 1
 
             except Exception as e:
+                if isinstance(e, ExecutionStopped) or execution_record.status == 'stopped':
+                    stopped = True
+                    logger.info('[Runner] 用户已停止，中断执行')
+                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',
+                                    'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped'})
+                    break
                 logger.error(f'[Runner] 步骤 {step_idx+1} 失败: {e}')
                 su = ''; png = None
                 try:

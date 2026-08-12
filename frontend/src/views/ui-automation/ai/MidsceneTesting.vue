@@ -471,6 +471,7 @@ const currentStep = ref(0)
 const showPreview = ref(false)
 const previewImage = ref('')
 let pollTimer = null
+let pollCaseId = null
 const androidDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.status !== 'offline'))
 const iosDevices = computed(() => devices.value.filter(d => d.platform === 'ios' && d.status !== 'offline'))
 const networkDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.ip_address))
@@ -589,6 +590,7 @@ const disconnectDevice = async (device) => { dialogDisconnecting[device.id] = tr
 const reconnectDialogDevice = async (device) => { dialogConnecting[device.id] = true; try { const { data } = await api.post('/ui-automation/midscene/devices/connect_network/', { ip: device.ip_address, port: device.port || 5555 }); if (data.success) ElMessage.success(data.message || '已连接'); else ElMessage.error(data.message || '连接失败'); await loadDevices() } catch (e) { ElMessage.error(e.response?.data?.message || '连接失败') } finally { dialogConnecting[device.id] = false } }
 const newCase = () => {
   if (cases.value.some(c => c.id === draftId)) return
+  stopPolling()
   currentCaseId.value = draftId
   cases.value.unshift({ id: draftId, name: '新建用例', ai_prompt: '', project: filterProjectId.value, folder: null, _draft: true })
   form.name = ''; form.ai_prompt = ''
@@ -597,7 +599,7 @@ const newCase = () => {
   form.folder_id = activeFolder && (!activeFolder.project || !form.project_id || activeFolder.project === form.project_id) ? activeFolder.id : null
   recordMode.value = false; replayMode.value = false; clearAppData.value = false
 }
-const loadCase = (c) => { currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.folder_id = c.folder; form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30; form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || '' }
+const loadCase = (c) => { stopPolling(); currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.folder_id = c.folder; form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30; form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || '' }
 const openNewFolder = () => { folderDialogMode.value = 'create'; folderDialogForm.id = null; folderDialogForm.name = ''; folderDialogForm.project = filterProjectId.value || null; showFolderDialog.value = true }
 const openRenameFolder = (f) => { folderDialogMode.value = 'rename'; folderDialogForm.id = f.id; folderDialogForm.name = f.name; folderDialogForm.project = f.project; showFolderDialog.value = true }
 const submitFolder = async () => {
@@ -663,9 +665,9 @@ const doExecute = async () => {
   finally { executing.value = false }
 }
 const stopExecution = async () => { if (!execution.value?.id) return; try { await api.post(`/ui-automation/midscene/executions/${execution.value.id}/stop/`); execution.value.status = 'stopped'; ElMessage.info('已停止') } catch (e) {} }
-const startPolling = (execId) => { stopPolling(); const poll = async () => { try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) { stopPolling(); refreshAfterExecution() } } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
+const startPolling = (execId) => { stopPolling(); pollCaseId = currentCaseId.value; const poll = async () => { if (pollCaseId !== currentCaseId.value) { stopPolling(); return } try { const { data } = await api.get(`/ui-automation/midscene/executions/${execId}/`); if (pollCaseId !== currentCaseId.value) { stopPolling(); return } execution.value = { ...execution.value, ...data }; if (data.steps_detail?.length) { const last = data.steps_detail[data.steps_detail.length - 1]; currentStep.value = last.step; currentScreenshot.value = last.screenshot || ''; currentReasoning.value = last.aiReasoning || [] }; if (!['pending', 'running'].includes(data.status)) { stopPolling(); refreshAfterExecution() } } catch (e) {} }; pollTimer = setInterval(poll, 2000); poll() }
 const refreshAfterExecution = async () => { if (recordMode.value) selectedReplayIndex.value = 0; await loadCases() }
-const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } pollCaseId = null }
 const previewStep = (s) => { if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true } }
 onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
 onUnmounted(() => stopPolling())

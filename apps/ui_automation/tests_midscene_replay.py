@@ -86,6 +86,31 @@ class ClampWaitAfterTests(SimpleTestCase):
         self.assertEqual(midscene_runner._clamp_wait_after(0.05), 0.2)
 
 
+class InstructionSimilarTests(SimpleTestCase):
+    """步骤文案宽松匹配：归一化标点/空白、容忍插入词、防误配。"""
+
+    def test_exact_after_normalize(self):
+        self.assertTrue(midscene_runner._instruction_similar('点击同意并继续', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击 同意 并 继续', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击“同意并继续”', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击，同意并继续。', '点击同意并继续'))
+
+    def test_middle_word_drift(self):
+        self.assertTrue(midscene_runner._instruction_similar(
+            '如果展示会员购买页，就点击左上角关闭', '如果展示会员购买页点击左上角关闭'))
+        self.assertTrue(midscene_runner._instruction_similar(
+            '点击同意并继续', '请点击同意并继续'))
+
+    def test_distinct_steps_not_matched(self):
+        # 长度悬殊（“点击同意” vs “点击同意并继续”）不能误配
+        self.assertFalse(midscene_runner._instruction_similar('点击同意', '点击同意并继续'))
+        self.assertFalse(midscene_runner._instruction_similar('点击找回账号', '点击登录'))
+
+    def test_empty_not_matched(self):
+        self.assertFalse(midscene_runner._instruction_similar('', '点击同意并继续'))
+        self.assertFalse(midscene_runner._instruction_similar('点击同意并继续', None))
+
+
 class WaitScreenStableTests(SimpleTestCase):
     """启动首帧稳定等待：连续两帧相同提前返回，持续变化则超时。"""
 
@@ -606,6 +631,92 @@ class ConditionalNextCondReplayTests(TestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertIn(('step_start', 1, None), events)
         self.assertIn(('step_done', 1, 'passed'), events)
+
+
+class StopInterruptTests(TestCase):
+    """用户停止：VLM 调用抛 ExecutionStopped 时立即中断，整轮结果标记 stopped。"""
+
+    def setUp(self):
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+        self.adb = mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0))
+        self.adb_mock = self.adb.start()
+        self.addCleanup(self.adb.stop)
+        self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
+        self.size.start()
+        self.addCleanup(self.size.stop)
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=_make_png(1))
+        self.shot.start()
+        self.addCleanup(self.shot.stop)
+        self.save = mock.patch.object(
+            midscene_runner, 'save_screenshot', return_value='/media/midscene/1/step_1.png',
+        )
+        self.save.start()
+        self.addCleanup(self.save.stop)
+
+    def _context(self, steps=None):
+        mc = mock.Mock()
+        mc.ai_act_context = ''
+        mc.app_package = ''
+        mc.project = mock.Mock(default_app_package='')
+        mc.use_locate = True
+        mc.max_steps = 30
+        mc.action_delay = 0.5
+        mc.replay_data = [{
+            'steps': steps if steps is not None else [{
+                'instruction': '如果展示会员购买页，就点击左上角关闭',
+                'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+                'after_hash': 'H_AFTER',
+                'act_before_hash': 'H_ACT',
+            }],
+        }]
+        execution = mock.Mock()
+        execution.id = 1
+        execution.midscene_case = mc
+        execution.auto_plan = False
+        execution.status = 'running'
+        device = mock.Mock()
+        device.platform = 'android'
+        device.adb_serial = 'dev'
+        device.name = '设备'
+        model = mock.Mock()
+        model.api_key = 'k'
+        return mc, execution, device, model
+
+    def _run(self, steps, vlm_side_effect, replay_mode=True):
+        mc, execution, device, model = self._context(steps)
+        with mock.patch.object(midscene_runner, 'call_vlm', side_effect=vlm_side_effect):
+            return midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员购买页，就点击左上角关闭',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=replay_mode, replay_index=0,
+            )
+
+    def test_condition_confirm_stop_returns_stopped(self):
+        # 条件步骤元素确认期间停止：ExecutionStopped 不被吞掉，直接中断标记 stopped
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
+        }]
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            result = self._run(steps, midscene_runner.ExecutionStopped('用户已停止'))
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(all(s['status'] == 'stopped' for s in result['steps']))
+        self.adb_mock.assert_not_called()
+
+    def test_main_vlm_stop_returns_stopped(self):
+        # 普通步骤 VLM 调用期间停止 → 中断并标记 stopped
+        steps = [{
+            'instruction': '点击同意并继续',
+            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'x': 540, 'y': 1080}],
+            'after_hash': 'H',
+        }]
+        result = self._run(steps, midscene_runner.ExecutionStopped('用户已停止'), replay_mode=False)
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(all(s['status'] == 'stopped' for s in result['steps']))
 
 
 def _make_case(owner):

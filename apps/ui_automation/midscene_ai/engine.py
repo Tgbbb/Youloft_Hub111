@@ -68,7 +68,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
     返回 {'status','totalSteps','passedSteps','failedSteps','steps'}，
     steps 每动作一条，含可选字段 query_data/assert_passed/complete_message。
     """
-    from ..midscene_runner import call_vlm, png_size  # 延迟导入避免循环依赖
+    from ..midscene_runner import call_vlm, png_size, ExecutionStopped  # 延迟导入避免循环依赖
 
     width = int(device_ctx.get('width', 1080))
     height = int(device_ctx.get('height', 1920))
@@ -114,6 +114,11 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
             except Exception:
                 pass
         return stopped
+
+    def _call_vlm(*args, **kwargs):
+        """统一注入 stop_checker，VLM 调用期间用户停止可立即中断（不再等完整超时）。"""
+        kwargs['stop_checker'] = _is_stopped
+        return call_vlm(*args, **kwargs)
 
     def _record_step(png, status, instruction, reasoning, action_type='', extra=None, error=''):
         url = ''
@@ -197,7 +202,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
 
         # ---- 规划 ----
         try:
-            raw = call_vlm(
+            raw = _call_vlm(
                 png,
                 build_planning_user_prompt(goal, history.snapshot_text()),
                 model_config,
@@ -208,6 +213,10 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 return_raw=True,
                 max_tokens=2048,
             )
+        except ExecutionStopped:
+            _record_step(None, 'stopped', goal, ['[停止] 用户已停止执行'], 'stopped')
+            stopped = True
+            break
         except Exception as e:
             if not _plan_error(f'规划模型调用失败: {e}', '', png):
                 break
@@ -267,10 +276,16 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
             continue
 
         # ---- 两阶段定位 ----
-        ok, norm_action, locate_err = resolve_action_coords(
-            norm_action, png, model_config, w, h, ctx_text,
-            use_locate=use_locate,
-        )
+        try:
+            ok, norm_action, locate_err = resolve_action_coords(
+                norm_action, png, model_config, w, h, ctx_text,
+                use_locate=use_locate,
+                call_vlm_fn=_call_vlm,
+            )
+        except ExecutionStopped:
+            _record_step(None, 'stopped', goal, ['[停止] 用户已停止执行'], 'stopped')
+            stopped = True
+            break
         if not ok:
             if not _plan_error(locate_err, raw, png):
                 break

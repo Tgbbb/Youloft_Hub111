@@ -96,6 +96,9 @@ def locate_element(target_desc, png, model_config, width, height, context='',
         try:
             return _locate_once(target_desc, png, model_config, width, height, context, call_vlm_fn)
         except Exception as e:
+            from ..midscene_runner import ExecutionStopped  # 局部导入避免循环依赖
+            if isinstance(e, ExecutionStopped):
+                raise  # 用户停止：不重试、不降级，直接向上传递
             last_err = e
             if attempt < retries:
                 logger.warning(f'[Locate] 第{attempt + 1}次失败，重试: {e}')
