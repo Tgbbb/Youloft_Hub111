@@ -224,21 +224,23 @@
           <!-- Dual pane: screenshot + reasoning -->
           <div class="ms-dual">
             <div class="ms-dual__pane ms-dual__pane--screen">
-              <div class="ms-dual__label">DEVICE SCREEN</div>
-              <div class="ms-dual__stage">
-                <img v-if="activeExec.screenshot" :src="activeExec.screenshot" class="ms-screen-img" />
-                <span v-else class="ms-dual__wait">AWAITING FRAME...</span>
+            <div class="ms-dual__label">DEVICE SCREEN</div>
+            <div class="ms-dual__stage">
+              <img v-if="activeExec.screenshot" :src="activeExec.screenshot" class="ms-screen-img" />
+              <MsLoading v-else size="lg" label="AWAITING FRAME" />
+            </div>
+          </div>
+          <div class="ms-dual__pane ms-dual__pane--reason">
+            <div class="ms-dual__label">AI REASONING</div>
+            <div class="ms-dual__log">
+              <div v-if="activeExec.reasoning && activeExec.reasoning.length > 0">
+                <div v-for="(r, i) in activeExec.reasoning" :key="i" class="ms-log-line">{{ r }}</div>
+              </div>
+              <div v-else class="ms-dual__wait--center">
+                <MsLoading size="md" label="AWAITING ANALYSIS" />
               </div>
             </div>
-            <div class="ms-dual__pane ms-dual__pane--reason">
-              <div class="ms-dual__label">AI REASONING</div>
-              <div class="ms-dual__log">
-                <div v-if="activeExec.reasoning && activeExec.reasoning.length > 0">
-                  <div v-for="(r, i) in activeExec.reasoning" :key="i" class="ms-log-line">{{ r }}</div>
-                </div>
-                <span v-else class="ms-dual__wait">AWAITING ANALYSIS...</span>
-              </div>
-            </div>
+          </div>
           </div>
 
           <!-- Step badges -->
@@ -424,6 +426,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection, ArrowRight, Folder, FolderAdd, EditPen, View } from '@element-plus/icons-vue'
 import api from '@/utils/api'
+import MsLoading from '@/components/MsLoading.vue'
 
 const cases = ref([])
 const folders = ref([])
@@ -1330,6 +1333,12 @@ onUnmounted(() => stopPolling())
   &__wait {
     color: rgba(255,255,255,.18); font-family: "Space Grotesk", system-ui, sans-serif;
     font-size: 12px; letter-spacing: .1em;
+  }
+  &__wait--center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
   }
 }
 
