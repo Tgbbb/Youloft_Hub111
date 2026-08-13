@@ -123,6 +123,11 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
                     'screenshot': data.get('screenshot', ''),
                     'aiReasoning': data.get('aiReasoning', []),
                     'error': data.get('error', ''),
+                    'action': data.get('action', ''),
+                    'anomalies': data.get('anomalies', []),
+                    'query_data': data.get('query_data', ''),
+                    'assert_passed': data.get('assert_passed'),
+                    'complete_message': data.get('complete_message', ''),
                 })
                 execution.passed_steps = sum(
                     1 for s in execution.steps_detail if s['status'] == 'passed'

@@ -211,6 +211,7 @@
             <span class="ms-stage-live__status">
               <span class="ms-status-dot" :class="'dot-' + activeExec.status"></span>
               {{ activeExec.status_display || activeExec.status }}
+              <span v-if="activeExecAnomalyCount > 0" class="ms-anom-summary">异常 {{ activeExecAnomalyCount }} 次</span>
               <el-button v-if="isExecRunning(activeExec)" size="small" @click="stopExecution(activeExec)" :icon="SwitchButton" class="ms-btn--stop ms-btn--stop-inline">停止</el-button>
             </span>
             <div class="ms-progress-bar ms-progress-bar--inline">
@@ -249,10 +250,10 @@
               v-for="s in (activeExec.steps_detail || [])"
               :key="s.step"
               class="ms-step-badge"
-              :class="'badge-' + s.status"
+              :class="stepBadgeClass(s)"
               @click="previewStep(s)"
             >
-              <span class="ms-step-badge__mark">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✗' : '→' }}</span>
+              <span class="ms-step-badge__mark">{{ stepBadgeMark(s) }}</span>
               {{ s.step }}. {{ s.instruction?.substring(0, 24) }}{{ s.instruction?.length > 24 ? '…' : '' }}
             </button>
           </div>
@@ -270,8 +271,22 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showPreview" title="步骤截图" width="400px">
+    <el-dialog v-model="showPreview" title="步骤截图" width="420px">
       <img :src="previewImage" style="width:100%" v-if="previewImage" />
+      <div v-if="previewStepData?.anomalies?.length" class="ms-preview-anoms">
+        <div class="ms-preview-anoms__title">异常事件 {{ previewStepData.anomalies.length }} 次</div>
+        <div v-for="(a, i) in previewStepData.anomalies" :key="i" class="ms-preview-anom">
+          <div class="ms-preview-anom__head">
+            <span class="ms-preview-anom__type">{{ a.label || a.type }}</span>
+            <span class="ms-preview-anom__layer">{{ a.layer }}</span>
+            <span class="ms-preview-anom__rec" :class="a.recovered ? 'ms-preview-anom__rec--ok' : 'ms-preview-anom__rec--bad'">
+              {{ a.recovered ? '已恢复' : '未恢复' }}
+            </span>
+          </div>
+          <div class="ms-preview-anom__msg">{{ a.message }}</div>
+          <pre class="ms-preview-anom__ev" v-if="a.evidence && Object.keys(a.evidence).length">{{ JSON.stringify(a.evidence, null, 2) }}</pre>
+        </div>
+      </div>
     </el-dialog>
 
     <el-dialog v-model="showNetworkDialog" title="连接局域网 Android 设备" width="520px">
@@ -519,6 +534,7 @@ const activeExecIndex = ref('0')
 const activeExec = computed(() => executions.value[Number(activeExecIndex.value)] || null)
 const showPreview = ref(false)
 const previewImage = ref('')
+const previewStepData = ref(null)
 let pollTimer = null
 let pollCaseId = null
 const androidDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.status !== 'offline'))
@@ -842,7 +858,23 @@ const startPolling = () => {
 }
 const refreshAfterExecution = async () => { if (recordMode.value) selectedReplayIndex.value = 0; await loadCases() }
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } pollCaseId = null }
-const previewStep = (s) => { if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true } }
+const previewStep = (s) => {
+  previewStepData.value = s || null
+  if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true }
+}
+const stepAnomalyCount = (s) => ((s && s.anomalies) || []).length
+const stepBadgeClass = (s) => {
+  if (s.status === 'passed' && stepAnomalyCount(s) > 0) return 'badge-warn'
+  return 'badge-' + s.status
+}
+const stepBadgeMark = (s) => {
+  if (s.status === 'passed') return stepAnomalyCount(s) > 0 ? '⚠' : '✓'
+  if (s.status === 'failed') return '✗'
+  return '→'
+}
+const activeExecAnomalyCount = computed(() =>
+  (activeExec.value?.steps_detail || []).reduce((n, s) => n + stepAnomalyCount(s), 0)
+)
 onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
 onUnmounted(() => stopPolling())
 </script>
@@ -1283,6 +1315,13 @@ onUnmounted(() => stopPolling())
   font-size: 11px;
 }
 
+.ms-anom-summary {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600;
+  color: #b26a00; background: rgba(230,162,60,.1); border: 1px solid rgba(230,162,60,.35);
+  border-radius: 999px;
+}
+
 .ms-status-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   &.dot-pending, &.dot-running { background: var(--ms-signal); animation: ms-pulse 1.2s ease-in-out infinite; }
@@ -1310,6 +1349,23 @@ onUnmounted(() => stopPolling())
     font-size: 13px; font-family: "Space Grotesk", system-ui, sans-serif;
     font-weight: 700; color: #666; min-width: 50px; text-align: right;
   }
+}
+
+.ms-preview-anoms {
+  margin-top: 14px; border-top: 1px solid #eee; padding-top: 12px;
+  &__title { font-size: 13px; font-weight: 700; color: #b26a00; margin-bottom: 10px; }
+}
+.ms-preview-anom {
+  background: #fffdf5; border: 1px solid #fde68a; border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 8px;
+  &__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  &__type { font-size: 12px; font-weight: 600; color: #92400e; }
+  &__layer { font-size: 11px; color: #888; background: #f5f5f2; border: 1px solid #e3e3dd; padding: 0 8px; border-radius: 999px; }
+  &__rec { font-size: 11px; padding: 0 8px; border-radius: 999px; }
+  &__rec--ok { color: #16a34a; background: #f0fdf4; border: 1px solid #bbf7d0; }
+  &__rec--bad { color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; }
+  &__msg { font-size: 12px; color: #555; line-height: 1.5; margin-top: 6px; }
+  &__ev { font-size: 11px; color: #666; background: #fafaf8; border: 1px solid #efefe9; padding: 8px; margin-top: 6px; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto; }
 }
 
 .ms-dual {
@@ -1363,6 +1419,7 @@ onUnmounted(() => stopPolling())
   transition: all .15s;
   &:hover { border-color: #999; color: #333; }
   &.badge-passed { background: rgba(0,255,162,.08); border-color: rgba(0,255,162,.25); color: #1a8051; }
+  &.badge-warn { background: rgba(230,162,60,.08); border-color: rgba(230,162,60,.3); color: #b26a00; }
   &.badge-failed { background: rgba(245,108,108,.06); border-color: rgba(245,108,108,.2); color: #c03939; }
   &.badge-running { border-color: var(--ms-signal); color: #666; animation: ms-pulse 1s infinite; }
   &__mark { font-weight: 700; margin-right: 2px; }

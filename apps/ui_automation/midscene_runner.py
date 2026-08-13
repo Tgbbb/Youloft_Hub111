@@ -58,17 +58,26 @@ def _adb(device_id, *args, timeout=15):
 def adb_input_text(device_id, text):
     """输入文本：非 ASCII/特殊字符走 yadb（支持中文），否则单引号全字符转义
     走 `input text`（对齐 Midscene shellEscapeArg，空格/&/;/$/` 等全部由
-    单引号保护，不再逐字转义）。"""
+    单引号保护，不再逐字转义）。返回证据 dict {'ok','returncode','stderr',
+    'latency','fallback_used'}。"""
     text = str(text or '')
     if not text:
-        return
+        return {'ok': True, 'returncode': 0, 'stderr': '', 'latency': 0.0,
+                'fallback_used': False}
+    start = time.time()
+    fallback_used = False
     if _needs_yadb(text):
         if _yadb_input(device_id, text):
             logger.info('[ADB] 使用 yadb 输入非 ASCII/特殊字符')
-            return
+            return {'ok': True, 'returncode': 0, 'stderr': '', 'latency': round(time.time() - start, 3),
+                    'fallback_used': False}
         logger.warning('[ADB] yadb 不可用，降级 input text（非 ASCII 文本可能无法输入）')
+        fallback_used = True
     escaped = text.replace("'", "'\\''")
-    _adb(device_id, 'shell', 'input', 'text', f"'{escaped}'")
+    r = _adb(device_id, 'shell', 'input', 'text', f"'{escaped}'")
+    ev = _adb_evidence(r, start)
+    ev['fallback_used'] = fallback_used
+    return ev
 
 
 _YADB_PUSHED_DEVICES = set()
@@ -136,21 +145,29 @@ def _yadb_input(device_id, text):
     return r.returncode == 0
 
 def adb_execute(device_id, action):
+    """执行 VLM 动作，返回证据 dict {'ok','returncode','stderr','latency'}
+    （input 额外带 fallback_used）。不抛异常。"""
     t = action.get('action', '')
+    start = time.time()
     if t in ('tap', 'click'):
-        _adb(device_id, 'shell', 'input', 'tap', str(int(float(action.get('x',0)))), str(int(float(action.get('y',0)))))
+        r = _adb(device_id, 'shell', 'input', 'tap', str(int(float(action.get('x',0)))), str(int(float(action.get('y',0)))))
     elif t == 'swipe':
-        _adb(device_id, 'shell', 'input', 'swipe', str(int(float(action.get('x1',0)))), str(int(float(action.get('y1',0)))),
-             str(int(float(action.get('x2',0)))), str(int(float(action.get('y2',0)))), str(action.get('duration',300)))
+        r = _adb(device_id, 'shell', 'input', 'swipe', str(int(float(action.get('x1',0)))), str(int(float(action.get('y1',0)))),
+                 str(int(float(action.get('x2',0)))), str(int(float(action.get('y2',0)))), str(action.get('duration',300)))
     elif t == 'input':
-        adb_input_text(device_id, action.get('text', ''))
-    elif t == 'back':    _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
-    elif t == 'home':    _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME')
+        return adb_input_text(device_id, action.get('text', ''))
+    elif t == 'back':
+        r = _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
+    elif t == 'home':
+        r = _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME')
     elif t == 'long_press':
         x, y, d = int(float(action.get('x',0))), int(float(action.get('y',0))), action.get('duration',2000)
-        _adb(device_id, 'shell', 'input', 'swipe', str(x), str(y), str(x), str(y), str(d))
+        r = _adb(device_id, 'shell', 'input', 'swipe', str(x), str(y), str(x), str(y), str(d))
     elif t == 'launch':
-        _adb(device_id, 'shell', 'monkey', '-p', action.get('package',''), '1')
+        r = _adb(device_id, 'shell', 'monkey', '-p', action.get('package',''), '1')
+    else:
+        return {'ok': True, 'returncode': 0, 'stderr': '', 'latency': 0.0}
+    return _adb_evidence(r, start)
 
 def _normalize_pct(v):
     """把模型输出的百分比归一化为 0-100；>100 视为旧模型(qwen3-vl-plus)的 10x 格式。"""
@@ -194,6 +211,77 @@ _DEFAULT_WAIT_AFTER = {
     'tap': 2.0, 'click': 2.0, 'long_press': 0.5, 'back': 0.5,
     'home': 0.5, 'input': 0.2, 'swipe': 1.5, 'wait': 3.0,
 }
+
+
+# ============================================================
+# 异常分层采集（anomaly 机制）
+# 纠错点（tap 重试 / hash 降级 / 跳过 / 等待超时 / 重规划 / 卡死 /
+# 定位重试 / ADB / WDA / 截图）统一产出结构化异常，随 steps_detail 落库。
+# ============================================================
+
+ANOMALY_TYPES = {
+    'tap_retry': {'label': '点击重试', 'default_layer': 'unknown'},
+    'hash_mismatch_fallback': {'label': '页面指纹不匹配', 'default_layer': 'unknown'},
+    'action_skipped': {'label': '条件动作跳过', 'default_layer': 'app'},
+    'stable_wait_timeout': {'label': '页面稳定等待超时', 'default_layer': 'unknown'},
+    'replan': {'label': '重规划', 'default_layer': 'unknown'},
+    'stuck_detected': {'label': '卡死检测', 'default_layer': 'unknown'},
+    'locate_retry': {'label': '定位重试', 'default_layer': 'unknown'},
+    'adb_error': {'label': 'ADB 错误', 'default_layer': 'execution'},
+    'wda_error': {'label': 'WDA 错误', 'default_layer': 'execution'},
+    'screenshot_error': {'label': '截图错误', 'default_layer': 'execution'},
+}
+
+
+def _infer_anomaly_layer(atype, evidence):
+    """按证据推断异常层级：
+    - execution: 环境级硬证据（adb 非 0、WDA 非 200、请求异常/超时）
+    - app:       调用成功但页面类间接证据（tap 重试、指纹不匹配、等待超时等）
+    - unknown:   单次事件无旁证，不下结论
+    """
+    evidence = evidence or {}
+    for key in ('returncode', 'status_code', 'first_status'):
+        val = evidence.get(key)
+        if val not in (None, 0, 200, ''):
+            return 'execution'
+    if evidence.get('error') or evidence.get('first_error'):
+        return 'execution'
+    if atype in ('tap_retry', 'hash_mismatch_fallback', 'stable_wait_timeout',
+                 'stuck_detected', 'action_skipped'):
+        # 页面类事件：有旁证（环境正常 / 页面指纹比较）才归 app，
+        # 单次事件无旁证一律 unknown，报告只列可能原因、不下结论
+        return 'app' if evidence else 'unknown'
+    return ANOMALY_TYPES.get(atype, {}).get('default_layer', 'unknown')
+
+
+def _build_anomaly(atype, message, evidence=None, layer=None, recovered=True):
+    """构建一条结构化异常（可 JSON 序列化）。
+
+    layer 未显式指定时按证据推断：环境硬证据 -> execution，
+    页面类间接证据 -> app，无旁证 -> unknown。"""
+    evidence = dict(evidence or {})
+    meta = ANOMALY_TYPES.get(atype, {})
+    return {
+        'type': atype,
+        'label': meta.get('label', atype),
+        'layer': layer or _infer_anomaly_layer(atype, evidence),
+        'message': str(message or '')[:500],
+        'evidence': evidence,
+        'recovered': bool(recovered),
+    }
+
+
+def _adb_evidence(r, start):
+    """把 subprocess 结果归一化为 ADB 证据 dict（兼容测试 mock 返回 None）。"""
+    latency = round(time.time() - start, 3)
+    if r is None:
+        return {'ok': True, 'returncode': 0, 'stderr': '', 'latency': latency}
+    return {
+        'ok': getattr(r, 'returncode', 0) == 0,
+        'returncode': getattr(r, 'returncode', 0),
+        'stderr': str(getattr(r, 'stderr', '') or '')[:300],
+        'latency': latency,
+    }
 
 
 class ExecutionStopped(RuntimeError):
@@ -247,54 +335,95 @@ def _resolve_coord(a, coord, ref):
 
 
 def _execute_replay_action(device_id, ios_dev, a):
-    """执行单个回放动作（坐标已解析为像素）。"""
+    """执行单个回放动作（坐标已解析为像素）。
+
+    返回 {'ok', 'evidence', 'message'}：环境错误（ADB 非 0 / WDA 非 200 /
+    请求异常）以 ok=False 上报，供上层采集 adb_error / wda_error 异常；
+    stable_wait_timeout 标记页面稳定等待是否超时（不阻塞执行）。"""
+    start = time.time()
+    result = {'ok': True, 'evidence': {}, 'message': '',
+              'stable_wait_timeout': False}
     action_type = a.get('action', 'tap')
     if action_type in ('tap', 'click'):
         if ios_dev:
-            ios_dev.tap(a['x'], a['y'])
+            ev = ios_dev.tap(a['x'], a['y'])
+            result['evidence'] = ev
+            if not ev.get('ok', True):
+                result['ok'] = False
+                result['message'] = f"WDA tap 失败: {ev.get('error', '')}"
         else:
-            _adb(device_id, 'shell', 'input', 'tap', str(a['x']), str(a['y']))
+            ev = _adb_evidence(_adb(device_id, 'shell', 'input', 'tap', str(a['x']), str(a['y'])), start)
+            result['evidence'] = ev
+            if not ev.get('ok', True):
+                result['ok'] = False
+                result['message'] = f"ADB tap 失败: {ev.get('stderr', '')}"
     elif action_type == 'swipe':
         if ios_dev:
-            ios_dev.execute_action(a)
+            ev = ios_dev.execute_action(a)
         else:
-            adb_execute(device_id, a)
+            ev = adb_execute(device_id, a)
+        result['evidence'] = ev
+        if not ev.get('ok', True):
+            result['ok'] = False
+            result['message'] = f"{'WDA' if ios_dev else 'ADB'} swipe 失败: {ev.get('error') or ev.get('stderr', '')}"
     elif action_type == 'input':
         if ios_dev:
-            ios_dev.execute_action(a)
+            ev = ios_dev.execute_action(a)
         else:
-            adb_input_text(device_id, a.get('text', ''))
+            ev = adb_input_text(device_id, a.get('text', ''))
+        result['evidence'] = ev
+        if not ev.get('ok', True):
+            result['ok'] = False
+            result['message'] = f"{'WDA' if ios_dev else 'ADB'} input 失败: {ev.get('error') or ev.get('stderr', '')}"
     elif action_type == 'back':
         if ios_dev:
-            ios_dev.execute_action(a)
+            ev = ios_dev.execute_action(a)
         else:
-            _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
+            ev = _adb_evidence(_adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK'), start)
+        result['evidence'] = ev
+        if not ev.get('ok', True):
+            result['ok'] = False
+            result['message'] = f"{'WDA' if ios_dev else 'ADB'} back 失败: {ev.get('error') or ev.get('stderr', '')}"
     elif action_type == 'home':
         if ios_dev:
-            ios_dev.execute_action(a)
+            ev = ios_dev.execute_action(a)
         else:
-            _adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME')
+            ev = _adb_evidence(_adb(device_id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME'), start)
+        result['evidence'] = ev
+        if not ev.get('ok', True):
+            result['ok'] = False
+            result['message'] = f"{'WDA' if ios_dev else 'ADB'} home 失败: {ev.get('error') or ev.get('stderr', '')}"
     elif action_type == 'long_press':
         if ios_dev:
-            ios_dev.execute_action(a)
+            ev = ios_dev.execute_action(a)
         else:
-            adb_execute(device_id, a)
+            ev = adb_execute(device_id, a)
+        result['evidence'] = ev
+        if not ev.get('ok', True):
+            result['ok'] = False
+            result['message'] = f"{'WDA' if ios_dev else 'ADB'} long_press 失败: {ev.get('error') or ev.get('stderr', '')}"
     # swipe 动画需要更长等待（基线），之后统一走页面稳定等待
     if action_type in ('swipe',):
         time.sleep(1.5)
     # 等页面稳定：稳定即继续，最多 5s 超时（超时不阻塞，交给后续校验/VLM 兜底）。
     # 不再重放录制 wait_after 绝对值——它含录制时 VLM 思考时间，且录制环境快慢不代表回放。
-    _wait_screen_stable(device_id, ios_dev, timeout=5.0, check_interval=0.5, label='动作后页面')
+    result['stable_wait_timeout'] = not _wait_screen_stable(
+        device_id, ios_dev, timeout=5.0, check_interval=0.5, label='动作后页面')
+    return result
 
 
-def _replay_actions(device_id, ios_dev, actions, width, height, gate_all=False):
+def _replay_actions(device_id, ios_dev, actions, width, height, gate_all=False, anomalies=None):
     """回放动作序列（条件和普通步骤共用）：支持 tap/click、swipe、input、back、home、long_press。
     坐标优先用百分比按当前设备分辨率换算，兼容旧录制像素值与 10x 百分比。
     门控规则：旧数据（无 before_hash）与普通步骤的目标动作（conditional=false）无条件执行；
     障碍动作（conditional=true），或 gate_all=True 的条件步骤内所有动作，按 before_hash 门控——
-    当前页面匹配才执行，不匹配跳过该动作继续。返回 {'played': n, 'skipped': m}。"""
+    当前页面匹配才执行，不匹配跳过该动作继续。返回 {'played': n, 'skipped': m}。
+    anomalies：可选列表参数（传入后保持返回结构不变），跳过/环境错误/稳定等待
+    超时事件会追加到该列表，供调用方随步骤结果落库。"""
     played = 0
     skipped = 0
+    if anomalies is None:
+        anomalies = []
     for raw in actions:
         a = dict(raw)
         action_type = a.get('action', 'tap')
@@ -316,11 +445,34 @@ def _replay_actions(device_id, ios_dev, actions, width, height, gate_all=False):
             if not _is_same_page_by_hash(png, a['before_hash']):
                 skipped += 1
                 logger.info(f'[Runner] 回放跳过动作 {action_type}: 前置页面不匹配')
+                anomalies.append(_build_anomaly(
+                    'action_skipped',
+                    f'回放跳过动作 {action_type}: 前置页面与录制不匹配',
+                    evidence={'action': action_type,
+                              'before_hash': str(a['before_hash']),
+                              'current_hash': str(_phash(png))},
+                    recovered=True,
+                ))
                 time.sleep(0.5)  # 留页面稳定余量
                 continue
 
-        _execute_replay_action(device_id, ios_dev, a)
+        exec_result = _execute_replay_action(device_id, ios_dev, a)
         played += 1
+        if not exec_result.get('ok', True):
+            atype = 'wda_error' if ios_dev else 'adb_error'
+            anomalies.append(_build_anomaly(
+                atype,
+                exec_result.get('message') or f'{atype} 执行失败',
+                evidence=exec_result.get('evidence', {}),
+                recovered=True,
+            ))
+        if exec_result.get('stable_wait_timeout'):
+            anomalies.append(_build_anomaly(
+                'stable_wait_timeout',
+                f'回放动作 {action_type} 后页面稳定等待超时(5s)，继续执行',
+                evidence={'action': action_type, 'timeout': 5.0},
+                recovered=True,
+            ))
     return {'played': played, 'skipped': skipped}
 
 def adb_screenshot(device_id):
@@ -720,6 +872,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     else:
         replay_data = None
     recording = []  # 录制数据：每步的 instruction + actions + after_hash
+    pre_step_anomalies = []  # 启动阶段采集的异常（随第一个步骤结果落库）
 
     # ---- 平台初始化 ----
     try:
@@ -769,7 +922,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     time.sleep(1)
                 grant_permissions(device_id, app_pkg)
                 _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
-                _wait_screen_stable(device_id, None, label='启动画面')
+                if not _wait_screen_stable(device_id, None, label='启动画面'):
+                    pre_step_anomalies.append(_build_anomaly(
+                        'stable_wait_timeout',
+                        '启动画面稳定等待超时(15s)，继续执行',
+                        evidence={'phase': 'startup', 'timeout': 15.0},
+                        recovered=True,
+                    ))
         elif platform == 'ios':
             # iOS: 用例包名 → 项目iOS Bundle ID
             ios_bid = (mc.app_package if mc and mc.app_package
@@ -783,7 +942,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
                               json={'bundleId': ios_bid}, timeout=5)
                 except Exception: pass
-                _wait_screen_stable(None, ios_dev, label='启动画面')
+                if not _wait_screen_stable(None, ios_dev, label='启动画面'):
+                    pre_step_anomalies.append(_build_anomaly(
+                        'stable_wait_timeout',
+                        '启动画面稳定等待超时(15s)，继续执行',
+                        evidence={'phase': 'startup', 'timeout': 15.0},
+                        recovered=True,
+                    ))
 
         # 启动的包名（Android app_pkg / iOS ios_bid），供"打开应用"快捷分支与 aiAct 使用
         app_package = app_pkg if platform == 'android' else (ios_bid if platform == 'ios' else '')
@@ -835,10 +1000,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             instruction = step['instruction']
             is_repeat = step.get('repeat', False)
             is_ai_act = auto_plan  # 智能规划模式 VLM 自己决定 done
+            # 本步骤异常采集：启动阶段异常并入第一步，纠错埋点随后追加
+            step_anomalies = list(pre_step_anomalies)
+            pre_step_anomalies = []
 
             if not auto_plan and re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
-                                'screenshot':'','aiReasoning':['ADB启动'],'action':'launch'})
+                                'screenshot':'','aiReasoning':['ADB启动'],'action':'launch',
+                                'anomalies': list(step_anomalies)})
                 step_idx += 1; continue
 
             logger.info(f'[Runner] 步骤 {step_idx+1}/{len(steps)}: {instruction}')
@@ -866,16 +1035,26 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         if r_actions:
                             # 快速路径：当前页匹配录制动作执行前指纹 → 直接播放
                             if act_hash and _is_same_page_by_hash(png, act_hash):
-                                _replay_actions(device_id, ios_dev, r_actions, width, height)
+                                _replay_actions(device_id, ios_dev, r_actions, width, height,
+                                                anomalies=step_anomalies)
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                                 if after_hash and not _is_same_page_by_hash(png_after, after_hash):
                                     # after_hash 在加载帧下同样失真，不阻断，仅记录
                                     logger.warning(f'[Runner] 条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理')
+                                    step_anomalies.append(_build_anomaly(
+                                        'hash_mismatch_fallback',
+                                        f'条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理',
+                                        evidence={'step': step_idx + 1,
+                                                  'expected_hash': str(after_hash),
+                                                  'current_hash': str(_phash(png_after))},
+                                        recovered=True,
+                                    ))
                                 replay_pass += 1
                                 screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                 'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
-                                                'action': r_actions[-1].get('action', 'tap')})
+                                                'action': r_actions[-1].get('action', 'tap'),
+                                                'anomalies': list(step_anomalies)})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -888,6 +1067,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'instruction': instruction, 'status': 'passed',
                                         'screenshot': screenshot_url,
                                         'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
+                                        'action': r_actions[-1].get('action', 'tap'),
+                                        'anomalies': list(step_anomalies),
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
@@ -902,19 +1083,30 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 results.append({'step': step_idx+1, 'instruction': instruction,
                                                 'status': 'stopped', 'screenshot': '',
                                                 'aiReasoning': ['[停止] 用户已停止执行'],
-                                                'action': 'stopped'})
+                                                'action': 'stopped',
+                                                'anomalies': list(step_anomalies)})
                                 break
                             if present is True:
-                                _replay_actions(device_id, ios_dev, r_actions, width, height)
+                                _replay_actions(device_id, ios_dev, r_actions, width, height,
+                                                anomalies=step_anomalies)
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                                 if after_hash and not _is_same_page_by_hash(png_after, after_hash):
                                     logger.warning(f'[Runner] 条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理')
+                                    step_anomalies.append(_build_anomaly(
+                                        'hash_mismatch_fallback',
+                                        f'条件步骤{step_idx+1} 执行后pHash与录制不一致(可能为加载帧)，按通过处理',
+                                        evidence={'step': step_idx + 1,
+                                                  'expected_hash': str(after_hash),
+                                                  'current_hash': str(_phash(png_after))},
+                                        recovered=True,
+                                    ))
                                 replay_pass += 1
                                 screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                 'screenshot': screenshot_url,
                                                 'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
-                                                'action': r_actions[-1].get('action', 'tap')})
+                                                'action': r_actions[-1].get('action', 'tap'),
+                                                'anomalies': list(step_anomalies)})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -927,6 +1119,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'instruction': instruction, 'status': 'passed',
                                         'screenshot': screenshot_url,
                                         'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
+                                        'action': r_actions[-1].get('action', 'tap'),
+                                        'anomalies': list(step_anomalies),
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(元素确认-条件满足)')
@@ -937,7 +1131,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 screenshot_url = save_screenshot(png_conf, execution_record.id, step_idx+1)
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                 'screenshot': screenshot_url,
-                                                'aiReasoning': [f'[回放] 条件不满足-元素确认: {reasoning[:80]}']})
+                                                'aiReasoning': [f'[回放] 条件不满足-元素确认: {reasoning[:80]}'],
+                                                'anomalies': list(step_anomalies)})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -949,6 +1144,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'instruction': instruction, 'status': 'passed',
                                         'screenshot': screenshot_url,
                                         'aiReasoning': [f'[回放] 条件不满足-元素确认: {reasoning[:80]}'],
+                                        'anomalies': list(step_anomalies),
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足-元素确认)')
@@ -956,13 +1152,20 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             # 确认失败/无法判定 → 降至VLM
                             replay_fail += 1
                             logger.info(f'[Runner] 条件步骤 {step_idx+1} 元素确认无法判定，降至VLM')
+                            step_anomalies.append(_build_anomaly(
+                                'hash_mismatch_fallback',
+                                f'条件步骤{step_idx+1} 元素确认无法判定，降至VLM',
+                                evidence={'step': step_idx + 1, 'reason': 'element_confirm_failed'},
+                                recovered=True,
+                            ))
                         else:
                             # 录制时条件不满足(无动作)：after_hash 即"跳过"指纹
                             if after_hash and _is_same_page_by_hash(png, after_hash):
                                 replay_pass += 1
                                 screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
-                                                'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)']})
+                                                'screenshot': screenshot_url, 'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)'],
+                                                'anomalies': list(step_anomalies)})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -974,6 +1177,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'instruction': instruction, 'status': 'passed',
                                         'screenshot': screenshot_url,
                                         'aiReasoning': ['[回放] 条件步骤跳过(条件不满足)'],
+                                        'anomalies': list(step_anomalies),
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 跳过(条件不满足)')
@@ -981,9 +1185,18 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             # 当前页不是录制时的跳过状态 → 未知（可能条件满足或路径不同），降至VLM
                             replay_fail += 1
                             logger.info(f'[Runner] 条件步骤 {step_idx+1} 页面与录制跳过状态不符，降至VLM')
+                            step_anomalies.append(_build_anomaly(
+                                'hash_mismatch_fallback',
+                                f'条件步骤{step_idx+1} 页面与录制跳过状态不符，降至VLM',
+                                evidence={'step': step_idx + 1,
+                                          'expected_hash': str(after_hash),
+                                          'current_hash': str(_phash(png))},
+                                recovered=True,
+                            ))
                     else:
                         # 普通步骤：播放动作序列（障碍动作按前置指纹门控，目标动作必播）
-                        r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height)
+                        r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height,
+                                                  anomalies=step_anomalies)
                         if r_stats['skipped']:
                             logger.info(f'[Runner] 步骤 {step_idx+1} 回放跳过 {r_stats["skipped"]} 个不匹配的障碍动作')
 
@@ -1005,7 +1218,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             last_action = r_actions[-1].get('action', 'tap') if r_actions else 'assert'
                             results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                             'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放'],
-                                            'action': last_action})
+                                            'action': last_action,
+                                            'anomalies': list(step_anomalies)})
                             if record_mode:
                                 while len(recording) <= step_idx: recording.append(None)
                                 recording[step_idx] = dict(r_step)
@@ -1016,6 +1230,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     'type': 'step_done', 'step': step_idx, 'total': len(steps),
                                     'instruction': instruction, 'status': 'passed',
                                     'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放'],
+                                    'action': last_action, 'anomalies': list(step_anomalies),
                                     'progress': int(step_idx / len(steps) * 100)
                                 })
                             logger.info(f'[Runner] 回放步骤 {step_idx} 通过')
@@ -1023,6 +1238,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         else:
                             replay_fail += 1
                             logger.warning(f'[Runner] 回放步骤{step_idx+1} pHash不匹配，降至VLM')
+                            step_anomalies.append(_build_anomaly(
+                                'hash_mismatch_fallback',
+                                f'回放步骤{step_idx+1} pHash不匹配，降至VLM',
+                                evidence={'step': step_idx + 1,
+                                          'expected_hash': str(expected_hash),
+                                          'current_hash': str(_phash(png))},
+                                recovered=True,
+                            ))
                 else:
                     # 文案不一致：不盲放旧脚本，直接降级 VLM，并记录差异便于排查
                     if r_step and r_step.get('instruction'):
@@ -1056,7 +1279,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if execution_record.status in ('stopped', 'stopping'):
                         stopped = True
                         results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',
-                                        'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped'})
+                                        'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped',
+                                        'anomalies': list(step_anomalies)})
                         break
                     # 录制: 实测上一动作的 wait_after（动作执行完成 → 本次截图开始）
                     if record_mode and last_exec_time is not None and last_rec_idx is not None:
@@ -1185,14 +1409,25 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         last_action_fp = action_fp
                         repeat_count = 0
                     if repeat_count >= 2:
+                        step_anomalies.append(_build_anomaly(
+                            'stuck_detected',
+                            f'连续{repeat_count+1}次重复动作 {_action_fingerprint_desc(action)} 且页面未变化，操作无效',
+                            evidence={'fingerprint': action_fp, 'repeat_count': repeat_count,
+                                      'page_unchanged': True},
+                            recovered=False,
+                        ))
                         raise RuntimeError(f'连续{repeat_count+1}次重复动作 {_action_fingerprint_desc(action)} 且页面未变化，操作无效，页面可能卡死或元素不可点击')
 
                     # 1. 按类型执行
                     if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
                     if t == 'wait': time.sleep(3); continue  # 加载中等待
                     if t == 'swipe':
-                        if ios_dev: ios_dev.execute_action(action)
-                        else: adb_execute(device_id, action)
+                        ev = ios_dev.execute_action(action) if ios_dev else adb_execute(device_id, action)
+                        if ev and not ev.get('ok', True):
+                            step_anomalies.append(_build_anomaly(
+                                'wda_error' if ios_dev else 'adb_error',
+                                f'swipe 执行失败: {ev.get("error") or ev.get("stderr", "")}',
+                                evidence=ev, recovered=True))
                         if record_mode and step_actions:
                             last_exec_time = time.time()
                             last_rec_idx = len(step_actions) - 1
@@ -1206,8 +1441,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         logger.info(f'[Runner] 提取: {str(action.get("data",""))[:200]}')
                         if not is_ai_act: screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
                     else:  # tap/click/long_press/input/back
-                        if ios_dev: ios_dev.execute_action(action)
-                        else: adb_execute(device_id, action)
+                        ev = ios_dev.execute_action(action) if ios_dev else adb_execute(device_id, action)
+                        if ev and not ev.get('ok', True):
+                            step_anomalies.append(_build_anomaly(
+                                'wda_error' if ios_dev else 'adb_error',
+                                f'{t} 执行失败: {ev.get("error") or ev.get("stderr", "")}',
+                                evidence=ev, recovered=True))
                         if record_mode and step_actions:
                             last_exec_time = time.time()
                             last_rec_idx = len(step_actions) - 1
@@ -1219,6 +1458,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         if _is_same_page(png, after_png):
                             # 轮内重试: 页面没变就原地再点一次
                             logger.info(f'[Runner] 步骤 {step_idx+1} tap未生效，轮内重试')
+                            tap_anom = _build_anomaly(
+                                'tap_retry',
+                                f'步骤 {step_idx+1} {t} 未生效，轮内重试',
+                                evidence={'action': _action_fingerprint_desc(action),
+                                          'attempt': 1, 'page_unchanged': True},
+                                recovered=True)
+                            step_anomalies.append(tap_anom)
                             if ios_dev: ios_dev.execute_action(action)
                             else: adb_execute(device_id, action)
                             _smart_wait(device_id, ios_dev, png, max_wait=2.0, check_interval=0.5)
@@ -1226,6 +1472,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             after2 = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                             if _is_same_page(png, after2):
                                 logger.info(f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，继续等待VLM判断')
+                                tap_anom['recovered'] = False
+                                step_anomalies.append(_build_anomaly(
+                                    'tap_retry',
+                                    f'步骤 {step_idx+1} {t} 重试后页面仍未变化，继续等待VLM判断',
+                                    evidence={'action': _action_fingerprint_desc(action),
+                                              'attempt': 2, 'page_unchanged': True},
+                                    recovered=False))
                                 action['step_status'] = 'in_progress'
                                 last_tap_feedback = (
                                     f"上次 {t} 坐标 ({action.get('x_pct', action.get('x', '?'))},"
@@ -1262,8 +1515,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 if stopped:
                     break  # 用户已停止：退出整轮执行，不再处理剩余步骤
 
+                passed_extra = {}
+                if last_action == 'assert':
+                    passed_extra['assert_passed'] = True
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
-                                'screenshot':screenshot_url,'aiReasoning':reasonings,'action':last_action})
+                                'screenshot':screenshot_url,'aiReasoning':reasonings,'action':last_action,
+                                'anomalies': list(step_anomalies), **passed_extra})
                 mem_data = str(action.get('data', '')) if (last_action == 'query' and action) else ''
                 _push_step_memory(step_memory, step_idx + 1, instruction, last_action, mem_data)
 
@@ -1271,6 +1528,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     progress_callback(step_idx+1, len(steps), {'type':'step_done','step':step_idx+1,'total':len(steps),
                                                          'instruction':instruction,'status':'passed',
                                                          'screenshot':screenshot_url,'aiReasoning':reasonings,
+                                                         'action':last_action,'anomalies': list(step_anomalies),
+                                                         **passed_extra,
                                                          'progress':int((step_idx+1)/len(steps)*100)})
                 logger.info(f'[Runner] 步骤 {step_idx+1} 通过: {reasonings[-1] if reasonings else ""}')
 
@@ -1307,7 +1566,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     stopped = True
                     logger.info('[Runner] 用户已停止，中断执行')
                     results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',
-                                    'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped'})
+                                    'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped',
+                                    'anomalies': list(step_anomalies)})
                     break
                 logger.error(f'[Runner] 步骤 {step_idx+1} 失败: {e}')
                 su = ''; png = None
@@ -1315,8 +1575,21 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                     su = save_screenshot(png, execution_record.id, step_idx+1)
                 except: pass
+                failed_extra = {}
+                if isinstance(e, AssertionError):
+                    failed_extra['assert_passed'] = False
+                err_text = str(e)
+                if '截图失败' in err_text or 'WDA截图' in err_text:
+                    step_anomalies.append(_build_anomaly(
+                        'screenshot_error',
+                        f'截图失败: {err_text[:300]}',
+                        evidence={'error': err_text[:300]},
+                        recovered=False,
+                    ))
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'failed',
-                                'error':str(e),'screenshot':su,'aiReasoning':reasonings})
+                                'action':last_action,'error':str(e),'screenshot':su,
+                                'aiReasoning':reasonings,'anomalies': list(step_anomalies),
+                                **failed_extra})
                 step_idx += 1
 
     finally:
@@ -1328,7 +1601,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     total = len(results); passed = sum(1 for r in results if r['status']=='passed')
     failed = sum(1 for r in results if r['status']=='failed')
     if replay_pass > 0 or replay_fail > 0:
-        logger.info(f'[Runner] 回放统计: {replay_pass}步回放通过, {replay_fail}步降级VLM, 节省{replay_pass}次API调用')
+        logger.info(f'[Runner] 回放统计: {replay_pass}步直放, {replay_fail}步纠错')
     logger.info(f'[Runner] 执行完成: {passed}/{total} 通过')
     result = {'totalSteps':total,'passedSteps':passed,'failedSteps':failed,'steps':results,
               'status':'stopped' if stopped else ('passed' if failed==0 else 'failed')}

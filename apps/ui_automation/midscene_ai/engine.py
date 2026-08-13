@@ -68,7 +68,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
     返回 {'status','totalSteps','passedSteps','failedSteps','steps'}，
     steps 每动作一条，含可选字段 query_data/assert_passed/complete_message。
     """
-    from ..midscene_runner import call_vlm, png_size, ExecutionStopped  # 延迟导入避免循环依赖
+    from ..midscene_runner import call_vlm, png_size, ExecutionStopped, _build_anomaly  # 延迟导入避免循环依赖
 
     width = int(device_ctx.get('width', 1080))
     height = int(device_ctx.get('height', 1920))
@@ -89,6 +89,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
 
     history = ConversationHistory(feedback_truncate=feedback_truncate)
     steps = []
+    pending_anomalies = []  # 纠错点采集的异常，随下一条步骤结果落库
     actions_done = 0
     replan_count = 0          # 连续未成功推进的重规划次数，成功动作后重置
     loop_errors = 0           # 整轮执行累计错误（对齐 Midscene）
@@ -135,7 +136,9 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
             'screenshot': url,
             'aiReasoning': list(reasoning),
             'action': action_type,
+            'anomalies': list(pending_anomalies),
         }
+        pending_anomalies.clear()
         if error:
             entry['error'] = error
         if extra:
@@ -153,6 +156,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                     'screenshot': url,
                     'aiReasoning': list(reasoning),
                     'action': action_type,
+                    'anomalies': entry.get('anomalies', []),
                     'error': error,
                     'progress': int(len(steps) / max(1, total) * 100),
                 })
@@ -176,6 +180,13 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
         nonlocal loop_errors, replan_count
         loop_errors += 1
         replan_count += 1
+        pending_anomalies.append(_build_anomaly(
+            'replan',
+            f'第{replan_count}次重规划: {err_msg}',
+            evidence={'replan_count': replan_count, 'loop_errors': loop_errors,
+                      'error': str(err_msg)[:300]},
+            recovered=True,
+        ))
         history.set_feedback(f'错误: {err_msg}')
         logger.warning(f'[Engine] 第{replan_count}次重规划: {err_msg}')
         if replan_count > replanning_cycle_limit:
@@ -196,7 +207,18 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                   action_hint=last_executed_action)
             break
 
-        png = _screenshot(device_ctx)
+        try:
+            png = _screenshot(device_ctx)
+        except Exception as e:
+            pending_anomalies.append(_build_anomaly(
+                'screenshot_error',
+                f'截图失败: {e}',
+                evidence={'error': str(e)[:300]},
+                recovered=False,
+            ))
+            _record_step(None, 'failed', goal, [f'[失败] 截图失败: {e}'], 'failed',
+                         error=f'截图失败: {e}')
+            break
         # 以当次截图实际尺寸为准（横竖屏切换/缩放差异都跟随真实像素）
         w, h = png_size(png) or (width, height)
 
@@ -277,7 +299,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
 
         # ---- 两阶段定位 ----
         try:
-            ok, norm_action, locate_err = resolve_action_coords(
+            ok, norm_action, locate_err, locate_info = resolve_action_coords(
                 norm_action, png, model_config, w, h, ctx_text,
                 use_locate=use_locate,
                 call_vlm_fn=_call_vlm,
@@ -287,15 +309,50 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
             stopped = True
             break
         if not ok:
+            loc = (locate_info or {}).get('locate') or {}
+            if loc:
+                pending_anomalies.append(_build_anomaly(
+                    'locate_retry',
+                    f'定位目标失败: {locate_err}',
+                    evidence=loc,
+                    recovered=False,
+                ))
             if not _plan_error(locate_err, raw, png):
                 break
             continue
+        loc = (locate_info or {}).get('locate') or {}
+        if loc.get('retries') or loc.get('fallback'):
+            pending_anomalies.append(_build_anomaly(
+                'locate_retry',
+                '定位重试/降级后完成',
+                evidence=loc,
+                recovered=True,
+            ))
 
         # ---- 执行 + 效果验证 ----
         try:
             after_png, info = execute_with_before(device_ctx, norm_action, png, action_delay)
             page_changed = info.get('page_changed')
             note = info.get('note', '')
+            exec_evidence = info.get('exec_evidence') or []
+            env_errors = [ev for ev in exec_evidence
+                          if ev is not None and not ev.get('ok', True)]
+            if env_errors:
+                atype = 'wda_error' if device_ctx.get('ios_dev') is not None else 'adb_error'
+                pending_anomalies.append(_build_anomaly(
+                    atype,
+                    f"动作执行环境错误: {env_errors[0].get('error') or env_errors[0].get('stderr', '')}",
+                    evidence=env_errors[0],
+                    recovered=True,
+                ))
+            if info.get('retried'):
+                pending_anomalies.append(_build_anomaly(
+                    'tap_retry',
+                    f"tap 页面未变，轮内重试: {note or ''}",
+                    evidence={'action': norm_action.get('action'), 'note': note or '',
+                              'retried': True, 'page_unchanged': page_changed is False},
+                    recovered=bool(page_changed),
+                ))
 
             # 卡死判定：同指纹 + 页面未变（仅交互动作）
             if norm_action['action'] in INTERACTIVE_ACTIONS:
@@ -307,6 +364,13 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 last_fp = fp
                 if stuck_count >= stuck_threshold:
                     err = f'连续{stuck_count + 1}次相同动作({norm_action["action"]})且页面未变化，疑似卡死'
+                    pending_anomalies.append(_build_anomaly(
+                        'stuck_detected',
+                        err,
+                        evidence={'action': norm_action['action'], 'fingerprint': fp,
+                                  'stuck_count': stuck_count, 'page_unchanged': True},
+                        recovered=False,
+                    ))
                     if not _plan_error(err, raw, png):
                         break
                     continue
@@ -331,6 +395,14 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 if no_progress_count >= no_progress_threshold:
                     err = (f'连续{no_progress_threshold}个动作页面均无变化'
                            f'（最近动作: {norm_action["action"]}），疑似加载卡死或元素不可达')
+                    pending_anomalies.append(_build_anomaly(
+                        'stuck_detected',
+                        err,
+                        evidence={'action': norm_action['action'],
+                                  'no_progress_count': no_progress_count,
+                                  'page_unchanged': True},
+                        recovered=False,
+                    ))
                     if not _plan_error(err, raw, after_png):
                         break
                     continue
