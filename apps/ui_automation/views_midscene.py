@@ -947,7 +947,11 @@ class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.Destr
 
     @action(detail=True, methods=['post'])
     def stop(self, request, pk=None):
-        """停止执行"""
+        """停止执行：pending 直接停止；running 置 stopping，由 worker 确认后转 stopped。
+
+        threads 池下 revoke(terminate=True) 无法杀线程，真正停止靠执行链路
+        轮询检查 status；置 stopping 后前端显示「停止中」，等 worker 确认再转 stopped，
+        避免用户误以为设备已经停了。"""
         execution = self.get_object()
         if execution.status not in ('pending', 'running'):
             return Response({'error': '任务不在执行中'}, status=400)
@@ -957,11 +961,17 @@ class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.Destr
             from celery import current_app
             current_app.control.revoke(execution.task_id, terminate=True)
 
-        execution.status = 'stopped'
-        execution.finished_at = timezone.now()
-        execution.save(update_fields=['status', 'finished_at'])
+        if execution.status == 'pending':
+            # 尚未开始：直接停止，无需等 worker 确认
+            execution.status = 'stopped'
+            execution.finished_at = timezone.now()
+            execution.save(update_fields=['status', 'finished_at'])
+            return Response({'status': 'stopped'})
 
-        return Response({'status': 'stopped'})
+        # 执行中：先置 stopping，worker 下一轮检查到后真正收尾
+        execution.status = 'stopping'
+        execution.save(update_fields=['status'])
+        return Response({'status': 'stopping'})
 
     @action(detail=True, methods=['get'], url_path='report')
     def report(self, request, pk=None):

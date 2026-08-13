@@ -71,7 +71,12 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution = MidsceneExecutionRecord.objects.get(id=execution_id)
         midscene_case = execution.midscene_case
 
-        if execution.status == 'stopped':
+        if execution.status in ('stopped', 'stopping'):
+            if execution.status == 'stopping':
+                # 启动前已被请求停止：worker 确认收尾
+                execution.status = 'stopped'
+                execution.finished_at = timezone.now()
+                execution.save(update_fields=['status', 'finished_at'])
             logger.info(f'[Task] 执行记录 {execution_id} 已在启动前被停止，跳过执行')
             return 'stopped'
 
@@ -142,8 +147,11 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
 
         # ---- 保存结果 ----
         execution.refresh_from_db()
-        if result['status'] != 'stopped':
-            # 用户手动停止时保留 stopped 状态，避免被覆盖为 passed/failed
+        if result['status'] == 'stopped':
+            # 用户手动停止：worker 检测到 stopping 后确认收尾为 stopped
+            execution.status = 'stopped'
+        else:
+            # 正常完成；若停止请求与任务收尾竞态，以实际执行结果为准
             execution.status = result['status']
         execution.finished_at = timezone.now()
         if execution.started_at:

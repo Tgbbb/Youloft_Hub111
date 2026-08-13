@@ -2,6 +2,7 @@
 """Midscene 执行接口互斥测试：同一设备同时只能有一个 pending/running 任务。"""
 from unittest import mock
 
+import celery
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -305,3 +306,72 @@ class BatchReplayMatchTests(TestCase):
         resp = self._post([99999])
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(resp.data['results'][0]['error'], '设备不存在')
+
+
+class StopExecutionTests(TestCase):
+    """停止语义：pending 直接 stopped；running 置 stopping，由 worker 确认后转 stopped。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-stop', password='pass')
+        main = Project.objects.create(name='主项目-stop', owner=self.owner)
+        project = MidsceneProject.objects.create(
+            name='Midscene项目-stop', owner=self.owner, main_project=main,
+        )
+        self.case = MidsceneCase.objects.create(
+            project=project, name='停止用例', ai_prompt='点击登录\n打开应用',
+            created_by=self.owner,
+        )
+        self.device = MidsceneDevice.objects.create(
+            platform='android', device_id='dev-stop', name='Pixel Stop',
+            adb_serial='SERS', status='online',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+    def _record(self, status='running', task_id='TASK-STOP'):
+        return MidsceneExecutionRecord.objects.create(
+            midscene_case=self.case, case_name=self.case.name,
+            device=self.device, platform='android', status=status,
+            task_id=task_id, executed_by=self.owner,
+        )
+
+    def _stop(self, exec_id):
+        with mock.patch.object(celery.current_app.control, 'revoke') as rev:
+            resp = self.client.post(f'/api/ui-automation/midscene/executions/{exec_id}/stop/')
+        return resp
+
+    def test_stop_pending_sets_stopped(self):
+        rec = self._record('pending')
+        resp = self._stop(rec.id)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['status'], 'stopped')
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, 'stopped')
+        self.assertIsNotNone(rec.finished_at)
+
+    def test_stop_running_sets_stopping(self):
+        rec = self._record('running')
+        resp = self._stop(rec.id)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['status'], 'stopping')
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, 'stopping')
+        # 未真正停止前不写结束时间，由 worker 确认时再收尾
+        self.assertIsNone(rec.finished_at)
+
+    def test_worker_confirms_stopping_on_start(self):
+        rec = self._record('stopping')
+        from apps.ui_automation.tasks import execute_midscene_task
+        result = execute_midscene_task(rec.id)
+        self.assertEqual(result, 'stopped')
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, 'stopped')
+        self.assertIsNotNone(rec.finished_at)
+
+    def test_stop_twice_rejected(self):
+        rec = self._record('running')
+        self.assertEqual(self._stop(rec.id).status_code, 200)
+        resp = self._stop(rec.id)
+        self.assertEqual(resp.status_code, 400, resp.data)
+        rec.refresh_from_db()
+        self.assertEqual(rec.status, 'stopping')

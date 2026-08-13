@@ -705,7 +705,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             execution_record.refresh_from_db()
         except Exception:
             return False
-        return execution_record.status == 'stopped'
+        return execution_record.status in ('stopped', 'stopping')
 
     platform = device.platform
     mc = execution_record.midscene_case
@@ -1053,7 +1053,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 for turn in range(max_turns):
                     # 检查是否被用户停止
                     execution_record.refresh_from_db()
-                    if execution_record.status == 'stopped':
+                    if execution_record.status in ('stopped', 'stopping'):
                         stopped = True
                         results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',
                                         'screenshot': '', 'aiReasoning': reasonings, 'action': 'stopped'})
@@ -1303,7 +1303,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 step_idx += 1
 
             except Exception as e:
-                if isinstance(e, ExecutionStopped) or execution_record.status == 'stopped':
+                if isinstance(e, ExecutionStopped) or execution_record.status in ('stopped', 'stopping'):
                     stopped = True
                     logger.info('[Runner] 用户已停止，中断执行')
                     results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'stopped',

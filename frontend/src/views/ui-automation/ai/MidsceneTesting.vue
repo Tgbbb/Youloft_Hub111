@@ -636,7 +636,7 @@ const actionDesc = (a) => {
   return t
 }
 const statusTagType = computed(() => {
-  const m = { pending: 'info', running: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
+  const m = { pending: 'info', running: 'warning', stopping: 'warning', passed: 'success', failed: 'danger', error: 'danger', stopped: 'info' }
   return m[activeExec.value?.status] || 'info'
 })
 const draftId = '__draft__'
@@ -800,8 +800,9 @@ const stopExecution = async (exec) => {
   if (targets.length === 0) return
   try {
     await Promise.all(targets.map(e => api.post(`/ui-automation/midscene/executions/${e.id}/stop/`)))
-    targets.forEach(e => { e.status = 'stopped'; e.status_display = '已停止' })
-    ElMessage.info(targets.length > 1 ? `已停止 ${targets.length} 台设备` : '已停止')
+    // 真正停止由 worker 确认：先置 stopping，轮询到 stopped 后才算结束
+    targets.forEach(e => { e.status = 'stopping'; e.status_display = '停止中' })
+    ElMessage.info(targets.length > 1 ? `正在停止 ${targets.length} 台设备` : '正在停止')
   } catch (e) {}
 }
 const stopAllExecutions = () => stopExecution()
@@ -810,7 +811,7 @@ const startPolling = () => {
   pollCaseId = currentCaseId.value
   const poll = async () => {
     if (pollCaseId !== currentCaseId.value) { stopPolling(); return }
-    const active = executions.value.filter(e => ['pending', 'running'].includes(e.status))
+    const active = executions.value.filter(e => ['pending', 'running', 'stopping'].includes(e.status))
     if (active.length === 0) { stopPolling(); refreshAfterExecution(); return }
     const results = await Promise.allSettled(active.map(e => api.get(`/ui-automation/midscene/executions/${e.id}/`)))
     if (pollCaseId !== currentCaseId.value) { stopPolling(); return }
@@ -828,7 +829,7 @@ const startPolling = () => {
         }
       }
     })
-    if (!executions.value.some(e => ['pending', 'running'].includes(e.status))) {
+    if (!executions.value.some(e => ['pending', 'running', 'stopping'].includes(e.status))) {
       stopPolling()
       refreshAfterExecution()
     }
@@ -1282,6 +1283,7 @@ onUnmounted(() => stopPolling())
 .ms-status-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   &.dot-pending, &.dot-running { background: var(--ms-signal); animation: ms-pulse 1.2s ease-in-out infinite; }
+  &.dot-stopping { background: #e6a23c; animation: ms-pulse 1.2s ease-in-out infinite; }
   &.dot-passed { background: var(--ms-state); }
   &.dot-failed, &.dot-error { background: #f56c6c; }
   &.dot-stopped { background: #999; }
