@@ -121,7 +121,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
         kwargs['stop_checker'] = _is_stopped
         return call_vlm(*args, **kwargs)
 
-    def _record_step(png, status, instruction, reasoning, action_type='', extra=None, error=''):
+    def _record_step(png, status, instruction, reasoning, action_type='', extra=None, error='', after_png=None):
         url = ''
         if png is not None and execution_record is not None and getattr(execution_record, 'id', None):
             try:
@@ -129,6 +129,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 url = save_screenshot(png, execution_record.id, len(steps) + 1)
             except Exception as e:
                 logger.warning(f'[Engine] 保存截图失败: {e}')
+        anomalies = list(pending_anomalies)
         entry = {
             'step': len(steps) + 1,
             'instruction': instruction,
@@ -136,8 +137,16 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
             'screenshot': url,
             'aiReasoning': list(reasoning),
             'action': action_type,
-            'anomalies': list(pending_anomalies),
+            'anomalies': anomalies,
         }
+        if after_png is not None and anomalies and \
+                execution_record is not None and getattr(execution_record, 'id', None):
+            try:
+                from ..midscene_runner import save_screenshot
+                entry['after_screenshot'] = save_screenshot(
+                    after_png, execution_record.id, len(steps) + 1, '_after')
+            except Exception as e:
+                logger.warning(f'[Engine] 保存执行后截图失败: {e}')
         pending_anomalies.clear()
         if error:
             entry['error'] = error
@@ -157,6 +166,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                     'aiReasoning': list(reasoning),
                     'action': action_type,
                     'anomalies': entry.get('anomalies', []),
+                    'after_screenshot': entry.get('after_screenshot', ''),
                     'error': error,
                     'progress': int(len(steps) / max(1, total) * 100),
                 })
@@ -428,9 +438,9 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 extra['assert_passed'] = True
             elif norm_action['action'] == 'query':
                 extra['query_data'] = norm_action.get('data', norm_action.get('description', ''))
-            _record_step(after_png, 'passed', instruction,
+            _record_step(png, 'passed', instruction,
                          reasoning + [f'[执行] {feedback[:200]}'],
-                         norm_action['action'], extra=extra)
+                         norm_action['action'], extra=extra, after_png=after_png)
         except Exception as e:
             logger.error(f'[Engine] 动作执行异常: {e}')
             if not _plan_error(f'动作执行失败: {e}', raw, png):

@@ -265,7 +265,18 @@ def _render_step(step):
             )
         parts.append('  </div>')
     if screenshot:
-        parts.append(f'  <div class="msr-step__shot"><img src="{screenshot}" alt="step {num} screenshot" /></div>')
+        after_screenshot = _png_data_url(step.get('after_screenshot', ''))
+        if after_screenshot:
+            parts.append(
+                '  <div class="msr-step__shots">'
+                f'<div class="msr-shot"><div class="msr-shot__label">执行前</div>'
+                f'<img src="{screenshot}" alt="step {num} screenshot" /></div>'
+                f'<div class="msr-shot"><div class="msr-shot__label">执行后</div>'
+                f'<img src="{after_screenshot}" alt="step {num} after screenshot" /></div>'
+                '</div>'
+            )
+        else:
+            parts.append(f'  <div class="msr-step__shot"><img src="{screenshot}" alt="step {num} screenshot" /></div>')
     parts.append('</div>')
     return '\n'.join(parts)
 
@@ -446,6 +457,10 @@ body {{ font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-seri
 .msr-line {{ font-size: 13px; color: #555; line-height: 1.6; padding: 2px 0; }}
 .msr-step__shot {{ margin-top: 10px; }}
 .msr-step__shot img {{ max-width: 360px; width: 100%; border: 1px solid #e5e5e1; }}
+.msr-step__shots {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }}
+.msr-shot {{ flex: 0 0 auto; }}
+.msr-shot__label {{ font-size: 11px; color: #999; margin-bottom: 4px; }}
+.msr-shot img {{ max-width: 340px; width: 100%; border: 1px solid #e5e5e1; }}
 .msr-empty {{ background: #fff; border: 1px solid #e5e5e1; padding: 32px; text-align: center; color: #999; }}
 @media (max-width: 640px) {{ .msr-summary {{ grid-template-columns: 1fr; }} }}
 </style>

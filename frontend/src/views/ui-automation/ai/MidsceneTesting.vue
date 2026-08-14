@@ -273,8 +273,17 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showPreview" title="步骤截图" width="420px">
-      <img :src="previewImage" style="width:100%" v-if="previewImage" />
+    <el-dialog v-model="showPreview" title="步骤截图" width="460px">
+      <div v-if="previewImage || previewAfterImage" class="ms-preview-shots">
+        <div v-if="previewImage" class="ms-preview-shot">
+          <div class="ms-preview-shot__label">执行前</div>
+          <img :src="previewImage" style="width:100%" />
+        </div>
+        <div v-if="previewAfterImage" class="ms-preview-shot">
+          <div class="ms-preview-shot__label">执行后</div>
+          <img :src="previewAfterImage" style="width:100%" />
+        </div>
+      </div>
       <div v-if="previewStepData?.anomalies?.length" class="ms-preview-anoms">
         <div class="ms-preview-anoms__title">异常事件 {{ previewStepData.anomalies.length }} 次</div>
         <div v-for="(a, i) in previewStepData.anomalies" :key="i" class="ms-preview-anom">
@@ -537,6 +546,7 @@ const activeExecIndex = ref('0')
 const activeExec = computed(() => executions.value[Number(activeExecIndex.value)] || null)
 const showPreview = ref(false)
 const previewImage = ref('')
+const previewAfterImage = ref('')
 const previewStepData = ref(null)
 let pollTimer = null
 let pollCaseId = null
@@ -863,7 +873,9 @@ const refreshAfterExecution = async () => { if (recordMode.value) selectedReplay
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } pollCaseId = null }
 const previewStep = (s) => {
   previewStepData.value = s || null
-  if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true }
+  previewImage.value = s?.screenshot || ''
+  previewAfterImage.value = s?.after_screenshot || ''
+  if (s?.screenshot || s?.after_screenshot) showPreview.value = true
 }
 const stepAnomalyCount = (s) => ((s && s.anomalies) || []).length
 const severityLabel = (sev) => ({ minor: '轻微抖动', recovered: '纠错救回', critical: '疑似根因' })[sev || 'minor'] || sev || '未知'
@@ -1373,6 +1385,13 @@ onUnmounted(() => stopPolling())
 .ms-preview-anoms {
   margin-top: 14px; border-top: 1px solid #eee; padding-top: 12px;
   &__title { font-size: 13px; font-weight: 700; color: #b26a00; margin-bottom: 10px; }
+}
+.ms-preview-shots {
+  display: flex; gap: 12px; flex-wrap: wrap;
+}
+.ms-preview-shot {
+  flex: 1 1 180px; min-width: 160px;
+  &__label { font-size: 11px; color: #909399; margin-bottom: 4px; }
 }
 .ms-preview-anom {
   background: #fffdf5; border: 1px solid #fde68a; border-radius: 6px;

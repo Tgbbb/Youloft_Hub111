@@ -127,6 +127,20 @@ class AdbEvidenceTests(SimpleTestCase):
         self.assertTrue(ev['fallback_used'])
 
 
+class SaveScreenshotTests(SimpleTestCase):
+    """save_screenshot 后缀命名：主图 step_N.png / 执行后图 step_N_after.png。"""
+
+    def test_suffix_naming(self):
+        import tempfile
+        from django.conf import settings
+        with mock.patch.object(settings, 'MEDIA_ROOT', tempfile.mkdtemp()):
+            main_url = midscene_runner.save_screenshot(b'x', 999, 3)
+            after_url = midscene_runner.save_screenshot(b'y', 999, 3, '_after')
+        self.assertTrue(main_url.endswith('/step_3.png'))
+        self.assertTrue(after_url.endswith('/step_3_after.png'))
+        self.assertNotEqual(main_url, after_url)
+
+
 class IOSDeviceEvidenceTests(SimpleTestCase):
     """iOS 动作返回 {ok, status_code, error, latency, fallback_used}。"""
 
@@ -425,6 +439,24 @@ class AnomalyAlertTests(TestCase):
         self.assertIn('疑似根因', html_text)
         self.assertIn('msr-step--warn-critical', html_text)
 
+    def test_report_renders_before_after_screenshots_on_anomaly(self):
+        record = _build_record([
+            {
+                'step': 1, 'instruction': '点击同意', 'status': 'passed',
+                'action': 'tap', 'screenshot': '/media/midscene/1/step_1.png',
+                'after_screenshot': '/media/midscene/1/step_1_after.png',
+                'aiReasoning': [],
+                'anomalies': [midscene_runner._build_anomaly(
+                    'tap_retry', 'tap 未生效，轮内重试', evidence={'attempt': 1})],
+            },
+        ])
+        with mock.patch('apps.ui_automation.midscene_report._png_data_url',
+                        return_value='data:image/png;base64,x'):
+            html_text = to_html(record)
+        self.assertIn('msr-step__shots', html_text)
+        self.assertIn('执行前', html_text)
+        self.assertIn('执行后', html_text)
+
 
 class EngineAnomalyTests(SimpleTestCase):
     """aiAct 引擎 replan / locate_retry 埋点随步骤结果透传。"""
@@ -486,3 +518,57 @@ class EngineAnomalyTests(SimpleTestCase):
         loc = next(a for a in tap_step['anomalies'] if a['type'] == 'locate_retry')
         self.assertTrue(loc['recovered'])
         self.assertEqual(loc['evidence']['retries'], 1)
+
+    def test_anomaly_step_gets_after_screenshot(self):
+        """异常步骤补执行后图：主图存决策前 png，after_screenshot 存执行后图。"""
+        record = mock.Mock()
+        record.id = 99
+        record.status = 'running'
+        record.refresh_from_db = mock.Mock()
+        responses = iter([
+            '<planning>定位目标</planning><action-type>tap</action-type>'
+            '<action-param-json>{"locate":"返回按钮"}</action-param-json>',
+            '{"x":999}',
+            '{"x_pct":50,"y_pct":50,"reasoning":"ok"}',
+            '<complete success="true">完成</complete>',
+        ])
+        with mock.patch.object(
+                midscene_runner, 'call_vlm',
+                side_effect=lambda *args, **kwargs: next(responses)), \
+             mock.patch.object(
+                midscene_runner, 'save_screenshot',
+                side_effect=lambda png, eid, step, suffix='':
+                    f'/media/{eid}/step_{step}{suffix}.png'):
+            result = run_ai_act('测试任务', self._ctx(), model_config=mock.Mock(),
+                                max_steps=5, execution_record=record)
+        tap_step = next(s for s in result['steps'] if s.get('action') == 'tap')
+        self.assertTrue(tap_step['anomalies'])
+        self.assertEqual(tap_step['after_screenshot'], '/media/99/step_1_after.png')
+
+    def test_clean_step_has_no_after_screenshot(self):
+        """无异常步骤不补执行后图。"""
+        record = mock.Mock()
+        record.id = 99
+        record.status = 'running'
+        record.refresh_from_db = mock.Mock()
+        responses = iter([
+            '<planning>点击按钮</planning><action-type>tap</action-type>'
+            '<action-param-json>{"locate":"按钮"}</action-param-json>',
+            '{"x_pct":50,"y_pct":50,"reasoning":"ok"}',
+            '<complete success="true">完成</complete>',
+        ])
+        with mock.patch.object(
+                midscene_runner, 'call_vlm',
+                side_effect=lambda *args, **kwargs: next(responses)), \
+             mock.patch.object(
+                midscene_runner, 'adb_screenshot',
+                side_effect=[_make_png(1), _make_png(2), _make_png(3)]), \
+             mock.patch.object(
+                midscene_runner, 'save_screenshot',
+                side_effect=lambda png, eid, step, suffix='':
+                    f'/media/{eid}/step_{step}{suffix}.png'):
+            result = run_ai_act('测试任务', self._ctx(), model_config=mock.Mock(),
+                                max_steps=5, execution_record=record)
+        tap_step = next(s for s in result['steps'] if s.get('action') == 'tap')
+        self.assertEqual(tap_step['anomalies'], [])
+        self.assertNotIn('after_screenshot', tap_step)

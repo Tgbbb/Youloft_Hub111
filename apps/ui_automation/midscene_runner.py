@@ -813,12 +813,12 @@ def _push_step_memory(step_memory, step_num, instruction, action_type='', data='
     step_memory.append(entry)
 
 
-def save_screenshot(png_bytes, execution_id, step_num):
+def save_screenshot(png_bytes, execution_id, step_num, suffix=''):
     d = os.path.join(settings.MEDIA_ROOT, 'midscene', str(execution_id))
     os.makedirs(d, exist_ok=True)
-    p = os.path.join(d, f'step_{step_num}.png')
+    p = os.path.join(d, f'step_{step_num}{suffix}.png')
     with open(p, 'wb') as f: f.write(png_bytes)
-    return f'{settings.MEDIA_URL}midscene/{execution_id}/step_{step_num}.png'
+    return f'{settings.MEDIA_URL}midscene/{execution_id}/step_{step_num}{suffix}.png'
 
 def delete_execution_media(execution_id):
     """删除执行记录对应的截图目录（media/midscene/{execution_id}/），防止磁盘无限增长"""
@@ -1175,11 +1175,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         recovered=True,
                                     ))
                                 replay_pass += 1
-                                screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                                after_url = save_screenshot(png_after, execution_record.id, step_idx+1, '_after') if step_anomalies else ''
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                 'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
                                                 'action': r_actions[-1].get('action', 'tap'),
-                                                'anomalies': list(step_anomalies)})
+                                                'anomalies': list(step_anomalies),
+                                                'after_screenshot': after_url})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -1194,6 +1196,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'aiReasoning': ['[回放] 脚本播放(条件同路径)'],
                                         'action': r_actions[-1].get('action', 'tap'),
                                         'anomalies': list(step_anomalies),
+                                        'after_screenshot': after_url,
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(同路径)')
@@ -1226,12 +1229,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         recovered=True,
                                     ))
                                 replay_pass += 1
-                                screenshot_url = save_screenshot(png_after, execution_record.id, step_idx+1)
+                                screenshot_url = save_screenshot(png_conf, execution_record.id, step_idx+1)
+                                after_url = save_screenshot(png_after, execution_record.id, step_idx+1, '_after') if step_anomalies else ''
                                 results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                                 'screenshot': screenshot_url,
                                                 'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
                                                 'action': r_actions[-1].get('action', 'tap'),
-                                                'anomalies': list(step_anomalies)})
+                                                'anomalies': list(step_anomalies),
+                                                'after_screenshot': after_url})
                                 if record_mode:
                                     while len(recording) <= step_idx: recording.append(None)
                                     recording[step_idx] = dict(r_step)
@@ -1246,6 +1251,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'aiReasoning': [f'[回放] 条件满足-元素确认: {reasoning[:80]}'],
                                         'action': r_actions[-1].get('action', 'tap'),
                                         'anomalies': list(step_anomalies),
+                                        'after_screenshot': after_url,
                                         'progress': int(step_idx / len(steps) * 100)
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(元素确认-条件满足)')
@@ -1320,6 +1326,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             ))
                     else:
                         # 普通步骤：播放动作序列（障碍动作按前置指纹门控，目标动作必播）
+                        before_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         r_stats = _replay_actions(device_id, ios_dev, r_actions, width, height,
                                                   anomalies=step_anomalies)
                         if r_stats['skipped']:
@@ -1339,12 +1346,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         expected_hash = r_step.get('after_hash', '') if not next_cond else ''
                         if not expected_hash or _is_same_page_by_hash(png, expected_hash):
                             replay_pass += 1
-                            screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                            screenshot_url = save_screenshot(before_png, execution_record.id, step_idx+1)
+                            after_url = save_screenshot(png, execution_record.id, step_idx+1, '_after') if step_anomalies else ''
                             last_action = r_actions[-1].get('action', 'tap') if r_actions else 'assert'
                             results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
                                             'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放'],
                                             'action': last_action,
-                                            'anomalies': list(step_anomalies)})
+                                            'anomalies': list(step_anomalies),
+                                            'after_screenshot': after_url})
                             if record_mode:
                                 while len(recording) <= step_idx: recording.append(None)
                                 recording[step_idx] = dict(r_step)
@@ -1356,6 +1365,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     'instruction': instruction, 'status': 'passed',
                                     'screenshot': screenshot_url, 'aiReasoning': ['[回放] 脚本播放'],
                                     'action': last_action, 'anomalies': list(step_anomalies),
+                                    'after_screenshot': after_url,
                                     'progress': int(step_idx / len(steps) * 100)
                                 })
                             logger.info(f'[Runner] 回放步骤 {step_idx} 通过')
@@ -1390,6 +1400,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             last_png = None  # 录制用: 最后截图的原始字节
             step_before_png = None  # 录制用: 本步骤第一轮发送给VLM的截图（动作执行前的页面状态）
             last_action = ''
+            step_after_png = None  # 异常展示用: 本步骤动作执行后的截图（tap 复用已有轮询图，避免重截）
+            step_after_url = ''    # 异常展示用: 执行后截图的媒体 URL
             last_exec_time = None  # 录制用: 上一动作执行完成时刻（实测 wait_after 起点）
             last_rec_idx = None    # 录制用: 上一动作在 step_actions 中的索引
             # 重复动作检测（每步独立）
@@ -1580,6 +1592,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if t in ('tap', 'click'):
                         _smart_wait(device_id, ios_dev, png, max_wait=2.0, check_interval=0.8)
                         after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                        step_after_png = after_png
                         if _is_same_page(png, after_png):
                             # 轮内重试: 页面没变就原地再点一次
                             logger.info(f'[Runner] 步骤 {step_idx+1} tap未生效，轮内重试')
@@ -1595,6 +1608,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             _smart_wait(device_id, ios_dev, png, max_wait=2.0, check_interval=0.5)
                             # 重试后再校验，仍没生效则强制 in_progress 让 VLM 继续
                             after2 = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                            step_after_png = after2
                             if _is_same_page(png, after2):
                                 logger.info(f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，继续等待VLM判断')
                                 tap_anom['recovered'] = False
@@ -1633,7 +1647,20 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             logger.info(f'[Runner] 重复步骤 {step_idx+1} 页面有变化，继续下一次')
                             action['step_status'] = 'in_progress'
                             continue
-                    screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
+                    screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                    # 异常步骤补执行后图：tap 复用已有轮询图，其他交互动作才补截
+                    after_url = ''
+                    if step_anomalies:
+                        if step_after_png is not None:
+                            after_url = save_screenshot(step_after_png, execution_record.id, step_idx+1, '_after')
+                        elif last_action in ('tap', 'click', 'swipe', 'input', 'back', 'long_press'):
+                            try:
+                                after_png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                                after_url = save_screenshot(after_png, execution_record.id, step_idx+1, '_after')
+                            except Exception:
+                                after_url = ''
+                    step_after_url = after_url
+                    break
                 else:
                     raise RuntimeError(f'达到最大轮次({max_turns})')
 
@@ -1645,7 +1672,8 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     passed_extra['assert_passed'] = True
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
                                 'screenshot':screenshot_url,'aiReasoning':reasonings,'action':last_action,
-                                'anomalies': list(step_anomalies), **passed_extra})
+                                'anomalies': list(step_anomalies), 'after_screenshot': step_after_url,
+                                **passed_extra})
                 mem_data = str(action.get('data', '')) if (last_action == 'query' and action) else ''
                 _push_step_memory(step_memory, step_idx + 1, instruction, last_action, mem_data)
 
@@ -1654,6 +1682,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                                          'instruction':instruction,'status':'passed',
                                                          'screenshot':screenshot_url,'aiReasoning':reasonings,
                                                          'action':last_action,'anomalies': list(step_anomalies),
+                                                         'after_screenshot': step_after_url,
                                                          **passed_extra,
                                                          'progress':int((step_idx+1)/len(steps)*100)})
                 logger.info(f'[Runner] 步骤 {step_idx+1} 通过: {reasonings[-1] if reasonings else ""}')
