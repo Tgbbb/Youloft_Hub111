@@ -11,6 +11,7 @@ import logging
 import os
 
 from django.conf import settings
+from .midscene_runner import evaluate_anomaly_alert
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,17 @@ LAYER_LABEL = {
 }
 
 RECOVERED_LABEL = {True: '已恢复', False: '未恢复'}
+SEVERITY_LABEL = {
+    'minor': '轻微抖动',
+    'recovered': '纠错救回',
+    'critical': '疑似根因',
+}
+SEVERITY_COLOR = {
+    'minor': '#d97706',
+    'recovered': '#ea580c',
+    'critical': '#dc2626',
+}
+ALERT_LABEL = {'ok': '无异常告警', 'warn': '存在疑似问题', 'critical': '存在严重问题'}
 
 
 def _resolve_media_path(url):
@@ -112,10 +124,11 @@ def _fmt_dt(dt):
 
 
 def _collect_anomaly_stats(steps):
-    """从 steps_detail 汇总异常统计（按 type/layer），同时统计带异常的通过步骤数。"""
+    """从 steps_detail 汇总异常统计（按 type/layer/severity），同时统计带异常的通过步骤数。"""
     total = 0
     by_type = {}
     by_layer = {}
+    by_severity = {}
     warned = 0
     for s in steps:
         anomalies = s.get('anomalies') or []
@@ -127,11 +140,14 @@ def _collect_anomaly_stats(steps):
             by_type[t] = by_type.get(t, 0) + 1
             layer = a.get('layer', 'unknown')
             by_layer[layer] = by_layer.get(layer, 0) + 1
+            severity = a.get('severity', 'minor')
+            by_severity[severity] = by_severity.get(severity, 0) + 1
     return {
         'total': total,
         'warned_steps': warned,
         'by_type': dict(sorted(by_type.items(), key=lambda kv: -kv[1])),
         'by_layer': dict(sorted(by_layer.items(), key=lambda kv: -kv[1])),
+        'by_severity': dict(sorted(by_severity.items(), key=lambda kv: -kv[1])),
     }
 
 
@@ -158,6 +174,7 @@ def build_report_data(record):
     model = record.model_config_snapshot or {}
     anomaly_stats = _collect_anomaly_stats(steps)
     assert_stats = _collect_assert_stats(steps)
+    alert = evaluate_anomaly_alert(steps)
     return {
         'case_name': record.case_name or '未命名用例',
         'status': record.status,
@@ -175,6 +192,7 @@ def build_report_data(record):
         'stats': {'total': total, 'passed': passed, 'failed': failed, 'stopped': stopped},
         'anomaly_stats': anomaly_stats,
         'assert_stats': assert_stats,
+        'alert': alert,
         'pass_rate': pass_rate,
         'steps': steps,
     }
@@ -199,11 +217,20 @@ def _render_step(step):
     status_text = _esc(STATUS_LABEL.get(status, status) + ('（有异常）' if warn else ''))
     color = STATUS_COLOR.get(status, '#6b7280')
     if warn:
-        color = '#d97706'  # 通过但带异常：黄标
+        # 通过但带异常：按最高影响度分级（轻微抖动黄 / 纠错救回橙 / 疑似根因红）
+        top_severity = 'minor'
+        for a in anomalies:
+            sev = a.get('severity', 'minor')
+            if sev == 'critical':
+                top_severity = 'critical'
+                break
+            if sev == 'recovered':
+                top_severity = 'recovered'
+        color = SEVERITY_COLOR.get(top_severity, '#d97706')
     title = _esc(step.get('instruction', ''))
     cls = 'msr-step--fail' if status == 'failed' else ''
     if warn:
-        cls = 'msr-step--warn'
+        cls = 'msr-step--warn msr-step--warn-' + top_severity
 
     parts = [
         f'<div class="msr-step {cls}" id="step-{num}">',
@@ -226,13 +253,14 @@ def _render_step(step):
             type_label = ANOMALY_LABEL.get(a.get('type', ''), a.get('type', '未知'))
             layer = LAYER_LABEL.get(a.get('layer', ''), a.get('layer', '未知'))
             recovered = RECOVERED_LABEL.get(bool(a.get('recovered')), '')
+            severity = SEVERITY_LABEL.get(a.get('severity', 'minor'), a.get('severity', '未知'))
             message = _esc(str(a.get('message', ''))[:200])
             evidence = a.get('evidence') or {}
             evidence_html = _esc(json.dumps(evidence, ensure_ascii=False, indent=2))
             parts.append(
                 f'    <details class="msr-anom">'
                 f'<summary><span class="msr-anom__badge">{_esc(type_label)}</span>'
-                f' {message} <span class="msr-anom__meta">层级:{layer} · {recovered}</span></summary>'
+                f' {message} <span class="msr-anom__meta">层级:{layer} · 影响:{severity} · {recovered}</span></summary>'
                 f'<pre class="msr-anom__ev">{evidence_html}</pre></details>'
             )
         parts.append('  </div>')
@@ -248,6 +276,7 @@ def to_html(record):
     stats = data['stats']
     anomaly_stats = data['anomaly_stats']
     assert_stats = data['assert_stats']
+    alert = data['alert']
 
     steps_html = '\n'.join(_render_step(s) for s in data['steps'])
     if not steps_html:
@@ -293,7 +322,21 @@ def to_html(record):
     if data['error_message']:
         error_html = f'<div class="msr-err">{_esc(data["error_message"])}</div>'
 
-    # 异常统计块：类型 / 层级 / 断言
+    # 告警横幅：有告警时醒目提示
+    alert_html = ''
+    if alert['level'] != 'ok':
+        alert_color = SEVERITY_COLOR.get(alert['level'], '#d97706')
+        reasons = ''.join(
+            f'<div class="msr-alert__reason">{_esc(r)}</div>'
+            for r in alert.get('reasons', [])
+        )
+        alert_html = (
+            f'<div class="msr-alert" style="border-color:{alert_color};color:{alert_color}">'
+            f'<div class="msr-alert__title">{_esc(ALERT_LABEL.get(alert["level"], alert["level"]))}</div>'
+            f'{reasons}</div>'
+        )
+
+    # 异常统计块：类型 / 层级 / 影响度 / 断言
     anom_type_chips = ''.join(
         f'<span class="msr-chip">{_esc(ANOMALY_LABEL.get(t, t))} × {n}</span>'
         for t, n in anomaly_stats['by_type'].items()
@@ -301,6 +344,10 @@ def to_html(record):
     anom_layer_chips = ''.join(
         f'<span class="msr-chip">{_esc(LAYER_LABEL.get(l, l))} × {n}</span>'
         for l, n in anomaly_stats['by_layer'].items()
+    ) or '<span class="msr-chip msr-chip--empty">无</span>'
+    anom_severity_chips = ''.join(
+        f'<span class="msr-chip" style="color:{SEVERITY_COLOR.get(s, "#6b7280")}">{_esc(SEVERITY_LABEL.get(s, s))} × {n}</span>'
+        for s, n in anomaly_stats['by_severity'].items()
     ) or '<span class="msr-chip msr-chip--empty">无</span>'
     if assert_stats['total']:
         assert_block = (
@@ -316,6 +363,7 @@ def to_html(record):
         )
     anomaly_block = f"""
   <div class="msr-section-title">异常与断言</div>
+  {alert_html}
   <div class="msr-anom-block">
     <div class="msr-anom-block__row"><span class="msr-anom-block__k">异常事件</span>
       <span class="msr-anom-block__v">共 {anomaly_stats['total']} 次</span>
@@ -324,6 +372,9 @@ def to_html(record):
     <div class="msr-anom-block__row"><span class="msr-anom-block__k">异常层级</span>
       <span class="msr-anom-block__sub">执行环境 / 应用页面 / 未知</span></div>
     <div class="msr-anom-block__chips">{anom_layer_chips}</div>
+    <div class="msr-anom-block__row"><span class="msr-anom-block__k">影响度</span>
+      <span class="msr-anom-block__sub">轻微抖动 / 纠错救回 / 疑似根因</span></div>
+    <div class="msr-anom-block__chips">{anom_severity_chips}</div>
     {assert_block}
   </div>
 """
@@ -362,6 +413,8 @@ body {{ font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-seri
 .msr-step {{ background: #fff; border: 1px solid #e5e5e1; border-left: 4px solid #16a34a; padding: 16px 20px; margin-bottom: 12px; }}
 .msr-step--fail {{ border-left-color: #dc2626; }}
 .msr-step--warn {{ border-left-color: #d97706; background: #fffdf5; }}
+.msr-step--warn-recovered {{ border-left-color: #ea580c; background: #fff8f3; }}
+.msr-step--warn-critical {{ border-left-color: #dc2626; background: #fef6f5; }}
 .msr-step__head {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
 .msr-step__num {{ font-size: 18px; font-weight: 700; color: #444; }}
 .msr-step__status {{ font-size: 13px; font-weight: 600; }}
@@ -385,6 +438,9 @@ body {{ font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-seri
 .msr-chip--ok {{ color: #16a34a; border-color: #bbf7d0; background: #f0fdf4; }}
 .msr-chip--fail {{ color: #dc2626; border-color: #fecaca; background: #fef2f2; }}
 .msr-chip--empty {{ color: #999; }}
+.msr-alert {{ border: 1px solid; border-left-width: 4px; padding: 12px 16px; margin-bottom: 12px; font-size: 13px; }}
+.msr-alert__title {{ font-weight: 700; margin-bottom: 6px; }}
+.msr-alert__reason {{ line-height: 1.7; }}
 .msr-step__reason {{ margin-top: 10px; }}
 .msr-label {{ font-size: 11px; color: #999; margin-bottom: 4px; }}
 .msr-line {{ font-size: 13px; color: #555; line-height: 1.6; padding: 2px 0; }}

@@ -294,6 +294,138 @@ class AnomalyReportTests(TestCase):
         self.assertEqual(data['assert_stats'], {'total': 1, 'passed': 0, 'failed': 1})
 
 
+class SeverityTests(SimpleTestCase):
+    """severity 影响度分级：环境错误/未恢复 -> critical；纠错救回 -> recovered；单次重试 -> minor。"""
+
+    def test_execution_error_is_critical(self):
+        a = midscene_runner._build_anomaly(
+            'adb_error', 'ADB 失败', evidence={'returncode': 1})
+        self.assertEqual(a['severity'], 'critical')
+
+    def test_unrecovered_is_critical(self):
+        a = midscene_runner._build_anomaly(
+            'tap_retry', '重试后未恢复', evidence={'attempt': 2}, recovered=False)
+        self.assertEqual(a['severity'], 'critical')
+
+    def test_single_tap_retry_is_minor(self):
+        a = midscene_runner._build_anomaly(
+            'tap_retry', '轮内重试', evidence={'attempt': 1}, recovered=True)
+        self.assertEqual(a['severity'], 'minor')
+
+    def test_second_tap_retry_is_recovered(self):
+        a = midscene_runner._build_anomaly(
+            'tap_retry', '第二次重试', evidence={'attempt': 2}, recovered=True)
+        self.assertEqual(a['severity'], 'recovered')
+
+    def test_hash_fallback_is_recovered(self):
+        a = midscene_runner._build_anomaly(
+            'hash_mismatch_fallback', 'pHash 不匹配降至 VLM',
+            evidence={'expected_hash': 'h1', 'current_hash': 'h2'})
+        self.assertEqual(a['severity'], 'recovered')
+
+    def test_explicit_severity_overrides(self):
+        a = midscene_runner._build_anomaly(
+            'action_skipped', '回放跳过', evidence={'action': 'tap'}, severity='minor')
+        self.assertEqual(a['severity'], 'minor')
+
+
+class AnomalyAlertTests(TestCase):
+    """阈值告警评估：环境错误/未恢复 -> critical；同类页面异常多/纠错占比高 -> warn；低于阈值 -> ok。"""
+
+    def _step(self, status='passed', anomalies=None):
+        return {'step': 1, 'instruction': 'x', 'status': status,
+                'action': 'tap', 'screenshot': '', 'aiReasoning': [],
+                'anomalies': anomalies or []}
+
+    def test_no_anomalies_ok(self):
+        result = midscene_runner.evaluate_anomaly_alert([self._step()])
+        self.assertEqual(result['level'], 'ok')
+        self.assertEqual(result['reasons'], [])
+
+    def test_execution_anomaly_critical(self):
+        a = midscene_runner._build_anomaly('adb_error', 'ADB 失败', evidence={'returncode': 1})
+        result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=[a])])
+        self.assertEqual(result['level'], 'critical')
+        self.assertTrue(any('执行环境异常' in r for r in result['reasons']))
+
+    def test_unrecovered_critical(self):
+        a = midscene_runner._build_anomaly(
+            'tap_retry', '未恢复', evidence={'attempt': 2}, recovered=False)
+        result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=[a])])
+        self.assertEqual(result['level'], 'critical')
+
+    def test_same_type_retry_warn(self):
+        anomalies = [
+            midscene_runner._build_anomaly('tap_retry', '第1次', evidence={'attempt': 1}),
+            midscene_runner._build_anomaly('tap_retry', '第2次', evidence={'attempt': 1}),
+            midscene_runner._build_anomaly('tap_retry', '第3次', evidence={'attempt': 1}),
+        ]
+        result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=anomalies)])
+        self.assertEqual(result['level'], 'warn')
+        self.assertTrue(any('点击重试' in r for r in result['reasons']))
+
+    def test_fallback_ratio_warn(self):
+        # 5 步通过中 2 步靠纠错救回 -> 40% >= 30% 阈值
+        ok_step = self._step(anomalies=[
+            midscene_runner._build_anomaly('tap_retry', '重试', evidence={'attempt': 2})])
+        steps = [ok_step] * 2 + [self._step()] * 3
+        result = midscene_runner.evaluate_anomaly_alert(steps)
+        self.assertEqual(result['level'], 'warn')
+        self.assertTrue(any('纠错救回步骤占比' in r for r in result['reasons']))
+
+    def test_single_minor_anomaly_ok(self):
+        a = midscene_runner._build_anomaly('tap_retry', '重试', evidence={'attempt': 1})
+        result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=[a])])
+        self.assertEqual(result['level'], 'ok')
+
+    def test_env_override_retry_threshold(self):
+        anomalies = [
+            midscene_runner._build_anomaly('tap_retry', '第1次', evidence={'attempt': 1}),
+            midscene_runner._build_anomaly('tap_retry', '第2次', evidence={'attempt': 1}),
+        ]
+        with mock.patch.dict('os.environ', {'ANOMALY_ALERT_RETRY_COUNT': '2'}):
+            result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=anomalies)])
+        self.assertEqual(result['level'], 'warn')
+
+    def test_env_disable_execution_alert(self):
+        a = midscene_runner._build_anomaly('wda_error', 'WDA 失败', evidence={'status_code': 500})
+        with mock.patch.dict('os.environ', {'ANOMALY_ALERT_EXECUTION_ANY': '5'}):
+            result = midscene_runner.evaluate_anomaly_alert([self._step(anomalies=[a])])
+        # execution 1 次 < 阈值 5，但 critical 级默认阈值 1 仍告警
+        self.assertEqual(result['level'], 'critical')
+
+    def test_report_data_includes_alert_and_severity(self):
+        record = _build_record([
+            {
+                'step': 1, 'instruction': '点击同意', 'status': 'passed',
+                'action': 'tap', 'screenshot': '', 'aiReasoning': [],
+                'anomalies': [midscene_runner._build_anomaly(
+                    'tap_retry', 'tap 未生效，轮内重试', evidence={'returncode': 0})],
+            },
+        ])
+        data = build_report_data(record)
+        self.assertEqual(data['anomaly_stats']['by_severity']['minor'], 1)
+        self.assertEqual(data['alert']['level'], 'ok')
+        html_text = to_html(record)
+        self.assertIn('影响度', html_text)
+        self.assertIn('轻微抖动', html_text)
+
+    def test_report_html_alert_block_on_critical(self):
+        record = _build_record([
+            {
+                'step': 1, 'instruction': '点击同意', 'status': 'passed',
+                'action': 'tap', 'screenshot': '', 'aiReasoning': [],
+                'anomalies': [midscene_runner._build_anomaly(
+                    'adb_error', 'ADB tap 失败', evidence={'returncode': 1})],
+            },
+        ])
+        html_text = to_html(record)
+        self.assertIn('msr-alert', html_text)
+        self.assertIn('存在严重问题', html_text)
+        self.assertIn('疑似根因', html_text)
+        self.assertIn('msr-step--warn-critical', html_text)
+
+
 class EngineAnomalyTests(SimpleTestCase):
     """aiAct 引擎 replan / locate_retry 埋点随步骤结果透传。"""
 

@@ -211,7 +211,9 @@
             <span class="ms-stage-live__status">
               <span class="ms-status-dot" :class="'dot-' + activeExec.status"></span>
               {{ activeExec.status_display || activeExec.status }}
-              <span v-if="activeExecAnomalyCount > 0" class="ms-anom-summary">异常 {{ activeExecAnomalyCount }} 次</span>
+              <span v-if="activeExecAnomalyCount > 0" class="ms-anom-summary" :class="{ 'ms-anom-summary--critical': activeExecCriticalCount > 0 }">
+                异常 {{ activeExecAnomalyCount }} 次<template v-if="activeExecCriticalCount > 0">（疑似根因 {{ activeExecCriticalCount }}）</template>
+              </span>
               <el-button v-if="isExecRunning(activeExec)" size="small" @click="stopExecution(activeExec)" :icon="SwitchButton" class="ms-btn--stop ms-btn--stop-inline">停止</el-button>
             </span>
             <div class="ms-progress-bar ms-progress-bar--inline">
@@ -279,6 +281,7 @@
           <div class="ms-preview-anom__head">
             <span class="ms-preview-anom__type">{{ a.label || a.type }}</span>
             <span class="ms-preview-anom__layer">{{ a.layer }}</span>
+            <span class="ms-preview-anom__sev" :class="'ms-preview-anom__sev--' + (a.severity || 'minor')">{{ severityLabel(a.severity) }}</span>
             <span class="ms-preview-anom__rec" :class="a.recovered ? 'ms-preview-anom__rec--ok' : 'ms-preview-anom__rec--bad'">
               {{ a.recovered ? '已恢复' : '未恢复' }}
             </span>
@@ -863,17 +866,30 @@ const previewStep = (s) => {
   if (s.screenshot) { previewImage.value = s.screenshot; showPreview.value = true }
 }
 const stepAnomalyCount = (s) => ((s && s.anomalies) || []).length
+const severityLabel = (sev) => ({ minor: '轻微抖动', recovered: '纠错救回', critical: '疑似根因' })[sev || 'minor'] || sev || '未知'
+const stepTopSeverity = (s) => {
+  let top = 'minor'
+  for (const a of (s && s.anomalies) || []) {
+    if (a.severity === 'critical') return 'critical'
+    if (a.severity === 'recovered') top = 'recovered'
+  }
+  return top
+}
 const stepBadgeClass = (s) => {
-  if (s.status === 'passed' && stepAnomalyCount(s) > 0) return 'badge-warn'
+  if (s.status === 'passed' && stepAnomalyCount(s) > 0) return 'badge-warn badge-warn-' + stepTopSeverity(s)
   return 'badge-' + s.status
 }
 const stepBadgeMark = (s) => {
-  if (s.status === 'passed') return stepAnomalyCount(s) > 0 ? '⚠' : '✓'
+  if (s.status === 'passed') return stepAnomalyCount(s) > 0 ? (stepTopSeverity(s) === 'critical' ? '!!' : '⚠') : '✓'
   if (s.status === 'failed') return '✗'
   return '→'
 }
 const activeExecAnomalyCount = computed(() =>
   (activeExec.value?.steps_detail || []).reduce((n, s) => n + stepAnomalyCount(s), 0)
+)
+const activeExecCriticalCount = computed(() =>
+  (activeExec.value?.steps_detail || []).reduce(
+    (n, s) => n + ((s.anomalies || []).filter(a => a.severity === 'critical').length), 0)
 )
 onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
 onUnmounted(() => stopPolling())
@@ -1320,6 +1336,9 @@ onUnmounted(() => stopPolling())
   margin-left: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600;
   color: #b26a00; background: rgba(230,162,60,.1); border: 1px solid rgba(230,162,60,.35);
   border-radius: 999px;
+  &--critical {
+    color: #c03939; background: rgba(245,108,108,.1); border-color: rgba(245,108,108,.4);
+  }
 }
 
 .ms-status-dot {
@@ -1364,6 +1383,10 @@ onUnmounted(() => stopPolling())
   &__rec { font-size: 11px; padding: 0 8px; border-radius: 999px; }
   &__rec--ok { color: #16a34a; background: #f0fdf4; border: 1px solid #bbf7d0; }
   &__rec--bad { color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; }
+  &__sev { font-size: 11px; padding: 0 8px; border-radius: 999px; }
+  &__sev--minor { color: #b26a00; background: #fffbeb; border: 1px solid #fde68a; }
+  &__sev--recovered { color: #c2410c; background: #fff7ed; border: 1px solid #fed7aa; }
+  &__sev--critical { color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; }
   &__msg { font-size: 12px; color: #555; line-height: 1.5; margin-top: 6px; }
   &__ev { font-size: 11px; color: #666; background: #fafaf8; border: 1px solid #efefe9; padding: 8px; margin-top: 6px; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto; }
 }
@@ -1420,6 +1443,8 @@ onUnmounted(() => stopPolling())
   &:hover { border-color: #999; color: #333; }
   &.badge-passed { background: rgba(0,255,162,.08); border-color: rgba(0,255,162,.25); color: #1a8051; }
   &.badge-warn { background: rgba(230,162,60,.08); border-color: rgba(230,162,60,.3); color: #b26a00; }
+  &.badge-warn-recovered { background: rgba(249,115,22,.08); border-color: rgba(249,115,22,.35); color: #c2410c; }
+  &.badge-warn-critical { background: rgba(245,108,108,.1); border-color: rgba(245,108,108,.4); color: #c03939; }
   &.badge-failed { background: rgba(245,108,108,.06); border-color: rgba(245,108,108,.2); color: #c03939; }
   &.badge-running { border-color: var(--ms-signal); color: #666; animation: ms-pulse 1s infinite; }
   &__mark { font-weight: 700; margin-right: 2px; }

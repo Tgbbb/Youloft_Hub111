@@ -254,21 +254,146 @@ def _infer_anomaly_layer(atype, evidence):
     return ANOMALY_TYPES.get(atype, {}).get('default_layer', 'unknown')
 
 
-def _build_anomaly(atype, message, evidence=None, layer=None, recovered=True):
+SEVERITY_LABEL = {
+    'minor': '轻微抖动',
+    'recovered': '纠错救回',
+    'critical': '疑似根因',
+}
+
+# 页面类纠错类型：环境正常时表示靠纠错救回（recovered 级）
+_SEVERITY_RECOVERED_TYPES = {
+    'hash_mismatch_fallback', 'replan', 'stuck_detected',
+    'stable_wait_timeout', 'locate_retry',
+}
+
+
+def _infer_anomaly_severity(atype, evidence, layer=None, recovered=True):
+    """按证据/层级/恢复状态推断影响度：
+    - critical: 环境硬错误，或最终未恢复（疑似根因）
+    - recovered: 靠纠错救回（重规划/降级/多次重试/等待超时）
+    - minor: 轻微抖动（单次重试即恢复）
+    """
+    if layer == 'execution' or not recovered:
+        return 'critical'
+    if atype == 'tap_retry':
+        try:
+            return 'recovered' if int((evidence or {}).get('attempt', 1)) >= 2 else 'minor'
+        except (TypeError, ValueError):
+            return 'minor'
+    if atype in _SEVERITY_RECOVERED_TYPES:
+        return 'recovered'
+    return 'minor'
+
+
+def _build_anomaly(atype, message, evidence=None, layer=None, recovered=True, severity=None):
     """构建一条结构化异常（可 JSON 序列化）。
 
     layer 未显式指定时按证据推断：环境硬证据 -> execution，
-    页面类间接证据 -> app，无旁证 -> unknown。"""
+    页面类间接证据 -> app，无旁证 -> unknown。
+    severity 未显式指定时按层级/恢复状态/证据推断（minor/recovered/critical）。"""
     evidence = dict(evidence or {})
     meta = ANOMALY_TYPES.get(atype, {})
+    layer = layer or _infer_anomaly_layer(atype, evidence)
     return {
         'type': atype,
         'label': meta.get('label', atype),
-        'layer': layer or _infer_anomaly_layer(atype, evidence),
+        'layer': layer,
+        'severity': severity or _infer_anomaly_severity(atype, evidence, layer, recovered),
         'message': str(message or '')[:500],
         'evidence': evidence,
         'recovered': bool(recovered),
     }
+
+
+# ============================================================
+# 阈值告警配置（常量 + 环境变量覆盖，与 AIACT_* 同风格）
+# 评估入口 evaluate_anomaly_alert(steps)，报告/前端共用。
+# ============================================================
+
+ANOMALY_ALERT_EXECUTION_ANY = 1   # execution 层异常达到该次数即 critical 告警（ANOMALY_ALERT_EXECUTION_ANY）
+ANOMALY_ALERT_CRITICAL_ANY = 1    # critical 级异常达到该次数即 critical 告警（ANOMALY_ALERT_CRITICAL_ANY）
+ANOMALY_ALERT_RETRY_COUNT = 3     # 同一类型页面类异常累计达到该次数即 warn 告警（ANOMALY_ALERT_RETRY_COUNT）
+ANOMALY_ALERT_FALLBACK_RATIO = 0.3  # 带异常通过步骤占比达到该阈值即 warn 告警（ANOMALY_ALERT_FALLBACK_RATIO）
+
+
+def _anomaly_env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _anomaly_env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def evaluate_anomaly_alert(steps):
+    """按阈值评估一次执行的异常告警级别。
+
+    返回 {'level': 'ok'|'warn'|'critical', 'reasons': [...]}：
+    - critical: 环境硬错误或未恢复（疑似根因）达到阈值；
+    - warn:     同类型页面类异常过多，或纠错救回步骤占比过高；
+    - ok:       无异常或低于阈值。
+    """
+    ex_any = _anomaly_env_int('ANOMALY_ALERT_EXECUTION_ANY', ANOMALY_ALERT_EXECUTION_ANY)
+    cr_any = _anomaly_env_int('ANOMALY_ALERT_CRITICAL_ANY', ANOMALY_ALERT_CRITICAL_ANY)
+    retry_n = _anomaly_env_int('ANOMALY_ALERT_RETRY_COUNT', ANOMALY_ALERT_RETRY_COUNT)
+    ratio = _anomaly_env_float('ANOMALY_ALERT_FALLBACK_RATIO', ANOMALY_ALERT_FALLBACK_RATIO)
+
+    all_anomalies = [a for s in steps for a in (s.get('anomalies') or [])]
+    if not all_anomalies:
+        return {'level': 'ok', 'reasons': []}
+
+    reasons = []
+    level = 'ok'
+    passed_steps = [s for s in steps if s.get('status') == 'passed']
+    # 纠错救回步骤：通过但含 recovered/critical 级异常（轻微抖动不计入占比）
+    warned_steps = [
+        s for s in passed_steps
+        if any(a.get('severity') in ('recovered', 'critical')
+               for a in (s.get('anomalies') or []))
+    ]
+
+    # 1. execution 层（环境硬证据）达到阈值 -> critical
+    exec_count = sum(1 for a in all_anomalies if a.get('layer') == 'execution')
+    if exec_count >= ex_any:
+        level = 'critical'
+        reasons.append(f'执行环境异常 {exec_count} 次（ADB/WDA/截图）')
+
+    # 2. critical 严重度（含未恢复）达到阈值 -> critical
+    critical_count = sum(1 for a in all_anomalies if a.get('severity') == 'critical')
+    if critical_count >= cr_any:
+        level = 'critical'
+        reasons.append(f'疑似根因异常 {critical_count} 次（含未恢复/环境错误）')
+
+    # 3. 同一类型页面类异常过多 -> warn
+    page_by_type = {}
+    for a in all_anomalies:
+        if a.get('layer') == 'execution':
+            continue
+        page_by_type[a.get('type', 'unknown')] = page_by_type.get(a.get('type', 'unknown'), 0) + 1
+    top_type = max(page_by_type.items(), key=lambda kv: kv[1]) if page_by_type else ('', 0)
+    if top_type[1] >= retry_n:
+        type_label = ANOMALY_TYPES.get(top_type[0], {}).get('label', top_type[0])
+        if level != 'critical':
+            level = 'warn'
+        reasons.append(f'同一类页面异常重复出现 {top_type[1]} 次（{type_label}）')
+
+    # 4. 带异常通过步骤占比过高 -> warn
+    if passed_steps and ratio > 0:
+        fallback_ratio = len(warned_steps) / len(passed_steps)
+        if fallback_ratio >= ratio:
+            if level != 'critical':
+                level = 'warn'
+            reasons.append(
+                f'纠错救回步骤占比 {fallback_ratio:.0%}（{len(warned_steps)}/{len(passed_steps)}），'
+                f'超过阈值 {ratio:.0%}'
+            )
+
+    return {'level': level, 'reasons': reasons}
 
 
 def _adb_evidence(r, start):
@@ -1463,7 +1588,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 f'步骤 {step_idx+1} {t} 未生效，轮内重试',
                                 evidence={'action': _action_fingerprint_desc(action),
                                           'attempt': 1, 'page_unchanged': True},
-                                recovered=True)
+                                recovered=True, severity='minor')
                             step_anomalies.append(tap_anom)
                             if ios_dev: ios_dev.execute_action(action)
                             else: adb_execute(device_id, action)
@@ -1478,7 +1603,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     f'步骤 {step_idx+1} {t} 重试后页面仍未变化，继续等待VLM判断',
                                     evidence={'action': _action_fingerprint_desc(action),
                                               'attempt': 2, 'page_unchanged': True},
-                                    recovered=False))
+                                    recovered=False, severity='critical'))
                                 action['step_status'] = 'in_progress'
                                 last_tap_feedback = (
                                     f"上次 {t} 坐标 ({action.get('x_pct', action.get('x', '?'))},"
