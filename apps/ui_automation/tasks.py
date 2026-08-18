@@ -18,7 +18,11 @@ def _append_replay_entry(midscene_case, entry, result):
     passed = result.get('passedSteps', 0)
     failed = result.get('failedSteps', 0)
     total = result.get('totalSteps', 0)
-    entry.setdefault('name', f"录制 {timezone.now().strftime('%m-%d %H:%M')}")
+    # 命名带设备名：多设备同时录制时互不混淆（缺失设备名则不加后缀）
+    dev = entry.get('device') or {}
+    device_name = str(dev.get('name', '') or '').strip()
+    name_suffix = f' [{device_name}]' if device_name else ''
+    entry.setdefault('name', f"录制 {timezone.now().strftime('%m-%d %H:%M')}{name_suffix}")
     entry['result'] = f'{passed}/{total} 通过' + (f'，{failed} 失败' if failed else '')
     existing = midscene_case.replay_data
     if isinstance(existing, dict):
@@ -67,7 +71,12 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution = MidsceneExecutionRecord.objects.get(id=execution_id)
         midscene_case = execution.midscene_case
 
-        if execution.status == 'stopped':
+        if execution.status in ('stopped', 'stopping'):
+            if execution.status == 'stopping':
+                # 启动前已被请求停止：worker 确认收尾
+                execution.status = 'stopped'
+                execution.finished_at = timezone.now()
+                execution.save(update_fields=['status', 'finished_at'])
             logger.info(f'[Task] 执行记录 {execution_id} 已在启动前被停止，跳过执行')
             return 'stopped'
 
@@ -114,6 +123,11 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
                     'screenshot': data.get('screenshot', ''),
                     'aiReasoning': data.get('aiReasoning', []),
                     'error': data.get('error', ''),
+                    'action': data.get('action', ''),
+                    'anomalies': data.get('anomalies', []),
+                    'query_data': data.get('query_data', ''),
+                    'assert_passed': data.get('assert_passed'),
+                    'complete_message': data.get('complete_message', ''),
                 })
                 execution.passed_steps = sum(
                     1 for s in execution.steps_detail if s['status'] == 'passed'
@@ -138,8 +152,11 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
 
         # ---- 保存结果 ----
         execution.refresh_from_db()
-        if result['status'] != 'stopped':
-            # 用户手动停止时保留 stopped 状态，避免被覆盖为 passed/failed
+        if result['status'] == 'stopped':
+            # 用户手动停止：worker 检测到 stopping 后确认收尾为 stopped
+            execution.status = 'stopped'
+        else:
+            # 正常完成；若停止请求与任务收尾竞态，以实际执行结果为准
             execution.status = result['status']
         execution.finished_at = timezone.now()
         if execution.started_at:

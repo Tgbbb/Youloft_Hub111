@@ -111,13 +111,50 @@ class IOSDevice:
         if not self.session_id:
             self.connect()
 
+    # ---- 证据归一化 ----
+
+    def _wda_result(self, resp, start, error='', fallback_used=False,
+                    first_status=None, first_error=''):
+        """把 WDA 响应归一化为证据 dict（供 anomaly 分层采集）。
+
+        status_code/error 是最终结果；first_status/first_error 记录
+        新版端点失败后降级旧版路径的原始失败信息（fallback_used=True）。"""
+        status_code = getattr(resp, 'status_code', None) if resp is not None else None
+        return {
+            'ok': status_code == 200 and not error,
+            'status_code': status_code,
+            'error': str(error or '')[:300],
+            'latency': round(time.time() - start, 3),
+            'fallback_used': fallback_used,
+            'first_status': first_status,
+            'first_error': str(first_error or '')[:300],
+        }
+
+    def _post(self, path, json=None, timeout=10):
+        """POST 到 WDA 端点并返回证据 dict。"""
+        self._ensure_session()
+        start = time.time()
+        url = f'{self.base_url}/session/{self.session_id}{path}'
+        try:
+            resp = http.post(url, json=json or {}, timeout=timeout)
+            if resp.status_code == 200:
+                return self._wda_result(resp, start)
+            return self._wda_result(
+                resp, start, error=f'WDA {resp.status_code}: {resp.text[:200]}')
+        except RequestException as e:
+            return self._wda_result(None, start, error=f'WDA 请求失败: {e}')
+
     # ---- 触摸操作 ----
 
     def tap(self, x, y):
-        """点击坐标 — 新版 WDA 6.x+ 用 /wda/tap，降级 /wda/tap/0"""
+        """点击坐标 — 新版 WDA 6.x+ 用 /wda/tap，失败降级 /wda/tap/0。
+        返回证据 dict（含 fallback_used / first_status / first_error）。"""
         self._ensure_session()
         x, y = int(x), int(y)
         logger.info(f'[iOS] tap {x} {y}')
+        start = time.time()
+        first_status = None
+        first_error = ''
         # 新版端点（WDA 6.x+）
         try:
             resp = http.post(
@@ -126,38 +163,45 @@ class IOSDevice:
                 timeout=10
             )
             if resp.status_code == 200:
-                return
-        except Exception:
-            pass
+                return self._wda_result(resp, start)
+            first_status = resp.status_code
+            first_error = f'HTTP {resp.status_code}: {resp.text[:200]}'
+        except Exception as e:
+            first_error = str(e)
         # 降级旧版端点
-        http.post(
-            f'{self.base_url}/session/{self.session_id}/wda/tap/0',
-            json={'x': x, 'y': y},
-            timeout=10
-        )
+        try:
+            resp2 = http.post(
+                f'{self.base_url}/session/{self.session_id}/wda/tap/0',
+                json={'x': x, 'y': y},
+                timeout=10
+            )
+            return self._wda_result(
+                resp2, start,
+                error='' if resp2.status_code == 200 else f'WDA 降级端点 HTTP {resp2.status_code}: {resp2.text[:200]}',
+                fallback_used=True, first_status=first_status, first_error=first_error)
+        except Exception as e:
+            return self._wda_result(
+                None, start, error=f'tap 失败: 新版({first_error}), 降级({e})',
+                fallback_used=True, first_status=first_status, first_error=first_error)
 
     def long_press(self, x, y, duration=2.0):
         """长按坐标（WDA 单位是秒）"""
         self._ensure_session()
         x, y = int(x), int(y)
         logger.info(f'[iOS] long_press {x} {y} {duration}s')
-        http.post(
-            f'{self.base_url}/session/{self.session_id}/wda/touchAndHold',
-            json={'x': x, 'y': y, 'duration': duration},
-            timeout=10
-        )
+        return self._post('/wda/touchAndHold',
+                          json={'x': x, 'y': y, 'duration': duration})
 
     def swipe(self, x1, y1, x2, y2, duration=0.3):
         """滑动"""
         logger.info(f'[iOS] swipe ({x1},{y1}) → ({x2},{y2})')
-        http.post(
-            f'{self.base_url}/session/{self.session_id}/wda/dragfromtoforduration',
+        return self._post(
+            '/wda/dragfromtoforduration',
             json={
                 'fromX': int(x1), 'fromY': int(y1),
                 'toX': int(x2), 'toY': int(y2),
                 'duration': duration,
             },
-            timeout=10
         )
 
     # ---- 文本输入 ----
@@ -165,22 +209,14 @@ class IOSDevice:
     def input_text(self, text):
         """输入文本（先点当前焦点元素，再通过 WDA keys 输入）"""
         logger.info(f'[iOS] input "{text}"')
-        http.post(
-            f'{self.base_url}/session/{self.session_id}/wda/keys',
-            json={'value': [text]},
-            timeout=10
-        )
+        return self._post('/wda/keys', json={'value': [text]})
 
     # ---- 系统操作 ----
 
     def home(self):
         """按 Home 键"""
         logger.info('[iOS] home')
-        http.post(
-            f'{self.base_url}/session/{self.session_id}/wda/pressButton',
-            json={'name': 'home'},
-            timeout=10
-        )
+        return self._post('/wda/pressButton', json={'name': 'home'})
 
     def app_switcher(self):
         """打开多任务"""
@@ -249,24 +285,28 @@ class IOSDevice:
     # ---- 兼容接口（对接 runner） ----
 
     def execute_action(self, action):
-        """执行 VLM 返回的动作（统一入口）"""
+        """执行 VLM 返回的动作（统一入口），返回证据 dict
+        {'ok','status_code','error','latency','fallback_used'}。"""
         t = action.get('action', '')
 
         if t in ('tap', 'click'):
-            self.tap(action['x'], action['y'])
+            return self.tap(action['x'], action['y'])
         elif t == 'long_press':
-            self.long_press(action['x'], action['y'], action.get('duration', 2))
+            return self.long_press(action['x'], action['y'], action.get('duration', 2))
         elif t == 'swipe':
-            self.swipe(action['x1'], action['y1'], action['x2'], action['y2'])
+            return self.swipe(action['x1'], action['y1'], action['x2'], action['y2'])
         elif t == 'input':
-            self.input_text(action['text'])
+            return self.input_text(action['text'])
         elif t == 'back':
             # iOS 没有全局 back 键，用左滑手势模拟
             w, h = self.screen_size
-            self.swipe(20, h // 2, w - 20, h // 2)
+            return self.swipe(20, h // 2, w - 20, h // 2)
         elif t == 'home':
-            self.home()
+            return self.home()
         elif t == 'wait' or t == 'done':
-            pass
+            return {'ok': True, 'status_code': 200, 'error': '',
+                    'latency': 0.0, 'fallback_used': False}
         else:
             logger.warning(f'[iOS] 未知动作: {t}')
+            return {'ok': False, 'status_code': None, 'error': f'未知动作: {t}',
+                    'latency': 0.0, 'fallback_used': False}

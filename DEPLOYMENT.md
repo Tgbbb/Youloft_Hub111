@@ -26,7 +26,7 @@
 | 前端 | Vue 3 + Vite |
 | 数据库 | MySQL 8.0 (端口 3307，独立数据目录 `E:\TestHub\mysql_data`) |
 | 缓存 | Redis 3.0 (端口 6379) |
-| 异步任务 | Celery 5.3 (Redis broker, solo pool) |
+| 异步任务 | Celery 5.3 (Redis broker, threads pool) |
 | OCR | Tesseract (`E:\ocr\tesseract.exe`) + PyMuPDF |
 | APP 自动化 | Airtest 1.4.3 + PyMuPDF |
 
@@ -37,7 +37,7 @@
 # 方式二：手动逐项启动
 source venv/Scripts/activate
 python manage.py runserver 0.0.0.0:8000
-celery -A backend worker --pool=solo --loglevel=info
+celery -A backend worker --pool=threads --concurrency=4 --loglevel=info
 cd frontend && npm run dev
 ```
 

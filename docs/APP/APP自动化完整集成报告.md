@@ -340,7 +340,7 @@ pip install pytest-django>=4.5.0
 pip install loguru>=0.7.0
 
 # 启动 Celery Worker
-celery -A backend worker -l info -P eventlet
+celery -A backend worker -l info --pool=threads --concurrency=4
 
 # 启动 Django 服务
 python manage.py runserver

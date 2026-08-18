@@ -27,22 +27,21 @@ def screenshot(device_ctx):
 
 
 def _execute_raw(device_ctx, action):
-    """执行单个底层动作。"""
+    """执行单个底层动作，返回证据 dict（adb/wda 环境错误分层依据）。"""
     ios_dev = device_ctx.get('ios_dev')
     if ios_dev is not None:
-        ios_dev.execute_action(action)
-        return
+        return ios_dev.execute_action(action)
     from ..midscene_runner import adb_execute
-    adb_execute(device_ctx['device_id'], action)
+    return adb_execute(device_ctx['device_id'], action)
 
 
 def _tap(device_ctx, x, y):
     ios_dev = device_ctx.get('ios_dev')
     if ios_dev is not None:
-        ios_dev.tap(x, y)
+        return ios_dev.tap(x, y)
     else:
         from ..midscene_runner import adb_execute as _adb_execute
-        _adb_execute(device_ctx['device_id'], {'action': 'tap', 'x': x, 'y': y})
+        return _adb_execute(device_ctx['device_id'], {'action': 'tap', 'x': x, 'y': y})
 
 
 def _sleep(action_type, action_delay):
@@ -73,49 +72,56 @@ def execute_with_before(device_ctx, action, before_png, action_delay=0.5):
                 'page_changed': not _is_same_page(before_png, after_png),
                 'note': f'wait {action.get("duration", 3)}s',
                 'retried': False,
+                'exec_evidence': [],
             }
         except Exception:
-            return before_png, {'page_changed': None, 'note': f'wait {action.get("duration", 3)}s', 'retried': False}
+            return before_png, {'page_changed': None, 'note': f'wait {action.get("duration", 3)}s',
+                                'retried': False, 'exec_evidence': []}
 
     if action_type == 'tap':
         return _tap_with_retry(device_ctx, action, before_png, action_delay)
 
     if action_type in ('assert', 'query'):
-        return before_png, {'page_changed': None, 'note': '', 'retried': False}
+        return before_png, {'page_changed': None, 'note': '', 'retried': False,
+                            'exec_evidence': []}
 
     if action_type == 'input':
         # 有坐标（locate 结果）先点击输入框聚焦
+        ev_list = []
         if action.get('x') is not None and action.get('y') is not None:
-            _tap(device_ctx, action['x'], action['y'])
+            ev_list.append(_tap(device_ctx, action['x'], action['y']))
             time.sleep(max(action_delay or 0, 0.3))
-        _execute_raw(device_ctx, action)
+        ev_list.append(_execute_raw(device_ctx, action))
         _sleep('input', action_delay)
         after_png = screenshot(device_ctx)
         return after_png, {
             'page_changed': not _is_same_page(before_png, after_png),
             'note': '',
             'retried': False,
+            'exec_evidence': ev_list,
         }
 
-    _execute_raw(device_ctx, action)
+    ev = _execute_raw(device_ctx, action)
     _sleep(action_type, action_delay)
     after_png = screenshot(device_ctx)
     return after_png, {
         'page_changed': not _is_same_page(before_png, after_png),
         'note': '',
         'retried': False,
+        'exec_evidence': [ev],
     }
 
 
 def _tap_with_retry(device_ctx, action, before_png, action_delay):
-    _tap(device_ctx, action['x'], action['y'])
+    ev1 = _tap(device_ctx, action['x'], action['y'])
     _sleep('tap', action_delay)
     after_png = screenshot(device_ctx)
     if not _is_same_page(before_png, after_png):
-        return after_png, {'page_changed': True, 'note': '', 'retried': False}
+        return after_png, {'page_changed': True, 'note': '', 'retried': False,
+                           'exec_evidence': [ev1]}
     # 页面未变 -> 原地重试一次
     logger.info('[Executor] tap 页面未变，轮内重试')
-    _tap(device_ctx, action['x'], action['y'])
+    ev2 = _tap(device_ctx, action['x'], action['y'])
     _sleep('tap', action_delay)
     after2 = screenshot(device_ctx)
     still_same = _is_same_page(before_png, after2)
@@ -123,4 +129,5 @@ def _tap_with_retry(device_ctx, action, before_png, action_delay):
         'page_changed': not still_same,
         'note': 'tap 重试后页面仍未变化' if still_same else 'tap 重试后生效',
         'retried': True,
+        'exec_evidence': [ev1, ev2],
     }

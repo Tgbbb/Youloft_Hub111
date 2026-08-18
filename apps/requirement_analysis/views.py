@@ -5079,6 +5079,42 @@ class ConfigStatusViewSet(viewsets.ViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _remove_modao_screenshot_dir(screenshot_dir):
+    """删除墨刀截图目录（Windows 文件占用容错版）。
+
+    Windows 下图片文件常被杀毒扫描/搜索索引/正在结束的 HTTP 文件响应短暂占用，
+    直接 rmtree 会整体抛 PermissionError 导致删除请求 500。
+    这里先短暂重试；仍失败则跳过被占用的单个文件继续删，残留目录下次再清。
+    """
+    import shutil
+
+    if not screenshot_dir or not os.path.isdir(screenshot_dir):
+        return
+    for attempt in range(5):
+        try:
+            shutil.rmtree(screenshot_dir)
+            logger.info(f'[Modao] 删除截图文件夹: {screenshot_dir}')
+            return
+        except PermissionError as e:
+            logger.warning(f'[Modao] 截图文件夹被占用(第{attempt + 1}次): {e}')
+            if attempt < 4:
+                time.sleep(1)
+                continue
+
+            # 最后一次尝试：跳过被占用的文件继续删，避免目录整体残留
+            def _skip_locked(func, path, exc_info):
+                logger.warning(f'[Modao] 跳过无法删除的文件: {path}: {exc_info[1]}')
+
+            try:
+                shutil.rmtree(screenshot_dir, onexc=_skip_locked)
+                logger.info(f'[Modao] 截图文件夹已删除(跳过占用文件): {screenshot_dir}')
+            except Exception as e2:
+                logger.warning(f'[Modao] 截图目录删除失败，残留待清理: {screenshot_dir}: {e2}')
+        except Exception as e:
+            logger.warning(f'[Modao] 删除截图文件夹失败: {screenshot_dir}: {e}')
+            return
+
+
 class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixins.ListModelMixin,
                          mixins.UpdateModelMixin, mixins.DestroyModelMixin):
     """墨刀导入记录"""
@@ -5128,7 +5164,7 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
         return Response({'id': m.id, 'message': '已保存'}, status=201)
 
     def destroy(self, request, pk=None):
-        import shutil, re
+        import re
         try:
             m = ModaoImport.objects.get(pk=pk, created_by=request.user)
         except ModaoImport.DoesNotExist:
@@ -5159,9 +5195,7 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
                 logger.warning(f'[Modao] 截图目录被其他记录引用，跳过删除: {folder_id}')
                 continue
             screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', folder_id)
-            if os.path.isdir(screenshot_dir):
-                shutil.rmtree(screenshot_dir)
-                logger.info(f'[Modao] 删除截图文件夹: {screenshot_dir}')
+            _remove_modao_screenshot_dir(screenshot_dir)
 
         m.delete()
         return Response({'message': '已删除'})

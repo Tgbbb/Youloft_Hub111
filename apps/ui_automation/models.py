@@ -1257,6 +1257,7 @@ class MidsceneExecutionRecord(models.Model):
     STATUS_CHOICES = [
         ('pending', '等待中'),
         ('running', '执行中'),
+        ('stopping', '停止中'),
         ('passed', '通过'),
         ('failed', '失败'),
         ('stopped', '已停止'),

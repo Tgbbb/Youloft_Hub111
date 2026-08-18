@@ -10,10 +10,21 @@ from rest_framework.test import APIClient
 
 from apps.projects.models import Project
 from apps.ui_automation import midscene_runner
-from apps.ui_automation.models import MidsceneProject, MidsceneCase
+from apps.ui_automation.models import MidsceneProject, MidsceneCase, MidsceneDevice
 
 
 User = get_user_model()
+
+
+def _make_png(seed=1):
+    """固定种子的随机图（phash 非 0），供截图 mock 使用。"""
+    import random
+    rnd = random.Random(seed)
+    img = Image.new('L', (64, 64))
+    img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
 
 
 class CoordResolveTests(SimpleTestCase):
@@ -68,6 +79,37 @@ class ClampWaitAfterTests(SimpleTestCase):
         self.assertEqual(midscene_runner._clamp_wait_after(None), 0.2)
         self.assertEqual(midscene_runner._clamp_wait_after('abc'), 0.2)
 
+    def test_ceil_enforced(self):
+        # 录制实测值含 VLM 思考时间，入库不得超过上限，避免回放被原样重放
+        self.assertEqual(midscene_runner._clamp_wait_after(60), 5.0)
+        self.assertEqual(midscene_runner._clamp_wait_after(6.7), 5.0)
+        self.assertEqual(midscene_runner._clamp_wait_after(0.05), 0.2)
+
+
+class InstructionSimilarTests(SimpleTestCase):
+    """步骤文案宽松匹配：归一化标点/空白、容忍插入词、防误配。"""
+
+    def test_exact_after_normalize(self):
+        self.assertTrue(midscene_runner._instruction_similar('点击同意并继续', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击 同意 并 继续', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击“同意并继续”', '点击同意并继续'))
+        self.assertTrue(midscene_runner._instruction_similar('点击，同意并继续。', '点击同意并继续'))
+
+    def test_middle_word_drift(self):
+        self.assertTrue(midscene_runner._instruction_similar(
+            '如果展示会员购买页，就点击左上角关闭', '如果展示会员购买页点击左上角关闭'))
+        self.assertTrue(midscene_runner._instruction_similar(
+            '点击同意并继续', '请点击同意并继续'))
+
+    def test_distinct_steps_not_matched(self):
+        # 长度悬殊（“点击同意” vs “点击同意并继续”）不能误配
+        self.assertFalse(midscene_runner._instruction_similar('点击同意', '点击同意并继续'))
+        self.assertFalse(midscene_runner._instruction_similar('点击找回账号', '点击登录'))
+
+    def test_empty_not_matched(self):
+        self.assertFalse(midscene_runner._instruction_similar('', '点击同意并继续'))
+        self.assertFalse(midscene_runner._instruction_similar('点击同意并继续', None))
+
 
 class WaitScreenStableTests(SimpleTestCase):
     """启动首帧稳定等待：连续两帧相同提前返回，持续变化则超时。"""
@@ -118,6 +160,11 @@ class ReplayActionsTests(SimpleTestCase):
         patcher.start()
         self.addCleanup(self.sleep.stop)
         self.addCleanup(patcher.stop)
+        self.shot = mock.patch.object(
+            midscene_runner, 'adb_screenshot', return_value=_make_png(1),
+        )
+        self.shot.start()
+        self.addCleanup(self.shot.stop)
 
     def test_tap_prefers_pct_for_other_resolution(self):
         # 录制于 1080x2160，回放于 720x1600：优先百分比换算，避免像素点偏
@@ -213,7 +260,7 @@ class GatedReplayTests(SimpleTestCase):
             side_effect=lambda *args, **kw: self.calls.append(args),
         )
         self.adb.start()
-        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png-bytes')
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=_make_png(1))
         self.shot.start()
         self.addCleanup(self.sleep.stop)
         self.addCleanup(self.adb.stop)
@@ -309,7 +356,9 @@ class ConditionalNextCondReplayTests(TestCase):
         self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
         self.size.start()
         self.addCleanup(self.size.stop)
-        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot')
+        self.shot = mock.patch.object(
+            midscene_runner, 'adb_screenshot', return_value=_make_png(1),
+        )
         self.shot.start()
         self.addCleanup(self.shot.stop)
         self.save = mock.patch.object(
@@ -370,9 +419,10 @@ class ConditionalNextCondReplayTests(TestCase):
         model.api_key = 'k'
         return mc, execution, device, model
 
-    def _run(self, steps, ai_prompt, hash_match, vlm_side_effect=None, shot_pngs=None):
+    def _run(self, steps, ai_prompt, hash_match, vlm_side_effect=None, shot_pngs=None,
+             progress_callback=None):
         if shot_pngs is None:
-            pngs = [self._img_png(i) for i in (1, 2, 3, 4)]
+            pngs = [self._img_png(1)] * 4
         else:
             pngs = shot_pngs
         state = {'i': 0}
@@ -388,6 +438,7 @@ class ConditionalNextCondReplayTests(TestCase):
             return midscene_runner.run_midscene_test(
                 ai_prompt=ai_prompt, device=device, model_config=model,
                 execution_record=execution, replay_mode=True, replay_index=0,
+                progress_callback=progress_callback,
             )
 
     def test_act_hash_match_plays_and_passes(self):
@@ -529,7 +580,8 @@ class ConditionalNextCondReplayTests(TestCase):
                                '{"present": false, "reasoning": "加载中"}',
                                '{"present": false, "reasoning": "加载中"}',
                                {'action': 'done', 'reasoning': 'x'},
-                           ])
+                           ],
+                           shot_pngs=[self._img_png(21), self._img_png(22)])
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['steps'][0]['status'], 'passed')
         self.adb_mock.assert_not_called()
@@ -548,6 +600,123 @@ class ConditionalNextCondReplayTests(TestCase):
         self.assertTrue(all(s['status'] == 'passed' for s in result['steps']))
         self.adb_mock.assert_any_call('dev', 'shell', 'input', 'tap', '108', '216')
         self.vlm_mock.assert_not_called()
+
+    def test_cond_fast_path_emits_progress_done(self):
+        # 条件步骤快速路径要发 step_start/step_done，否则前端步骤明细在条件步骤处停滞
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
+        }]
+        events = []
+        result = self._run(steps, '如果展示会员购买页，就点击左上角关闭',
+                           lambda _png, expected: expected in ('H_ACT', 'H_AFTER'),
+                           progress_callback=lambda s, t, d: events.append((d.get('type'), s, d.get('status'))))
+        self.assertEqual(result['status'], 'passed')
+        self.assertIn(('step_start', 1, None), events)
+        self.assertIn(('step_done', 1, 'passed'), events)
+
+    def test_cond_skip_path_emits_progress_done(self):
+        # 条件步骤跳过出口同样要发 step_done
+        steps = [{
+            'instruction': '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+            'actions': [],
+            'after_hash': 'H_SKIP',
+        }]
+        events = []
+        result = self._run(steps, '如果展示会员挽留弹窗返回按钮为下次一定，点击下次一定',
+                           lambda _png, expected: expected == 'H_SKIP',
+                           progress_callback=lambda s, t, d: events.append((d.get('type'), s, d.get('status'))))
+        self.assertEqual(result['status'], 'passed')
+        self.assertIn(('step_start', 1, None), events)
+        self.assertIn(('step_done', 1, 'passed'), events)
+
+
+class StopInterruptTests(TestCase):
+    """用户停止：VLM 调用抛 ExecutionStopped 时立即中断，整轮结果标记 stopped。"""
+
+    def setUp(self):
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+        self.adb = mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0))
+        self.adb_mock = self.adb.start()
+        self.addCleanup(self.adb.stop)
+        self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
+        self.size.start()
+        self.addCleanup(self.size.stop)
+        self.shot = mock.patch.object(midscene_runner, 'adb_screenshot', return_value=_make_png(1))
+        self.shot.start()
+        self.addCleanup(self.shot.stop)
+        self.save = mock.patch.object(
+            midscene_runner, 'save_screenshot', return_value='/media/midscene/1/step_1.png',
+        )
+        self.save.start()
+        self.addCleanup(self.save.stop)
+
+    def _context(self, steps=None):
+        mc = mock.Mock()
+        mc.ai_act_context = ''
+        mc.app_package = ''
+        mc.project = mock.Mock(default_app_package='')
+        mc.use_locate = True
+        mc.max_steps = 30
+        mc.action_delay = 0.5
+        mc.replay_data = [{
+            'steps': steps if steps is not None else [{
+                'instruction': '如果展示会员购买页，就点击左上角关闭',
+                'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+                'after_hash': 'H_AFTER',
+                'act_before_hash': 'H_ACT',
+            }],
+        }]
+        execution = mock.Mock()
+        execution.id = 1
+        execution.midscene_case = mc
+        execution.auto_plan = False
+        execution.status = 'running'
+        device = mock.Mock()
+        device.platform = 'android'
+        device.adb_serial = 'dev'
+        device.name = '设备'
+        model = mock.Mock()
+        model.api_key = 'k'
+        return mc, execution, device, model
+
+    def _run(self, steps, vlm_side_effect, replay_mode=True):
+        mc, execution, device, model = self._context(steps)
+        with mock.patch.object(midscene_runner, 'call_vlm', side_effect=vlm_side_effect):
+            return midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员购买页，就点击左上角关闭',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=replay_mode, replay_index=0,
+            )
+
+    def test_condition_confirm_stop_returns_stopped(self):
+        # 条件步骤元素确认期间停止：ExecutionStopped 不被吞掉，直接中断标记 stopped
+        steps = [{
+            'instruction': '如果展示会员购买页，就点击左上角关闭',
+            'actions': [{'action': 'tap', 'x_pct': 10, 'y_pct': 10, 'x': 108, 'y': 216}],
+            'after_hash': 'H_AFTER',
+            'act_before_hash': 'H_ACT',
+        }]
+        with mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            result = self._run(steps, midscene_runner.ExecutionStopped('用户已停止'))
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(all(s['status'] == 'stopped' for s in result['steps']))
+        self.adb_mock.assert_not_called()
+
+    def test_main_vlm_stop_returns_stopped(self):
+        # 普通步骤 VLM 调用期间停止 → 中断并标记 stopped
+        steps = [{
+            'instruction': '点击同意并继续',
+            'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'x': 540, 'y': 1080}],
+            'after_hash': 'H',
+        }]
+        result = self._run(steps, midscene_runner.ExecutionStopped('用户已停止'), replay_mode=False)
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(all(s['status'] == 'stopped' for s in result['steps']))
 
 
 def _make_case(owner):
@@ -602,6 +771,33 @@ class ReplayEntrySaveTests(TestCase):
         self.assertEqual(len(self.case.replay_data), 2)
         self.assertEqual(self.case.replay_data[0]['steps'], ['new'])
 
+    def test_name_includes_device_name(self):
+        # 多设备同时录制：命名带设备名，避免同名条目无法区分
+        from apps.ui_automation import tasks
+        tasks._append_replay_entry(
+            self.case,
+            {'steps': [], 'device': {'name': 'Pixel A', 'platform': 'android'}},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        tasks._append_replay_entry(
+            self.case,
+            {'steps': [], 'device': {'name': 'Pixel B', 'platform': 'android'}},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        self.case.refresh_from_db()
+        names = [e['name'] for e in self.case.replay_data]
+        self.assertTrue(any('[Pixel A]' in n for n in names))
+        self.assertTrue(any('[Pixel B]' in n for n in names))
+
+    def test_name_without_device_name_no_suffix(self):
+        from apps.ui_automation import tasks
+        tasks._append_replay_entry(
+            self.case, {'steps': []},
+            {'passedSteps': 1, 'failedSteps': 0, 'totalSteps': 1},
+        )
+        self.case.refresh_from_db()
+        self.assertNotIn('[', self.case.replay_data[0]['name'])
+
 
 class ReplayRenameApiTests(TestCase):
     """录制条目重命名接口。"""
@@ -639,4 +835,103 @@ class ReplayRenameApiTests(TestCase):
             f'/api/ui-automation/midscene/cases/{self.case.id}/rename_replay/',
             {'index': 5, 'name': '新名称'}, format='json',
         )
+        self.assertEqual(resp.status_code, 400)
+
+
+class ReplayMatchApiTests(TestCase):
+    """回放前设备匹配检查 replay_match：型号=设备名、分辨率一致优先、adb 不可用降级。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-mt', password='pass')
+        self.case = _make_case(self.owner)
+        self.case.replay_data = [
+            {
+                'name': 'A设备录制',
+                'device': {'name': 'Pixel 7', 'platform': 'android',
+                           'resolution': {'width': 1080, 'height': 2160}},
+                'steps': [],
+            },
+            {
+                'name': 'B设备录制',
+                'device': {'name': 'Redmi Note 12', 'platform': 'android',
+                           'resolution': {'width': 720, 'height': 1600}},
+                'steps': [],
+            },
+        ]
+        self.case.save(update_fields=['replay_data'])
+        self.device = MidsceneDevice.objects.create(
+            platform='android', device_id='dev-001', name='Pixel 7',
+            adb_serial='SERIAL01', status='online',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160),
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+
+    def _get(self, index=0, device_id=None):
+        return self.client.get(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/replay_match/',
+            {'device_id': device_id or self.device.id, 'replay_index': index},
+        )
+
+    def _set_size(self, size):
+        self.size_patcher.stop()
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', return_value=size,
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+
+    def test_exact_match(self):
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'exact')
+        self.assertEqual(resp.data['matching'], [])
+        self.assertEqual(resp.data['current_device']['resolution'], '1080x2160')
+
+    def test_same_resolution_diff_model_is_ok(self):
+        self.device.name = 'Pixel 7 Pro'
+        self.device.save(update_fields=['name'])
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'ok')
+
+    def test_resolution_mismatch_with_candidate(self):
+        # 选中 1080x2160 的条目，但当前设备是 720x1600 → 命中 B 条目候选
+        self._set_size((720, 1600))
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'resolution_mismatch')
+        self.assertEqual([m['index'] for m in resp.data['matching']], [1])
+
+    def test_resolution_mismatch_no_candidate(self):
+        self._set_size((1440, 3200))
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'resolution_mismatch')
+        self.assertEqual(resp.data['matching'], [])
+
+    def test_adb_unavailable_unknown(self):
+        self.size_patcher.stop()
+        self.size_patcher = mock.patch.object(
+            midscene_runner, 'adb_get_screen_size', side_effect=RuntimeError('adb down'),
+        )
+        self.size_patcher.start()
+        self.addCleanup(self.size_patcher.stop)
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'unknown')
+
+    def test_platform_mismatch(self):
+        self.case.replay_data[0]['device']['platform'] = 'ios'
+        self.case.save(update_fields=['replay_data'])
+        resp = self._get(0)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['match_level'], 'platform_mismatch')
+
+    def test_invalid_index_rejected(self):
+        resp = self._get(index=99)
         self.assertEqual(resp.status_code, 400)

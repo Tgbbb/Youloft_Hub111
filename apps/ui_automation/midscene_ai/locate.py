@@ -88,17 +88,26 @@ def _locate_once(target_desc, png, model_config, width, height, context, call_vl
 
 
 def locate_element(target_desc, png, model_config, width, height, context='',
-                   call_vlm_fn=None, retries=1):
-    """带重试的 locate：失败自动重试 retries 次，仍失败抛 LocateError。"""
+                   call_vlm_fn=None, retries=1, info=None):
+    """带重试的 locate：失败自动重试 retries 次，仍失败抛 LocateError。
+    info（可选 dict）回写 {'retries': n, 'error': last_error}，供 anomaly 采集。"""
     call_vlm_fn = call_vlm_fn or _default_call_vlm()
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return _locate_once(target_desc, png, model_config, width, height, context, call_vlm_fn)
+            result = _locate_once(target_desc, png, model_config, width, height, context, call_vlm_fn)
+            if info is not None:
+                info.update({'retries': attempt, 'error': ''})
+            return result
         except Exception as e:
+            from ..midscene_runner import ExecutionStopped  # 局部导入避免循环依赖
+            if isinstance(e, ExecutionStopped):
+                raise  # 用户停止：不重试、不降级，直接向上传递
             last_err = e
             if attempt < retries:
                 logger.warning(f'[Locate] 第{attempt + 1}次失败，重试: {e}')
+    if info is not None:
+        info.update({'retries': retries, 'error': str(last_err)[:300]})
     raise LocateError(f'定位目标失败（已重试 {retries} 次）: {target_desc[:100]}，错误: {last_err}')
 
 
@@ -111,25 +120,28 @@ def resolve_action_coords(action, png, model_config, width, height, context='',
                           use_locate=True, call_vlm_fn=None):
     """为交互动作补齐像素坐标。
 
-    返回 (ok, action, error_msg)：
+    返回 (ok, action, error_msg, info)：
       - use_locate 且动作带 locate 描述 -> 逐字段 locate 填充坐标；
       - locate 失败/无描述 -> 若已有直接坐标则使用；
       - 都没有 -> (False, action, error)。
+    info 携带定位过程信息：{'locate': {'retries', 'error', 'fallback'}}。
     """
     call_vlm_fn = call_vlm_fn or _default_call_vlm()
     action = dict(action)
+    info = {}
     if action.get('action') not in INTERACTIVE_ACTIONS:
-        return True, action, ''
+        return True, action, '', info
 
     fields = locate_fields_for(action)
     if use_locate and fields:
         try:
+            locate_info = {}
             for locate_key, coord_pair in fields:
                 desc = str(action.get(locate_key, '')).strip()
                 if not desc:
                     continue
                 loc = locate_element(desc, png, model_config, width, height,
-                                     context, call_vlm_fn=call_vlm_fn)
+                                     context, call_vlm_fn=call_vlm_fn, info=locate_info)
                 x = int(round(loc['x_pct'] / 100.0 * width))
                 y = int(round(loc['y_pct'] / 100.0 * height))
                 action[coord_pair[0]] = max(0, min(width, x))
@@ -138,13 +150,20 @@ def resolve_action_coords(action, png, model_config, width, height, context='',
                 action.get(c) is not None
                 for pair in _coord_pairs_for(action.get('action')) for c in pair
             ):
-                return True, action, ''
+                info['locate'] = locate_info
+                return True, action, '', info
         except LocateError as e:
             logger.warning(f'[Locate] locate 失败，检查是否可降级直接坐标: {e}')
+            info['locate'] = {'retries': locate_info.get('retries', 1),
+                              'error': str(e)[:300], 'fallback': False}
 
     if has_direct_coords(action):
-        return True, action, ''
-    return False, action, '无法确定动作坐标：locate 失败且没有直接坐标，请让规划模型改用 x_pct/y_pct 或更准确的元素描述'
+        loc = info.setdefault('locate', {})
+        loc['fallback'] = True
+        return True, action, '', info
+    loc = info.setdefault('locate', {})
+    loc['fallback'] = False
+    return False, action, '无法确定动作坐标：locate 失败且没有直接坐标，请让规划模型改用 x_pct/y_pct 或更准确的元素描述', info
 
 
 def _coord_pairs_for(action_type):

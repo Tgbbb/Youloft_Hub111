@@ -16,6 +16,7 @@
         <div class="ag-head__actions">
           <button class="ag-btn ag-btn--ghost" @click="goBackToList">← {{ $t('common.back') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="copyTestCase">{{ $t('testcase.copyCase') }}</button>
+          <button class="ag-btn ag-btn--danger" :disabled="deleting" @click="deleteTestCase">✕ {{ $t('common.delete') }}</button>
           <button class="ag-btn ag-btn--ok" @click="editTestCase">{{ $t('common.edit') }}</button>
         </div>
       </div>
@@ -160,7 +161,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api'
 import dayjs from 'dayjs'
 
@@ -170,6 +171,7 @@ const router = useRouter()
 const testcase = ref(null)
 const neighbors = ref({ previous: null, next: null, current: null })
 const executing = ref(false)
+const deleting = ref(false)
 
 const executeCase = async (status) => {
   if (!testcase.value) return
@@ -234,6 +236,42 @@ const copyTestCase = () => {
 
 const editTestCase = () => {
   router.push({ path: `/ai-generation/testcases/${route.params.id}/edit`, query: route.query })
+}
+
+const deleteTestCase = async () => {
+  try {
+    await ElMessageBox.confirm(
+      t('testcase.deleteConfirm'),
+      t('common.warning'),
+      {
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+      }
+    )
+  } catch {
+    return
+  }
+
+  deleting.value = true
+  try {
+    await api.delete(`/testcases/${route.params.id}/`)
+    ElMessage.success(t('testcase.deleteSuccess'))
+    // 删除后跳转：优先下一条，没有则上一条，都没有则回列表
+    const nextId = neighbors.value.next?.id
+    const prevId = neighbors.value.previous?.id
+    if (nextId) {
+      goToNeighbor(nextId)
+    } else if (prevId) {
+      goToNeighbor(prevId)
+    } else {
+      goBackToList()
+    }
+  } catch (error) {
+    ElMessage.error(t('testcase.deleteFailed'))
+  } finally {
+    deleting.value = false
+  }
 }
 
 const getPriorityText = (priority) => {
