@@ -51,7 +51,8 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
     }
     record.celery_task_id = self.request.id or ''
     record.save(update_fields=['status', 'stage', 'progress', 'progress_detail', 'celery_task_id'])
-    import_id = uuid.uuid4().hex[:12]
+    # 截图目录 id（12 位 hex），与数据库主键 import_id 参数区分开，避免遮蔽
+    screenshot_dir_id = uuid.uuid4().hex[:12]
 
     # 进度状态维护在内存，由后台线程节流写库（避免 async 回调里操作 ORM）
     progress_state = {
@@ -103,7 +104,7 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
         last_snapshot = None
         while not stop_event.wait(0.5):
             try:
-                rec = ModaoImport.objects.get(pk=import_id)
+                rec = ModaoImport.objects.get(pk=record.id)
                 canvases = progress_state.get('canvases', [])
                 snapshot = (
                     progress_state.get('stage'),
@@ -142,7 +143,7 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
                     url=url,
                     auth_token=auth_token,
                     progress_callback=on_progress,
-                    import_id=import_id,
+                    import_id=screenshot_dir_id,
                 )
             )
         finally:
@@ -163,12 +164,12 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
         detail['message'] = f'导入完成: {len(result.get("canvases", []))} 个画布'
         record.progress_detail = detail
         record.save(update_fields=['title', 'data', 'status', 'stage', 'progress', 'progress_detail'])
-        logger.info(f'[Modao] 异步导入完成: import_id={import_id}, {len(result.get("canvases", []))}画布')
+        logger.info(f'[Modao] 异步导入完成: import_id={screenshot_dir_id}, {len(result.get("canvases", []))}画布')
 
     except Exception as exc:
         stop_event.set()
         persist_thread.join(timeout=2)
-        _cleanup_failed_import_screenshots(import_id)
+        _cleanup_failed_import_screenshots(screenshot_dir_id)
         record.status = 'failed'
         record.stage = 'failed'
         record.error_message = str(exc)[:1000]
@@ -177,5 +178,5 @@ def import_from_modao_task(self, import_id: int, url: str, auth_token: str):
         detail['message'] = str(exc)[:1000]
         record.progress_detail = detail
         record.save(update_fields=['status', 'stage', 'error_message', 'progress_detail'])
-        logger.error(f'[Modao] 异步导入失败: import_id={import_id}, error={exc}')
+        logger.error(f'[Modao] 异步导入失败: import_id={screenshot_dir_id}, error={exc}')
         raise

@@ -821,6 +821,45 @@ def _kb_generate_block(knowledge_base: str) -> str:
     )
 
 
+def _clarification_block_for_review(task) -> str:
+    """评审环节拼装需求澄清问答，供评审核对用例与已确认需求是否一致。
+
+    回答内容是对需求不明确点的确认；有记录但未回答的问题也一并带出，
+    提示评审该点尚未确认，避免把"未确认"当成"已确认"。
+    """
+    answers = task.clarification_answers or []
+    question_map = {}
+    for q in (task.clarification_questions or []):
+        if isinstance(q, dict) and q.get('id') is not None:
+            question_map[q.get('id')] = (q.get('question') or '').strip()
+
+    lines = []
+    answered_ids = set()
+    for i, a in enumerate(answers):
+        if not isinstance(a, dict):
+            continue
+        qid = a.get('question_id', i + 1)
+        q_text = (a.get('question') or '').strip() or question_map.get(qid, '')
+        ans = (a.get('answer') or '').strip()
+        if not ans:
+            continue
+        answered_ids.add(qid)
+        lines.append(f"Q{qid}: {q_text}\nA: {ans}")
+
+    for qid, q_text in question_map.items():
+        if qid not in answered_ids and q_text:
+            lines.append(f"Q{qid}: {q_text}\nA: （未确认）")
+
+    if not lines:
+        return ""
+    return (
+        "\n\n【需求澄清确认信息】\n"
+        "以下为生成用例前的需求澄清问答记录：回答内容是对需求不明确点的确认，"
+        "未确认的问题表示该点仍不明确。评审时请核实用例是否与已确认的需求一致。\n\n"
+        + "\n\n".join(lines)
+    )
+
+
 def _canvas_text_block(img, fallback_index=None):
     """构建"截图配对该画布 DOM 提取文本"的 text block。
     无文本时返回 None，调用方自动降级为纯图片块。"""
@@ -1932,6 +1971,15 @@ class AIModelService:
             f"**重要**：输出格式要求紧凑，不要在段落之间添加多余的空行，每个问题点之间用单空行分隔即可，用例展示仍为markdown形式。"
         )
 
+        # 澄清问答：让评审核对用例是否偏离已确认的需求
+        clarification_block = _clarification_block_for_review(task)
+        if clarification_block:
+            n_answered = len([
+                a for a in (task.clarification_answers or [])
+                if isinstance(a, dict) and (a.get('answer') or '').strip()
+            ])
+            logger.info(f"[review] 已拼入 {n_answered} 条澄清回答")
+
         # 多模态评审：reviewer 模型支持视觉且任务带图时，附加截图与该画布 DOM 文本，
         # 让评审核对"用例元素/文案是否真实存在于界面"；否则回退纯文本评审。
         can_see_images = (
@@ -1949,6 +1997,8 @@ class AIModelService:
             content_blocks = [
                 {"type": "text", "text": user_message},
             ]
+            if clarification_block:
+                content_blocks.append({"type": "text", "text": clarification_block})
             for img in page_images:
                 content_blocks.append({
                     "type": "image_url",
@@ -1973,6 +2023,8 @@ class AIModelService:
                 {"role": "user", "content": content_blocks}
             ]
         else:
+            if clarification_block:
+                user_message += clarification_block
             messages = [
                 {"role": "system", "content": reviewer_prompt},
                 {"role": "user", "content": user_message}
