@@ -247,6 +247,18 @@ let pollTimer = null
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
+// 保存时把掩码哨兵（**** 开头）转成空串，后端会保留原值；只有真正新填的内容才会更新
+const buildSavePayload = () => {
+  const payload = { ...form.value }
+  if (payload.imap_password && payload.imap_password.startsWith('****')) {
+    payload.imap_password = ''
+  }
+  if (payload.push_cookie && payload.push_cookie.startsWith('****')) {
+    payload.push_cookie = ''
+  }
+  return payload
+}
+
 const loadConfig = async () => {
   try {
     const response = await getPushCheckConfig()
@@ -255,11 +267,11 @@ const loadConfig = async () => {
       imap_host: data.imap_host,
       imap_port: data.imap_port,
       imap_user: data.imap_user,
-      imap_password: '',
+      imap_password: data.imap_password || '',
       imap_timeout: data.imap_timeout,
       backend_host: data.backend_host,
       backend_port: data.backend_port,
-      push_cookie: '',
+      push_cookie: data.push_cookie || '',
       tesseract_path: data.tesseract_path
     }
   } catch (error) {
@@ -271,17 +283,17 @@ const saveConfig = async () => {
   saving.value = true
   configMessage.value = ''
   try {
-    const response = await savePushCheckConfig(form.value)
+    const response = await savePushCheckConfig(buildSavePayload())
     const data = response.data
     form.value = {
       imap_host: data.imap_host,
       imap_port: data.imap_port,
       imap_user: data.imap_user,
-      imap_password: '',
+      imap_password: data.imap_password || '',
       imap_timeout: data.imap_timeout,
       backend_host: data.backend_host,
       backend_port: data.backend_port,
-      push_cookie: '',
+      push_cookie: data.push_cookie || '',
       tesseract_path: data.tesseract_path
     }
     configMessage.value = '配置已保存'
