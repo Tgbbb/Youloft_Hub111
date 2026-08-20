@@ -61,19 +61,9 @@
               <el-menu-item index="/api-testing/notification-logs"><el-icon><Bell /></el-icon><span>{{ $t('menu.notificationList') }}</span></el-menu-item>
             </template>
 
-            <!-- UI自动化 -->
-            <template v-else-if="currentModule === 'ui-automation'">
-              <el-menu-item index="/ui-automation/dashboard"><el-icon><Odometer /></el-icon><span>{{ $t('menu.dashboard') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/projects"><el-icon><Folder /></el-icon><span>{{ $t('menu.projectManagement') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/elements-enhanced"><el-icon><Aim /></el-icon><span>{{ $t('menu.elementManagement') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/test-cases"><el-icon><Document /></el-icon><span>{{ $t('menu.caseManagement') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/scripts-enhanced"><el-icon><Edit /></el-icon><span>{{ $t('menu.scriptGeneration') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/scripts"><el-icon><DocumentCopy /></el-icon><span>{{ $t('menu.scriptList') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/suites"><el-icon><Collection /></el-icon><span>{{ $t('menu.suiteManagement') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/executions"><el-icon><VideoPlay /></el-icon><span>{{ $t('menu.executionRecords') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/reports"><el-icon><DataAnalysis /></el-icon><span>{{ $t('menu.testReport') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/scheduled-tasks"><el-icon><AlarmClock /></el-icon><span>{{ $t('menu.scheduledTasks') }}</span></el-menu-item>
-              <el-menu-item index="/ui-automation/notification-logs"><el-icon><Bell /></el-icon><span>{{ $t('menu.notificationList') }}</span></el-menu-item>
+            <!-- 工具合集 -->
+            <template v-else-if="currentModule === 'tools'">
+              <el-menu-item index="/tools/push-check"><el-icon><Monitor /></el-icon><span>{{ $t('menu.pushCheck') }}</span></el-menu-item>
             </template>
 
             <!-- APP自动化 -->
@@ -207,7 +197,7 @@ const handleLanguageChange = (lang) => {
 const currentModule = computed(() => {
   if (route.path.startsWith('/ai-generation')) return 'ai-generation'
   if (route.path.startsWith('/api-testing')) return 'api-testing'
-  if (route.path.startsWith('/ui-automation')) return 'ui-automation'
+  if (route.path.startsWith('/tools')) return 'tools'
   if (route.path.startsWith('/app-automation')) return 'app-automation'
   if (route.path.startsWith('/ai-intelligent-mode')) return 'ai-intelligent-mode'
   if (route.path.startsWith('/configuration')) return 'configuration'
@@ -218,7 +208,7 @@ const moduleCode = computed(() => {
   const map = {
     'ai-generation': 'MODULE / 01',
     'api-testing': 'MODULE / 02',
-    'ui-automation': 'MODULE / 03',
+    'tools': 'MODULE / 03',
     'app-automation': 'MODULE / 04',
     'ai-intelligent-mode': 'MODULE / 05',
     'configuration': 'MODULE / 06',
@@ -230,7 +220,7 @@ const moduleName = computed(() => {
   const map = {
     'ai-generation': t('modules.aiGeneration'),
     'api-testing': t('modules.apiTesting'),
-    'ui-automation': t('modules.uiAutomation'),
+    'tools': t('modules.tools'),
     'app-automation': 'APP自动化测试',
     'ai-intelligent-mode': t('modules.aiIntelligentMode'),
     'configuration': t('modules.configuration')
@@ -259,17 +249,7 @@ const breadcrumbTitle = computed(() => {
     '/api-testing/reports': t('menu.testReport'),
     '/api-testing/scheduled-tasks': t('menu.scheduledTasks'),
     '/api-testing/notification-logs': t('menu.notificationList'),
-    '/ui-automation/dashboard': t('menu.dashboard'),
-    '/ui-automation/projects': t('menu.projectManagement'),
-    '/ui-automation/elements-enhanced': t('menu.elementManagement'),
-    '/ui-automation/test-cases': t('menu.caseManagement'),
-    '/ui-automation/scripts-enhanced': t('menu.scriptGeneration'),
-    '/ui-automation/scripts': t('menu.scriptList'),
-    '/ui-automation/suites': t('menu.suiteManagement'),
-    '/ui-automation/executions': t('menu.executionRecords'),
-    '/ui-automation/reports': t('menu.testReport'),
-    '/ui-automation/scheduled-tasks': t('menu.scheduledTasks'),
-    '/ui-automation/notification-logs': t('menu.notificationList'),
+    '/tools/push-check': t('menu.pushCheck'),
     '/app-automation/dashboard': 'Dashboard',
     '/app-automation/projects': '项目管理',
     '/app-automation/devices': '设备管理',

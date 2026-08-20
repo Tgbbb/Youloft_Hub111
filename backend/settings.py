@@ -69,6 +69,7 @@ LOCAL_APPS = [
     'apps.app_automation.apps.AppAutomationConfig',  # APP自动化测试
     'apps.core',
     'apps.data_factory',
+    'apps.toolbox',
 ]
 
 if ANALYTICS_ENABLED or REGISTRATION_STATS_ENABLED:

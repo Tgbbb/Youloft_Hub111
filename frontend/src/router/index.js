@@ -19,17 +19,6 @@ import ApiReportView from '@/views/api-testing/ReportView.vue'
 import ApiScheduledTasks from '@/views/api-testing/ScheduledTasks.vue'
 import ApiAIServiceConfig from '@/views/api-testing/AIServiceConfig.vue'
 import NotificationLogs from '@/views/notification/NotificationLogs.vue'
-import UiDashboard from '@/views/ui-automation/dashboard/Dashboard.vue'
-import UiProjectList from '@/views/ui-automation/projects/ProjectList.vue'
-import UiElementManagerEnhanced from '@/views/ui-automation/elements/ElementManagerEnhanced.vue'
-import UiTestCaseManager from '@/views/ui-automation/test-cases/TestCaseManager.vue'
-import UiScriptEditorEnhanced from '@/views/ui-automation/scripts/ScriptEditorEnhanced.vue'
-import UiScriptList from '@/views/ui-automation/scripts/ScriptList.vue'
-import UiSuiteList from '@/views/ui-automation/suites/SuiteList.vue'
-import UiExecutionList from '@/views/ui-automation/executions/ExecutionList.vue'
-import UiReportList from '@/views/ui-automation/reports/ReportList.vue'
-import UiScheduledTasks from '@/views/ui-automation/scheduled-tasks/ScheduledTasks.vue'
-import UiNotificationLogs from '@/views/ui-automation/notification/NotificationLogs.vue'
 
 /** @type {import('vue-router').RouteRecordRaw[]} */
 const routes = [
@@ -243,73 +232,18 @@ const routes = [
         ]
     },
     {
-        path: '/ui-automation',
+        path: '/tools',
         component: Layout,
         meta: { requiresAuth: true },
         children: [
             {
                 path: '',
-                redirect: 'dashboard'
+                redirect: 'push-check'
             },
             {
-                path: 'dashboard',
-                name: 'UiDashboard',
-                component: UiDashboard
-            },
-            {
-                path: 'projects',
-                name: 'UiProjects',
-                component: UiProjectList
-            },
-            {
-                path: 'elements-enhanced',
-                name: 'UiElementsEnhanced',
-                component: UiElementManagerEnhanced
-            },
-            {
-                path: 'test-cases',
-                name: 'UiTestCases',
-                component: UiTestCaseManager
-            },
-            {
-                path: 'scripts-enhanced',
-                name: 'UiScriptsEnhanced',
-                component: UiScriptEditorEnhanced
-            },
-            {
-                path: 'scripts/editor',
-                name: 'UiScriptEditor',
-                component: UiScriptEditorEnhanced
-            },
-            {
-                path: 'scripts',
-                name: 'UiScripts',
-                component: UiScriptList
-            },
-            {
-                path: 'suites',
-                name: 'UiSuites',
-                component: UiSuiteList
-            },
-            {
-                path: 'executions',
-                name: 'UiExecutions',
-                component: UiExecutionList
-            },
-            {
-                path: 'reports',
-                name: 'UiReports',
-                component: UiReportList
-            },
-            {
-                path: 'scheduled-tasks',
-                name: 'UiScheduledTasks',
-                component: UiScheduledTasks
-            },
-            {
-                path: 'notification-logs',
-                name: 'UiNotificationLogs',
-                component: UiNotificationLogs
+                path: 'push-check',
+                name: 'ToolPushCheck',
+                component: () => import('@/views/tools/PushCheck.vue')
             }
         ]
     },
