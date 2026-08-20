@@ -8,7 +8,7 @@ export default {
   modules: {
     aiGeneration: 'AI Test Case Generation',
     apiTesting: 'API Testing',
-    uiAutomation: 'UI Automation Testing',
+    tools: 'Toolbox',
     aiIntelligentMode: 'AI Intelligent Mode',
     configuration: 'Configuration Center'
   },
@@ -56,6 +56,7 @@ export default {
     uiEnvConfig: 'UI Environment Configuration',
     aiModeConfig: 'AI Mode Configuration',
     scheduledTaskConfig: 'Scheduled Task Configuration',
-    difyConfig: 'Dify Configuration'
+    difyConfig: 'Dify Configuration',
+    pushCheck: 'Push Comparison'
   }
 }

@@ -171,7 +171,7 @@ const MOBILE_TIP_STORAGE_KEY = 'testhub_home_mobile_tip_seen'
 const cards = [
   { type: 'ai', icon: MagicStick, title: t('home.aiCaseGeneration'), desc: t('home.aiCaseGenerationDesc') },
   { type: 'api', icon: Link, title: t('home.apiTesting'), desc: t('home.apiTestingDesc') },
-  { type: 'ui', icon: Monitor, title: t('home.uiAutomation'), desc: t('home.uiAutomationDesc') },
+  { type: 'tools', icon: Monitor, title: t('home.tools'), desc: t('home.toolsDesc') },
   { type: 'data', icon: DataLine, title: t('home.dataFactory'), desc: t('home.dataFactoryDesc') },
   { type: 'app', icon: Cellphone, title: 'APP自动化测试', desc: '基于Airtest的Android APP自动化测试' },
   { type: 'ai-intelligent', icon: Cpu, title: t('home.aiIntelligentMode'), desc: t('home.aiIntelligentModeDesc') },
@@ -227,7 +227,7 @@ const handleNavigate = (type) => {
   const routes = {
     'ai': '/ai-generation/requirement-analysis',
     'api': '/api-testing/dashboard',
-    'ui': '/ui-automation/dashboard',
+    'tools': '/tools/push-check',
     'app': '/app-automation/dashboard',
     'ai-intelligent': '/ai-intelligent-mode/testing',
     'assistant': '/ai-generation/assistant',

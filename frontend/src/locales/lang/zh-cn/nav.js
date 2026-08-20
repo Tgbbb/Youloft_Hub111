@@ -8,7 +8,7 @@ export default {
   modules: {
     aiGeneration: 'AI用例生成',
     apiTesting: '接口测试',
-    uiAutomation: 'UI自动化测试',
+    tools: '工具合集',
     aiIntelligentMode: 'AI 智能模式',
     configuration: '配置中心'
   },
@@ -56,6 +56,7 @@ export default {
     uiEnvConfig: 'UI环境配置',
     aiModeConfig: 'AI智能模式配置',
     scheduledTaskConfig: '定时任务配置',
-    agentConfig: 'Agent 配置'
+    agentConfig: 'Agent 配置',
+    pushCheck: '推送对比'
   }
 }
