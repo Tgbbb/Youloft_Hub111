@@ -149,6 +149,7 @@
             <span class="pc-panel__code">ARCHIVE / 03</span>
             <h2 id="history-title">运行历史</h2>
             <span class="pc-panel__meta">RECENT RUNS</span>
+            <button class="pc-clear" type="button" :disabled="running" @click="confirmClearHistory">清空历史</button>
           </header>
 
           <div class="pc-table-wrap">
@@ -208,13 +209,14 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getPushCheckConfig,
   savePushCheckConfig,
   triggerPushCheck,
   getPushCheckRuns,
-  getPushCheckRun
+  getPushCheckRun,
+  clearPushCheckRuns
 } from '@/api/tools'
 
 const form = ref({
@@ -360,6 +362,29 @@ const viewRun = async (id) => {
     currentRun.value = response.data
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '记录详情获取失败')
+  }
+}
+
+const confirmClearHistory = () => {
+  if (runs.value.length === 0) {
+    ElMessage.info('暂无运行记录')
+    return
+  }
+  ElMessageBox.confirm('确定清空全部运行历史吗？此操作不可恢复。', '清空历史', {
+    confirmButtonText: '清空',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(clearHistory).catch(() => {})
+}
+
+const clearHistory = async () => {
+  try {
+    await clearPushCheckRuns()
+    currentRun.value = null
+    await loadRuns()
+    ElMessage.success('运行历史已清空')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '清空失败')
   }
 }
 
@@ -1121,6 +1146,33 @@ onUnmounted(() => {
 
   &.is-error { color: #b23a24; }
   &.is-success { color: var(--pc-state-ink); }
+}
+
+.pc-clear {
+  margin-left: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--pc-line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--pc-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+
+  &:hover:not(:disabled) {
+    border-color: #b23a24;
+    color: #b23a24;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--pc-signal);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+  }
 }
 
 /* ---------- Motion ---------- */

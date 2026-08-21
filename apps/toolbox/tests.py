@@ -227,6 +227,20 @@ class PushCheckApiTests(TestCase):
         resp = self.client.get('/api/tools/push-check/runs/999999/')
         self.assertEqual(resp.status_code, 404)
 
+    def test_clear_history(self):
+        PushCheckRun.objects.create(status='success', user=self.user)
+        PushCheckRun.objects.create(status='failed', user=self.user)
+        resp = self.client.delete('/api/tools/push-check/runs/')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['deleted'], 2)
+        self.assertEqual(PushCheckRun.objects.count(), 0)
+
+    def test_clear_history_blocked_while_running(self):
+        PushCheckRun.objects.create(status='running', user=self.user)
+        resp = self.client.delete('/api/tools/push-check/runs/')
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(PushCheckRun.objects.count(), 1)
+
 
 class PushCheckTaskTests(TestCase):
     """Celery 任务：状态流转与状态回写。"""
