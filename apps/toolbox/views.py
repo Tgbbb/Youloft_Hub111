@@ -74,6 +74,14 @@ class PushCheckRunListView(APIView):
         serializer = PushCheckRunListSerializer(queryset, many=True)
         return Response(serializer.data)
 
+    def delete(self, request):
+        """清空全部运行历史；有任务执行中时禁止清空。"""
+        if PushCheckRun.objects.filter(status__in=('pending', 'running')).exists():
+            return Response({'error': '有任务在执行中，请等待完成后再清空'},
+                            status=status.HTTP_409_CONFLICT)
+        deleted, _ = PushCheckRun.objects.all().delete()
+        return Response({'deleted': deleted})
+
 
 class PushCheckRunDetailView(APIView):
     """运行详情：状态、日志全文、结果摘要。"""

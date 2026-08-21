@@ -40,3 +40,11 @@ export function getPushCheckRun(id) {
     method: 'get'
   })
 }
+
+// 清空运行历史
+export function clearPushCheckRuns() {
+  return request({
+    url: '/tools/push-check/runs/',
+    method: 'delete'
+  })
+}
