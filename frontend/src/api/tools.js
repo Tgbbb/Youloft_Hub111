@@ -48,3 +48,42 @@ export function clearPushCheckRuns() {
     method: 'delete'
   })
 }
+
+// 同步确认工具
+export function getSyncCheckConfig() {
+  return request({
+    url: '/tools/sync-check/config/',
+    method: 'get'
+  })
+}
+
+export function saveSyncCheckConfig(data) {
+  return request({
+    url: '/tools/sync-check/config/',
+    method: 'put',
+    data
+  })
+}
+
+export function triggerSyncCheck(data) {
+  return request({
+    url: '/tools/sync-check/run/',
+    method: 'post',
+    data
+  })
+}
+
+export function getSyncCheckRuns(params) {
+  return request({
+    url: '/tools/sync-check/runs/',
+    method: 'get',
+    params
+  })
+}
+
+export function getSyncCheckToday() {
+  return request({
+    url: '/tools/sync-check/runs/today/',
+    method: 'get'
+  })
+}

@@ -6,13 +6,18 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ToolboxConfig, PushCheckRun
+from django.utils import timezone
+
+from .models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
 from .serializers import (
     ToolboxConfigSerializer,
     PushCheckRunListSerializer,
     PushCheckRunDetailSerializer,
+    SyncCheckConfigSerializer,
+    SyncCheckRunListSerializer,
+    SyncCheckRunDetailSerializer,
 )
-from .tasks import run_push_check
+from .tasks import run_push_check, run_sync_check
 
 
 class PushCheckConfigView(APIView):
@@ -93,3 +98,68 @@ class PushCheckRunDetailView(APIView):
         if run is None:
             return Response({'error': '记录不存在'}, status=status.HTTP_404_NOT_FOUND)
         return Response(PushCheckRunDetailSerializer(run).data)
+
+
+class SyncCheckConfigView(APIView):
+    """同步确认配置：GET 读取，PUT 更新（无敏感字段）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cfg = SyncCheckConfig.get_singleton()
+        return Response(SyncCheckConfigSerializer(cfg).data)
+
+    def put(self, request):
+        cfg = SyncCheckConfig.get_singleton()
+        serializer = SyncCheckConfigSerializer(cfg, data=request.data or {}, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save(updated_by=request.user)
+        return Response(SyncCheckConfigSerializer(obj).data)
+
+
+class SyncCheckRunCreateView(APIView):
+    """手动触发一次同步确认检查；force=true 忽略当天已处理标记。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        force_value = (request.data or {}).get('force', False)
+        force = force_value is True or force_value in ('true', 'True', '1', 1)
+        run, _ = SyncCheckRun.objects.get_or_create(
+            date=timezone.localdate(), defaults={'status': 'pending'})
+        run_sync_check.delay(force)
+        return Response(SyncCheckRunDetailSerializer(run).data, status=status.HTTP_201_CREATED)
+
+
+class SyncCheckRunPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class SyncCheckRunListView(APIView):
+    """同步确认按天历史（分页）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        queryset = SyncCheckRun.objects.all()
+        paginator = SyncCheckRunPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        if page is not None:
+            serializer = SyncCheckRunListSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        serializer = SyncCheckRunListSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class SyncCheckTodayView(APIView):
+    """当天同步确认详情（不存在则返回待监听空记录）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        run, _ = SyncCheckRun.objects.get_or_create(
+            date=timezone.localdate(), defaults={'status': 'pending'})
+        return Response(SyncCheckRunDetailSerializer(run).data)

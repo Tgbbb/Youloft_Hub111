@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from rest_framework import serializers
 
-from .models import ToolboxConfig, PushCheckRun
+from .models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
 
 
 def _mask_secret(value):
@@ -44,3 +44,28 @@ class PushCheckRunListSerializer(serializers.ModelSerializer):
 class PushCheckRunDetailSerializer(PushCheckRunListSerializer):
     class Meta(PushCheckRunListSerializer.Meta):
         fields = ['id', 'username', 'status', 'force', 'summary', 'log', 'started_at', 'finished_at']
+
+
+class SyncCheckConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SyncCheckConfig
+        fields = [
+            'id', 'enabled', 'interval_minutes', 'deadline_time',
+            'mail_subject', 'mail_body_keyword', 'last_check_at',
+            'updated_by', 'updated_at',
+        ]
+        read_only_fields = ['id', 'last_check_at', 'updated_by', 'updated_at']
+
+
+class SyncCheckRunListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SyncCheckRun
+        fields = ['id', 'date', 'status', 'mail_subject', 'diffs', 'checked_at', 'created_at']
+
+
+class SyncCheckRunDetailSerializer(SyncCheckRunListSerializer):
+    class Meta(SyncCheckRunListSerializer.Meta):
+        fields = [
+            'id', 'date', 'status', 'mail_uid', 'mail_subject', 'ocr_text',
+            'parsed_fields', 'backend_record', 'diffs', 'log', 'checked_at', 'created_at',
+        ]

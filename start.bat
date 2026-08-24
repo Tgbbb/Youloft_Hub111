@@ -58,7 +58,13 @@ timeout /t 3 /nobreak >nul
 echo   Celery worker started
 
 echo.
-echo [6/6] Starting Vite frontend...
+echo [6/7] Starting Celery beat...
+start "CeleryBeat" cmd /c "cd /d E:\TestHub\testhub_platform && call venv\Scripts\activate.bat && celery -A backend beat --loglevel=info"
+timeout /t 2 /nobreak >nul
+echo   Celery beat started
+
+echo.
+echo [7/7] Starting Vite frontend...
 if "%VITE_RUNNING%"=="1" (
     echo   Vite already listening on 3000 - skipped.
 ) else (
