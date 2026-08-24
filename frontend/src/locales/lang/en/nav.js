@@ -57,6 +57,7 @@ export default {
     aiModeConfig: 'AI Mode Configuration',
     scheduledTaskConfig: 'Scheduled Task Configuration',
     difyConfig: 'Dify Configuration',
-    pushCheck: 'Push Comparison'
+    pushCheck: 'Push Comparison',
+    syncCheck: 'Sync Confirmation'
   }
 }

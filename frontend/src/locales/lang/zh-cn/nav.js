@@ -57,6 +57,7 @@ export default {
     aiModeConfig: 'AI智能模式配置',
     scheduledTaskConfig: '定时任务配置',
     agentConfig: 'Agent 配置',
-    pushCheck: '推送对比'
+    pushCheck: '推送对比',
+    syncCheck: '同步确认'
   }
 }

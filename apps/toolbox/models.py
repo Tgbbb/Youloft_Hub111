@@ -65,3 +65,65 @@ class PushCheckRun(models.Model):
 
     def __str__(self):
         return '推送对比 #%s (%s)' % (self.pk, self.get_status_display())
+
+
+class SyncCheckConfig(models.Model):
+    """同步确认工具配置（单例）：监听「已同步至线上」邮件的间隔与截止时间。"""
+
+    enabled = models.BooleanField(default=True, verbose_name='启用自动监听')
+    interval_minutes = models.IntegerField(default=15, verbose_name='检查间隔(分钟)')
+    deadline_time = models.CharField(max_length=8, default='18:30', verbose_name='当天截止时间(HH:MM)')
+    mail_subject = models.CharField(
+        max_length=255, default='回复：【测试需求】关于常规PUSH的测试需求', verbose_name='邮件标题关键词')
+    mail_body_keyword = models.CharField(max_length=100, default='已同步至线上', verbose_name='正文关键词')
+    last_check_at = models.DateTimeField(null=True, blank=True, verbose_name='上次检查时间')
+    updated_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, verbose_name='最后修改人')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'toolbox_sync_check_config'
+        verbose_name = '同步确认配置'
+        verbose_name_plural = verbose_name
+
+    @classmethod
+    def get_singleton(cls):
+        obj = cls.objects.first()
+        if obj is None:
+            obj = cls.objects.create()
+        return obj
+
+    def __str__(self):
+        return '同步确认配置'
+
+
+class SyncCheckRun(models.Model):
+    """同步确认按天状态记录。"""
+
+    STATUS_CHOICES = (
+        ('pending', '待监听'),
+        ('ok', '已收到·对比通过'),
+        ('fail', '已收到·对比不一致'),
+        ('timeout', '超时未收到'),
+    )
+
+    date = models.DateField(unique=True, verbose_name='日期')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    mail_uid = models.BigIntegerField(null=True, blank=True, verbose_name='邮件UID')
+    mail_subject = models.CharField(max_length=255, blank=True, default='', verbose_name='邮件标题')
+    ocr_text = models.TextField(blank=True, default='', verbose_name='OCR原文')
+    parsed_fields = models.JSONField(default=dict, blank=True, verbose_name='解析字段')
+    backend_record = models.JSONField(default=dict, blank=True, verbose_name='后台记录')
+    diffs = models.JSONField(default=list, blank=True, verbose_name='差异列表')
+    log = models.TextField(blank=True, default='', verbose_name='检查日志')
+    checked_at = models.DateTimeField(null=True, blank=True, verbose_name='最近检查时间')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'toolbox_sync_check_run'
+        verbose_name = '同步确认记录'
+        verbose_name_plural = verbose_name
+        ordering = ['-date']
+
+    def __str__(self):
+        return '同步确认 %s (%s)' % (self.date, self.get_status_display())

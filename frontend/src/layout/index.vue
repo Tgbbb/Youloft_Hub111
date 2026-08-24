@@ -64,6 +64,7 @@
             <!-- 工具合集 -->
             <template v-else-if="currentModule === 'tools'">
               <el-menu-item index="/tools/push-check"><el-icon><Monitor /></el-icon><span>{{ $t('menu.pushCheck') }}</span></el-menu-item>
+              <el-menu-item index="/tools/sync-check"><el-icon><CircleCheck /></el-icon><span>{{ $t('menu.syncCheck') }}</span></el-menu-item>
             </template>
 
             <!-- APP自动化 -->
@@ -88,6 +89,7 @@
               <el-menu-item index="/ai-intelligent-mode/midscene/projects"><el-icon><Folder /></el-icon><span>Midscene 项目管理</span></el-menu-item>
               <el-menu-item index="/ai-intelligent-mode/midscene/executions"><el-icon><Timer /></el-icon><span>Midscene 执行历史</span></el-menu-item>
               <el-menu-item index="/ai-intelligent-mode/midscene/devices"><el-icon><Cellphone /></el-icon><span>Midscene 设备管理</span></el-menu-item>
+              <el-menu-item index="/ai-intelligent-mode/midscene/packages"><el-icon><Box /></el-icon><span>Midscene 安装包管理</span></el-menu-item>
             </template>
 
             <!-- 配置中心 -->
@@ -180,7 +182,8 @@ import { useI18n } from 'vue-i18n'
 import {
   Monitor, Folder, Document, Flag, Check, Collection, VideoPlay,
   DataAnalysis, ChatDotRound, DocumentCopy, Link, MagicStick,
-  Odometer, Timer, Setting, AlarmClock, Bell, Aim, Edit, Cpu, ArrowDown, Cellphone, Connection, FolderOpened
+  Odometer, Timer, Setting, AlarmClock, Bell, Aim, Edit, Cpu, ArrowDown, Cellphone, Connection, FolderOpened,
+  Box, CircleCheck
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -250,6 +253,7 @@ const breadcrumbTitle = computed(() => {
     '/api-testing/scheduled-tasks': t('menu.scheduledTasks'),
     '/api-testing/notification-logs': t('menu.notificationList'),
     '/tools/push-check': t('menu.pushCheck'),
+    '/tools/sync-check': t('menu.syncCheck'),
     '/app-automation/dashboard': 'Dashboard',
     '/app-automation/projects': '项目管理',
     '/app-automation/devices': '设备管理',
@@ -266,6 +270,7 @@ const breadcrumbTitle = computed(() => {
     '/ai-intelligent-mode/midscene/projects': 'Midscene 项目管理',
     '/ai-intelligent-mode/midscene/executions': 'Midscene 执行历史',
     '/ai-intelligent-mode/midscene/devices': 'Midscene 设备管理',
+    '/ai-intelligent-mode/midscene/packages': 'Midscene 安装包管理',
     '/configuration/ai-model': t('menu.aiModelConfig'),
     '/configuration/prompt-config': t('menu.promptConfig'),
     '/configuration/generation-config': t('menu.generationConfig'),

@@ -3,6 +3,7 @@
 from pathlib import Path
 from decouple import config
 import os
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -301,6 +302,13 @@ REDIS_URL = config('REDIS_URL', default='redis://:1234@127.0.0.1:6379/0')
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+CELERY_BEAT_SCHEDULE = {
+    'toolbox-sync-check-tick': {
+        'task': 'apps.toolbox.tasks.run_sync_check_tick',
+        'schedule': crontab(minute='*'),
+    },
+}
 
 # Channels Configuration
 CHANNEL_LAYERS = {

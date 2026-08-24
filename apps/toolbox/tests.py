@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """工具合集 - 推送对比模块测试"""
 from unittest import mock
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.toolbox import push_check_engine
-from apps.toolbox.models import ToolboxConfig, PushCheckRun
-from apps.toolbox.tasks import run_push_check
+from apps.toolbox import sync_check_engine
+from apps.toolbox.models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
+from apps.toolbox.tasks import run_push_check, run_sync_check_tick, run_sync_check as run_sync_check_task
 
 User = get_user_model()
 
@@ -284,3 +287,236 @@ class PushCheckTaskTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, 'failed')
         self.assertEqual(run.summary['message'], 'boom')
+
+
+SYNC_OCR_TEXT = (
+    '推送目标：主包、黄历\n'
+    '推送标题：标题A\n'
+    '推送内容：内容B\n'
+    '安卓版本：all\n'
+    'IOS版本：all'
+)
+
+
+def make_sync_email(**overrides):
+    data = {
+        'uid': 5001,
+        'date': '2026-08-24T02:00:00.000Z',
+        'subject': '回复：【测试需求】关于常规PUSH的测试需求',
+        'text': '已同步至线上~',
+        'html': '',
+        'attachments': [{'content': b'fake-image', 'size': 10000, 'contentType': 'image/png'}],
+    }
+    data.update(overrides)
+    return data
+
+
+class SyncCheckEngineTests(TestCase):
+    """同步确认引擎：OCR 提取、归一化、对比、超时与重复处理。"""
+
+    def _base_config(self):
+        cfg = make_config()
+        cfg.update({
+            'deadline_time': '23:59',
+            'mail_subject': '回复：【测试需求】关于常规PUSH的测试需求',
+            'mail_body_keyword': '已同步至线上',
+        })
+        return cfg
+
+    def test_ocr_extract_sync_fields(self):
+        parsed = sync_check_engine.ocr_extract_sync_fields(SYNC_OCR_TEXT)
+        self.assertEqual(parsed['fields']['push_target'], '主包、黄历')
+        self.assertEqual(parsed['fields']['title'], '标题A')
+        self.assertEqual(parsed['fields']['content'], '内容B')
+        self.assertEqual(parsed['fields']['android_version'], 'all')
+        self.assertEqual(parsed['fields']['ios_version'], 'all')
+
+    def test_norm_functions(self):
+        self.assertEqual(sync_check_engine.norm_push_target('主包、黄历'), '0,1')
+        self.assertEqual(sync_check_engine.norm_push_target('鸿蒙'), '2')
+        self.assertEqual(sync_check_engine.norm_push_target('iOS、安卓'), '0,1')
+        self.assertEqual(sync_check_engine.norm_version('all'), '1')
+        self.assertEqual(sync_check_engine.norm_version('不向iOS推送'), '7')
+        self.assertEqual(sync_check_engine.norm_version('7'), '7')
+
+    def test_no_email_keeps_pending(self):
+        with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'pending')
+        self.assertFalse(result['state']['done'])
+
+    def test_timeout_after_deadline(self):
+        cfg = self._base_config()
+        cfg['deadline_time'] = '00:00'
+        with mock.patch.object(sync_check_engine, 'find_sync_email') as mock_find:
+            result = sync_check_engine.run_sync_check_engine(config=cfg, state={})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['summary']['status'], 'timeout')
+        self.assertTrue(result['state']['done'])
+        mock_find.assert_not_called()
+
+    def test_compare_ok(self):
+        rec = make_backend_record(
+            taskTitle='标题A', taskBody='内容B', pushTarget='0,1',
+            versionType='1', versionTypeIOS='1')
+        with mock.patch.object(
+            sync_check_engine, 'find_sync_email', return_value=make_sync_email()
+        ), mock.patch.object(
+            push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
+        ), mock.patch.object(
+            push_check_engine, 'search_push', return_value=make_search_result([rec])
+        ):
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'ok')
+        self.assertEqual(result['summary']['diffs'], [])
+        self.assertEqual(result['state']['done'], True)
+        self.assertEqual(result['state']['mail_uid'], 5001)
+
+    def test_compare_fail_lists_diffs(self):
+        rec = make_backend_record(
+            taskTitle='其他标题', taskBody='内容B', pushTarget='0,1',
+            versionType='1', versionTypeIOS='1')
+        with mock.patch.object(
+            sync_check_engine, 'find_sync_email', return_value=make_sync_email()
+        ), mock.patch.object(
+            push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
+        ), mock.patch.object(
+            push_check_engine, 'search_push', return_value=make_search_result([rec])
+        ):
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['summary']['status'], 'fail')
+        self.assertTrue(any('标题不一致' in d for d in result['summary']['diffs']))
+
+    def test_ocr_missing_marks_fail(self):
+        with mock.patch.object(
+            sync_check_engine, 'find_sync_email', return_value=make_sync_email()
+        ), mock.patch.object(push_check_engine, 'ocr_image', return_value=None):
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['summary']['status'], 'fail')
+        self.assertIn('未解析出配置图片', result['summary']['message'])
+
+    def test_already_done_skip_and_force(self):
+        state = {
+            'done': True, 'status': 'ok', 'mail_uid': 5001, 'mail_subject': '回复',
+            'parsed_fields': {}, 'backend_record': {}, 'diffs': [], 'checked_at': None,
+        }
+        with mock.patch.object(sync_check_engine, 'find_sync_email') as mock_find:
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state=state)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'ok')
+        mock_find.assert_not_called()
+
+        rec = make_backend_record(
+            taskTitle='标题A', taskBody='内容B', pushTarget='0,1',
+            versionType='1', versionTypeIOS='1')
+        with mock.patch.object(
+            sync_check_engine, 'find_sync_email', return_value=make_sync_email()
+        ), mock.patch.object(
+            push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
+        ), mock.patch.object(
+            push_check_engine, 'search_push', return_value=make_search_result([rec])
+        ):
+            result = sync_check_engine.run_sync_check_engine(
+                config=self._base_config(), state=state, force=True)
+        self.assertEqual(result['summary']['status'], 'ok')
+
+
+class SyncCheckApiTests(TestCase):
+    """同步确认 API。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='tester', password='pass')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_config_requires_auth_and_update(self):
+        anonymous = APIClient()
+        resp = anonymous.get('/api/tools/sync-check/config/')
+        self.assertEqual(resp.status_code, 401)
+
+        resp = self.client.get('/api/tools/sync-check/config/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['interval_minutes'], 15)
+
+        resp = self.client.put('/api/tools/sync-check/config/', {'interval_minutes': 30}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['interval_minutes'], 30)
+        cfg = SyncCheckConfig.get_singleton()
+        self.assertEqual(cfg.interval_minutes, 30)
+
+    def test_today_and_history(self):
+        SyncCheckRun.objects.create(date='2026-08-23', status='ok')
+        resp = self.client.get('/api/tools/sync-check/runs/today/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['status'], 'pending')
+
+        resp = self.client.get('/api/tools/sync-check/runs/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(resp.data['count'], 2)
+
+    def test_manual_trigger(self):
+        with mock.patch('apps.toolbox.views.run_sync_check.delay') as mock_delay:
+            resp = self.client.post('/api/tools/sync-check/run/', {'force': True}, format='json')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        mock_delay.assert_called_once_with(True)
+
+
+class SyncCheckTaskTests(TestCase):
+    """同步确认 tick 节流与结果持久化。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='tester', password='pass')
+        SyncCheckRun.objects.all().delete()
+
+    def test_tick_throttle(self):
+        cfg = SyncCheckConfig.get_singleton()
+        cfg.last_check_at = timezone.now()
+        cfg.save(update_fields=['last_check_at'])
+        with mock.patch('apps.toolbox.tasks._execute_sync_check') as mock_exec:
+            run_sync_check_tick.run()
+        mock_exec.assert_not_called()
+
+        cfg.last_check_at = timezone.now() - timedelta(minutes=30)
+        cfg.save(update_fields=['last_check_at'])
+        with mock.patch('apps.toolbox.tasks._execute_sync_check') as mock_exec:
+            run_sync_check_tick.run()
+        mock_exec.assert_called_once_with(force=False)
+
+    def test_tick_disabled(self):
+        cfg = SyncCheckConfig.get_singleton()
+        cfg.enabled = False
+        cfg.last_check_at = None
+        cfg.save(update_fields=['enabled', 'last_check_at'])
+        with mock.patch('apps.toolbox.tasks._execute_sync_check') as mock_exec:
+            run_sync_check_tick.run()
+        mock_exec.assert_not_called()
+
+    def test_execute_persists_today(self):
+        cfg = SyncCheckConfig.get_singleton()
+        cfg.enabled = True
+        cfg.save(update_fields=['enabled'])
+        engine_result = {
+            'ok': True,
+            'summary': {'status': 'ok', 'message': '对比全部通过'},
+            'log': '✔ 对比全部通过',
+            'state': {
+                'done': True, 'status': 'ok', 'mail_uid': 5001, 'mail_subject': '回复',
+                'parsed_fields': {'title': '标题A'}, 'backend_record': {'id': 1},
+                'diffs': [], 'checked_at': '2026-08-24T02:00:00',
+            },
+        }
+        with mock.patch(
+            'apps.toolbox.tasks.run_sync_check_engine', return_value=engine_result
+        ):
+            run_sync_check_task.run(force=False)
+        run = SyncCheckRun.objects.get(date=timezone.localdate())
+        self.assertEqual(run.status, 'ok')
+        self.assertEqual(run.mail_uid, 5001)
+        self.assertEqual(run.parsed_fields['title'], '标题A')
+        self.assertIn('对比全部通过', run.log)
+        cfg.refresh_from_db()
+        self.assertIsNotNone(cfg.last_check_at)

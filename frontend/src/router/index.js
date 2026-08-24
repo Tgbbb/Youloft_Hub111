@@ -244,6 +244,11 @@ const routes = [
                 path: 'push-check',
                 name: 'ToolPushCheck',
                 component: () => import('@/views/tools/PushCheck.vue')
+            },
+            {
+                path: 'sync-check',
+                name: 'ToolSyncCheck',
+                component: () => import('@/views/tools/SyncCheck.vue')
             }
         ]
     },
@@ -281,6 +286,11 @@ const routes = [
                 path: 'midscene/devices',
                 name: 'MidsceneDevices',
                 component: () => import('@/views/ui-automation/ai/MidsceneDeviceList.vue')
+            },
+            {
+                path: 'midscene/packages',
+                name: 'MidscenePackages',
+                component: () => import('@/views/ui-automation/ai/MidscenePackageList.vue')
             }
         ]
     },
