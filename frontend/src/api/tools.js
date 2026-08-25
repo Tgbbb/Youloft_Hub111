@@ -87,3 +87,11 @@ export function getSyncCheckToday() {
     method: 'get'
   })
 }
+
+// 清空同步确认按天历史
+export function clearSyncCheckRuns() {
+  return request({
+    url: '/tools/sync-check/runs/',
+    method: 'delete'
+  })
+}

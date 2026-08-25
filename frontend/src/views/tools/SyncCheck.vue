@@ -132,6 +132,7 @@
             <span class="sc-panel__code">ARCHIVE / 03</span>
             <h2 id="sc-history-title">按天历史</h2>
             <span class="sc-panel__meta">DAILY RECORDS</span>
+            <button class="sc-clear" type="button" @click="confirmClearHistory">清空历史</button>
           </header>
 
           <div class="sc-table-wrap">
@@ -188,13 +189,14 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getSyncCheckConfig,
   saveSyncCheckConfig,
   triggerSyncCheck,
   getSyncCheckRuns,
-  getSyncCheckToday
+  getSyncCheckToday,
+  clearSyncCheckRuns
 } from '@/api/tools'
 
 const form = ref({
@@ -309,6 +311,29 @@ const loadRuns = async (targetPage = 1) => {
     total.value = response.data.count || 0
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '历史记录加载失败')
+  }
+}
+
+const confirmClearHistory = () => {
+  if (runs.value.length === 0) {
+    ElMessage.info('暂无按天记录')
+    return
+  }
+  ElMessageBox.confirm('确定清空全部同步确认按天历史吗？此操作不可恢复。', '清空历史', {
+    confirmButtonText: '清空',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(clearHistory).catch(() => {})
+}
+
+const clearHistory = async () => {
+  try {
+    await clearSyncCheckRuns()
+    await loadRuns()
+    await loadToday()
+    ElMessage.success('按天历史已清空')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '清空失败')
   }
 }
 
@@ -940,6 +965,28 @@ onUnmounted(() => {
 
   &.is-error { color: #b23a24; }
   &.is-success { color: var(--sc-state-ink); }
+}
+
+.sc-clear {
+  margin-left: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--sc-line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--sc-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+
+  &:hover:not(:disabled) {
+    border-color: #b23a24;
+    color: #b23a24;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--sc-signal);
+    outline-offset: 2px;
+  }
 }
 
 /* ---------- Motion ---------- */

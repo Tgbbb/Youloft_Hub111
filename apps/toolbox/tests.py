@@ -485,6 +485,15 @@ class SyncCheckApiTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertGreaterEqual(resp.data['count'], 2)
 
+        resp = self.client.delete('/api/tools/sync-check/runs/')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertGreaterEqual(resp.data['deleted'], 2)
+        self.assertEqual(SyncCheckRun.objects.count(), 0)
+
+        resp = self.client.delete('/api/tools/sync-check/runs/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['deleted'], 0)
+
     def test_manual_trigger(self):
         with mock.patch('apps.toolbox.views.run_sync_check.delay') as mock_delay:
             resp = self.client.post('/api/tools/sync-check/run/', {'force': True}, format='json')
