@@ -22,7 +22,7 @@ _last_summary = {}
 
 # 上报ID 用于切分表格数据行（后台配置截图每行以上报ID 开头，uuid 末尾字符 OCR 可能误识）
 _UUID_RE = re.compile(
-    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{10,}',
+    r'[0-9a-fA-FlI]{8}-[0-9a-fA-FlI]{4,5}-[0-9a-fA-FlI]{4,5}-[0-9a-fA-FlI]{4}-[0-9a-fA-FlI]{10,}',
     re.I)
 _TARGET_HINT = ('主包', '黄历', '鸿蒙')
 _TARGET_CODE = {'主包': '0', '黄历': '1', '鸿蒙': '2'}
@@ -149,9 +149,12 @@ def ocr_extract_sync_rows(text):
 
 
 def _norm_ocr_versions(text):
-    """把 OCR 常见的 IOS 误识归一化（I0S / 1OS / 10S → iOS）。"""
-    return (text or '').replace('I0S', 'iOS').replace('1OS', 'iOS') \
-        .replace('10S', 'iOS').replace('IOS', 'iOS')
+    """把 OCR 常见的 iOS 误识归一化（I0S / 1OS / 10S / IO0S 等 → iOS）。"""
+    text = text or ''
+    for v in ('IO0S', 'IOOS', 'I00S', 'I0OS', '1O0S', '1OOS',
+              'I0S', '1OS', '10S', 'IOS', 'IoS', 'Ios', 'l0S', 'loS'):
+        text = text.replace(v, 'iOS')
+    return text
 
 
 def _backend_version_text(value, platform):

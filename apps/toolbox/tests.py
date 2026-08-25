@@ -371,6 +371,23 @@ class SyncCheckEngineTests(TestCase):
         self.assertIn('常规-8.25安卓', parsed['rows'][0]['compact'])
         self.assertIn('主包', parsed['rows'][0]['compact'])
 
+    def test_norm_ocr_versions_io0s(self):
+        self.assertEqual(sync_check_engine._norm_ocr_versions('不向IO0S推送'), '不向iOS推送')
+        self.assertEqual(sync_check_engine._norm_ocr_versions('不向I0S推送'), '不向iOS推送')
+
+    def test_ocr_split_tolerates_uuid_misread(self):
+        # 真实截图 OCR：uuid 里混入 l / 组长度误读，仍应切成 3 行
+        ocr = (
+            '上报ID 推送名称 推送目标 推送标题 推送内容 安卓版本 10S版本 推送时间 区域 推送状态 操作\n'
+            'a3alec74-96Cc3-4ba4-a499-ed93aab3a460 中元节(提前)-8.26安卓 主包,黄历 中元到:天黑三不做，平安无灾祸! 农历七月半，不能做什么? all 不向IO0S推送。 2026-08-26 20:00:00 未执行\n'
+            '515f7f98-4f4d-43e9-9253-dbe3ccece52a 中元节(提前)8.26鸿蒙 鸿蒙 中元到:天黑三不做，平安无灾祸! 农历七月半，不能做什么? all 不向IO0S推送。" 2026-08-26 20:00:00 未执行\n'
+            'a97a7605-15Cc4-4b4f-b97c-cb25bdfe5028 中元节(提前)-8.26ios 主包 中元到:天黑三不做，平安无灾祸! 农历七月半，不能做什么? 不向安卓推送" all 2026-08-26 16:00:00 未执行'
+        )
+        parsed = sync_check_engine.ocr_extract_sync_rows(ocr)
+        self.assertEqual(len(parsed['rows']), 3)
+        self.assertEqual(len(sync_check_engine._extract_target_codes(parsed['rows'][1]['compact'])), 1)
+        self.assertIn('不向iOS推送', sync_check_engine._norm_ocr_versions(parsed['rows'][1]['compact']))
+
     def test_no_email_keeps_pending(self):
         with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
