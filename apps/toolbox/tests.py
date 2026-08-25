@@ -388,6 +388,15 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(len(sync_check_engine._extract_target_codes(parsed['rows'][1]['compact'])), 1)
         self.assertIn('不向iOS推送', sync_check_engine._norm_ocr_versions(parsed['rows'][1]['compact']))
 
+    def test_search_source_skips_misread_target(self):
+        # 目标列被 OCR 误读成「鸿菜」：搜索源应跳过它，落在标题上
+        comp = sync_check_engine._norm_ocr_versions(
+            '515f7f98-4f4d-43e9-9253-dbe3ccece52a中元节(提前)8.26鸿蒙鸿菜'
+            '中元到:天黑三不做，平安无灾祸!农历七月半，不能做什么?all不向IO0S推送。"2026-08-2620:00:00未执行')
+        src = sync_check_engine._extract_search_source(comp)
+        self.assertTrue(src.startswith('中元到:'), src)
+        self.assertNotIn('鸿菜', src[:6], src)
+
     def test_no_email_keeps_pending(self):
         with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})

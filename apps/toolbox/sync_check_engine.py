@@ -167,18 +167,38 @@ def _backend_version_text(value, platform):
     return ''
 
 
-def _extract_search_source(row_compact):
-    """从行文本提取搜索源：目标词之后的标题/内容段（后台 taskTitle 即内容主题）。"""
-    text = _norm_ocr_versions(_UUID_RE.sub('', row_compact or ''))
-    text = re.sub(r'^[^0-9\u4e00-\u9fa5]+', '', text)  # 去掉开头粘连的 uuid 尾部误识字符
+_TARGET_WINDOW = 60  # 只在行首窗口里识别目标词，避免把内容里的相似字误当目标
+
+
+def _search_source_cut(text):
+    """返回标题起点：行首窗口内最后一个命中目标词（含轻度误识）的结束位置。"""
+    window = text[:_TARGET_WINDOW]
     last_end = -1
     for word in _TARGET_HINT:
-        i = text.rfind(word)
-        if i != -1:
-            end = i + len(word)
-            if end > last_end:
-                last_end = end
-    return text[last_end:] if last_end != -1 else text
+        start = 0
+        while True:
+            i = window.find(word, start)
+            if i == -1:
+                break
+            last_end = max(last_end, i + len(word))
+            start = i + 1
+        # 轻度误识：等长、首字符相同、相似 ≥0.5（如 鸿菜→鸿蒙、主苕→主包）
+        for i in range(len(window) - len(word) + 1):
+            seg = window[i:i + len(word)]
+            if seg == word or seg[0] != word[0]:
+                continue
+            from difflib import SequenceMatcher
+            if SequenceMatcher(None, word, seg).ratio() >= 0.5:
+                last_end = max(last_end, i + len(word))
+    return last_end
+
+
+def _extract_search_source(row_compact):
+    """从行文本提取搜索源：目标词（含误识）之后的标题/内容段。"""
+    text = _norm_ocr_versions(_UUID_RE.sub('', row_compact or ''))
+    text = re.sub(r'^[^0-9\u4e00-\u9fa5]+', '', text)  # 去掉开头粘连的 uuid 尾部误识字符
+    cut = _search_source_cut(text)
+    return text[cut:] if cut != -1 else text
 
 
 def _extract_target_codes(row_compact):
