@@ -153,6 +153,11 @@ class SyncCheckRunListView(APIView):
         serializer = SyncCheckRunListSerializer(queryset, many=True)
         return Response(serializer.data)
 
+    def delete(self, request):
+        """清空全部同步确认按天历史。"""
+        deleted, _ = SyncCheckRun.objects.all().delete()
+        return Response({'deleted': deleted})
+
 
 class SyncCheckTodayView(APIView):
     """当天同步确认详情（不存在则返回待监听空记录）。"""
