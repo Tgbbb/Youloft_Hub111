@@ -237,17 +237,27 @@ def compare_with_backend(rows):
                 matched = records[0]
         if matched is None:
             diffs.append('第 %d 条推送（上报ID=%s）：后台未找到匹配记录' % (idx, row['uid']))
+            log('✖ 推送 #%d (uid=%s): 未找到匹配记录' % (idx, row['uid']))
             continue
         matched_records.append(matched)
+        log('▶ 推送 #%d (uid=%s): 匹配后台记录 id=%s（目标=%s）'
+            % (idx, row['uid'], matched.get('id') or matched.get('taskId') or '',
+               matched.get('pushTarget') or ''))
 
         # 标题
         back_title = matched.get('taskTitle') or ''
-        if not _fuzzy_contains(back_title, row_compact):
+        if _fuzzy_contains(back_title, row_compact):
+            log('  ✓ 标题: %s' % back_title)
+        else:
+            log('  ✗ 标题: 邮件行未包含「%s」' % back_title)
             diffs.append('第 %d 条推送标题不一致 → 邮件行未包含后台标题:「%s」'
                          % (idx, back_title))
         # 推送内容
         back_body = matched.get('taskBody') or ''
-        if not _fuzzy_contains(back_body, row_compact):
+        if _fuzzy_contains(back_body, row_compact):
+            log('  ✓ 内容: %s' % back_body)
+        else:
+            log('  ✗ 内容: 邮件行未包含「%s」' % back_body)
             diffs.append('第 %d 条推送内容不一致 → 邮件行未包含后台内容:「%s」'
                          % (idx, back_body))
         # 推送目标
@@ -255,16 +265,25 @@ def compare_with_backend(rows):
             if not code:
                 continue
             word = pce.TARGET_NAME.get(code)
-            if word and word not in row_compact:
+            if word and word in row_compact:
+                log('  ✓ 目标: %s' % word)
+            elif word:
+                log('  ✗ 目标: 缺少「%s」' % word)
                 diffs.append('第 %d 条推送目标缺少「%s」（后台:%s）'
                              % (idx, word, pce.target_names([code])))
         # 安卓版本
         back_android = _backend_version_text(matched.get('versionType'), '安卓')
-        if back_android and back_android not in row_compact:
+        if back_android and back_android in row_compact:
+            log('  ✓ 安卓版本: %s' % back_android)
+        elif back_android:
+            log('  ✗ 安卓版本: 邮件行未包含「%s」' % back_android)
             diffs.append('第 %d 条安卓版本不一致 → 邮件行未包含:「%s」' % (idx, back_android))
         # IOS版本
         back_ios = _backend_version_text(matched.get('versionTypeIOS'), 'IOS')
-        if back_ios and back_ios not in row_compact:
+        if back_ios and back_ios in row_compact:
+            log('  ✓ iOS版本: %s' % back_ios)
+        elif back_ios:
+            log('  ✗ iOS版本: 邮件行未包含「%s」' % back_ios)
             diffs.append('第 %d 条IOS版本不一致 → 邮件行未包含:「%s」' % (idx, back_ios))
 
     return {'matched': matched_records, 'diffs': diffs}
