@@ -11,7 +11,12 @@ from rest_framework.test import APIClient
 from apps.toolbox import push_check_engine
 from apps.toolbox import sync_check_engine
 from apps.toolbox.models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
-from apps.toolbox.tasks import run_push_check, run_sync_check_tick, run_sync_check as run_sync_check_task
+from apps.toolbox.tasks import (
+    run_push_check,
+    run_sync_check_tick,
+    run_sync_check as run_sync_check_task,
+    _has_push_today,
+)
 
 User = get_user_model()
 
@@ -317,6 +322,8 @@ class SyncCheckEngineTests(TestCase):
     def _base_config(self):
         cfg = make_config()
         cfg.update({
+            'require_push_activity': True,
+            'has_push_today': True,
             'deadline_time': '23:59',
             'mail_subject': '回复：【测试需求】关于常规PUSH的测试需求',
             'mail_body_keyword': '已同步至线上',
@@ -355,6 +362,26 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(result['summary']['status'], 'timeout')
         self.assertTrue(result['state']['done'])
         mock_find.assert_not_called()
+
+    def test_skip_when_no_push_activity(self):
+        cfg = self._base_config()
+        cfg['has_push_today'] = False
+        cfg['deadline_time'] = '00:00'
+        with mock.patch.object(sync_check_engine, 'find_sync_email') as mock_find:
+            result = sync_check_engine.run_sync_check_engine(config=cfg, state={})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'pending')
+        self.assertFalse(result['state']['done'])
+        mock_find.assert_not_called()
+
+    def test_no_require_push_activity_continues(self):
+        cfg = self._base_config()
+        cfg['require_push_activity'] = False
+        cfg['has_push_today'] = False
+        with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):
+            result = sync_check_engine.run_sync_check_engine(config=cfg, state={})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'pending')
 
     def test_compare_ok(self):
         rec = make_backend_record(
@@ -511,7 +538,7 @@ class SyncCheckTaskTests(TestCase):
         }
         with mock.patch(
             'apps.toolbox.tasks.run_sync_check_engine', return_value=engine_result
-        ):
+        ), mock.patch('apps.toolbox.tasks._has_push_today', return_value=True):
             run_sync_check_task.run(force=False)
         run = SyncCheckRun.objects.get(date=timezone.localdate())
         self.assertEqual(run.status, 'ok')
@@ -520,3 +547,22 @@ class SyncCheckTaskTests(TestCase):
         self.assertIn('对比全部通过', run.log)
         cfg.refresh_from_db()
         self.assertIsNotNone(cfg.last_check_at)
+
+    def test_has_push_today_detection(self):
+        with mock.patch(
+            'apps.toolbox.tasks.find_push_schedule_email_today', return_value=None
+        ):
+            self.assertFalse(_has_push_today())
+
+        with mock.patch(
+            'apps.toolbox.tasks.find_push_schedule_email_today',
+            return_value={'uid': 1, 'subject': 'PUSH 测试需求'},
+        ):
+            self.assertTrue(_has_push_today())
+
+        PushCheckRun.objects.create(user=self.user, status='success')
+        with mock.patch(
+            'apps.toolbox.tasks.find_push_schedule_email_today'
+        ) as mock_find:
+            self.assertTrue(_has_push_today())
+            mock_find.assert_not_called()

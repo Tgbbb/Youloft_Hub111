@@ -50,7 +50,7 @@ class SyncCheckConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = SyncCheckConfig
         fields = [
-            'id', 'enabled', 'interval_minutes', 'deadline_time',
+            'id', 'enabled', 'require_push_activity', 'interval_minutes', 'deadline_time',
             'mail_subject', 'mail_body_keyword', 'last_check_at',
             'updated_by', 'updated_at',
         ]
