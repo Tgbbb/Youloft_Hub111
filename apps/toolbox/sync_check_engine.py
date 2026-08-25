@@ -187,6 +187,25 @@ def _extract_target_codes(row_compact):
     return codes
 
 
+def _pick_backend_record(records, target_codes):
+    """在候选后台记录中选与邮件行推送目标交集最大的那条；完全相等直接命中。"""
+    if not records:
+        return None
+    target_codes = target_codes or set()
+    best = None
+    best_score = None
+    for r in records:
+        back = set(x for x in str(r.get('pushTarget') or '').split(',') if x)
+        if back == target_codes:
+            return r
+        score = (len(back & target_codes),
+                 -(len(back | target_codes) - len(back & target_codes)))
+        if best_score is None or score > best_score:
+            best_score = score
+            best = r
+    return best
+
+
 def _fuzzy_contains(needle, haystack, min_ratio=0.72):
     """容错包含匹配：归一化子串命中，或允许少量 OCR 误识（含单字变多字）。"""
     n = pce.normalize_title(needle or '').lower()
@@ -216,25 +235,21 @@ def compare_with_backend(rows):
         search_source = _extract_search_source(row_compact)
         result = pce.search_push([search_source]) if search_source else None
         records = ((result or {}).get('record') or {}).get('records') or []
+        target_codes = _extract_target_codes(row_compact)
         matched = None
         if records:
-            # 优先按行目标匹配对应记录（同标题会命中 3 条不同推送目标）
-            target_codes = ','.join(sorted(_extract_target_codes(row_compact)))
             if target_codes:
-                for r in records:
-                    rt = ','.join(sorted(x for x in str(r.get('pushTarget') or '').split(',') if x))
-                    if rt == target_codes:
-                        matched = r
-                        break
-            # 目标未匹配到 → 按标题子串选第一条
-            if matched is None:
+                # 按推送目标交集最大选对应记录（同标题会命中多条不同目标）
+                matched = _pick_backend_record(records, target_codes)
+            else:
+                # 行内没有可识别的目标词 → 按标题子串选第一条
                 for r in records:
                     t = pce.normalize_title(r.get('taskTitle') or '').lower()
                     if t and t in pce.normalize_title(row_compact).lower():
                         matched = r
                         break
-            if matched is None:
-                matched = records[0]
+                if matched is None:
+                    matched = records[0]
         if matched is None:
             diffs.append('第 %d 条推送（上报ID=%s）：后台未找到匹配记录' % (idx, row['uid']))
             log('✖ 推送 #%d (uid=%s): 未找到匹配记录' % (idx, row['uid']))
@@ -260,16 +275,21 @@ def compare_with_backend(rows):
             log('  ✗ 内容: 邮件行未包含「%s」' % back_body)
             diffs.append('第 %d 条推送内容不一致 → 邮件行未包含后台内容:「%s」'
                          % (idx, back_body))
-        # 推送目标
-        for code in str(matched.get('pushTarget') or '').split(','):
-            if not code:
-                continue
+        # 推送目标：集合相等校验（缺/多都报）
+        back_codes = set(x for x in str(matched.get('pushTarget') or '').split(',') if x)
+        for code in sorted(back_codes | target_codes):
             word = pce.TARGET_NAME.get(code)
-            if word and word in row_compact:
+            if not word:
+                continue
+            if code in back_codes and code in target_codes:
                 log('  ✓ 目标: %s' % word)
-            elif word:
+            elif code in back_codes:
                 log('  ✗ 目标: 缺少「%s」' % word)
                 diffs.append('第 %d 条推送目标缺少「%s」（后台:%s）'
+                             % (idx, word, pce.target_names([code])))
+            else:
+                log('  ✗ 目标: 多出「%s」' % word)
+                diffs.append('第 %d 条推送目标多出「%s」（邮件:%s）'
                              % (idx, word, pce.target_names([code])))
         # 安卓版本
         back_android = _backend_version_text(matched.get('versionType'), '安卓')

@@ -442,6 +442,20 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(result['summary']['status'], 'fail')
         self.assertTrue(any('安卓版本不一致' in d for d in result['summary']['diffs']))
 
+    def test_target_mismatch_detected(self):
+        # 安卓后台被配成「主包,鸿蒙」(0,2)，但邮件行目标是「主包,黄历」(0,1) → 应报目标差异
+        recs = make_sync_backend_records()
+        recs[0]['pushTarget'] = '0,2'
+        parsed = sync_check_engine.ocr_extract_sync_rows(SYNC_OCR_TEXT)
+        row = parsed['rows'][0]
+        with mock.patch.object(
+            push_check_engine, 'search_push',
+            return_value=make_search_result(recs),
+        ):
+            cmp = sync_check_engine.compare_with_backend([row])
+        self.assertTrue(any('目标' in d and ('缺少' in d or '多出' in d) for d in cmp['diffs']),
+                        cmp['diffs'])
+
     def test_compare_backend_not_found(self):
         with mock.patch.object(
             sync_check_engine, 'find_sync_email', return_value=make_sync_email()
