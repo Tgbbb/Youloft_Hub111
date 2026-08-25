@@ -24,6 +24,8 @@ _last_summary = {}
 _UUID_RE = re.compile(
     r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{10,}',
     re.I)
+_TARGET_HINT = ('主包', '黄历', '鸿蒙')
+_TARGET_CODE = {'主包': '0', '黄历': '1', '鸿蒙': '2'}
 
 
 def configure(config, state):
@@ -162,6 +164,29 @@ def _backend_version_text(value, platform):
     return ''
 
 
+def _extract_search_source(row_compact):
+    """从行文本提取搜索源：目标词之后的标题/内容段（后台 taskTitle 即内容主题）。"""
+    text = _norm_ocr_versions(_UUID_RE.sub('', row_compact or ''))
+    text = re.sub(r'^[^0-9\u4e00-\u9fa5]+', '', text)  # 去掉开头粘连的 uuid 尾部误识字符
+    last_end = -1
+    for word in _TARGET_HINT:
+        i = text.rfind(word)
+        if i != -1:
+            end = i + len(word)
+            if end > last_end:
+                last_end = end
+    return text[last_end:] if last_end != -1 else text
+
+
+def _extract_target_codes(row_compact):
+    """从行文本提取目标词对应的后台代码集合。"""
+    codes = set()
+    for word, code in _TARGET_CODE.items():
+        if word in row_compact:
+            codes.add(code)
+    return codes
+
+
 def _fuzzy_contains(needle, haystack, min_ratio=0.72):
     """容错包含匹配：归一化子串命中，或允许少量 OCR 误识（含单字变多字）。"""
     n = pce.normalize_title(needle or '').lower()
@@ -188,16 +213,26 @@ def compare_with_backend(rows):
     matched_records = []
     for idx, row in enumerate(rows, start=1):
         row_compact = _norm_ocr_versions(row['compact'])
-        search_text = _UUID_RE.sub('', row_compact)
-        result = pce.search_push([search_text]) if search_text else None
+        search_source = _extract_search_source(row_compact)
+        result = pce.search_push([search_source]) if search_source else None
         records = ((result or {}).get('record') or {}).get('records') or []
         matched = None
         if records:
-            for r in records:
-                t = pce.normalize_title(r.get('taskTitle') or '').lower()
-                if t and t in pce.normalize_title(row_compact).lower():
-                    matched = r
-                    break
+            # 优先按行目标匹配对应记录（同标题会命中 3 条不同推送目标）
+            target_codes = ','.join(sorted(_extract_target_codes(row_compact)))
+            if target_codes:
+                for r in records:
+                    rt = ','.join(sorted(x for x in str(r.get('pushTarget') or '').split(',') if x))
+                    if rt == target_codes:
+                        matched = r
+                        break
+            # 目标未匹配到 → 按标题子串选第一条
+            if matched is None:
+                for r in records:
+                    t = pce.normalize_title(r.get('taskTitle') or '').lower()
+                    if t and t in pce.normalize_title(row_compact).lower():
+                        matched = r
+                        break
             if matched is None:
                 matched = records[0]
         if matched is None:

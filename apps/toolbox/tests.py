@@ -316,9 +316,9 @@ class PushCheckTaskTests(TestCase):
 
 SYNC_OCR_TEXT = (
     '上报ID 推送名称 推送目标 "推送标题 推送内容 安卓版本 10S版本 推送时间 区域 "推送状态 "操作\n'
-    'b035abf1-86b6-4f23-867f-dddc4fa6f6al 常规-8.25安卓 主包,黄历 "卧室有5样东西 为什么你总睡不好、嗓子疼? all 不向I0S推送。" 2026-08-25 20:00:00 未执行\n'
-    '40c3636d-5539-4c08-98b4-726f58a519e6 常规-8.25鸿蒙 鸿蒙 卧室有5样东西 为什么你总睡不好、嗓子疼? all 不向I0S推送 "2026-08-25 20:00:00 未执行\n'
-    'bc030d27-29a4-4417-96fe-09dfb56ca214 常规-8.25ios 主包 卧室有5样东西 为什么你总睡不好、嗓子疼? 不向安卓推送 "all 2026-08-25 16:00:00 未执行'
+    'b035abf1-86b6-4f23-867f-dddc4fa6f6al 常规-8.25安卓 主包,黄历 "卧室有5样东西，当心被癌症盯上! 为什么你总睡不好、嗓子疼? all 不向I0S推送。" 2026-08-25 20:00:00 未执行\n'
+    '40c3636d-5539-4c08-98b4-726f58a519e6 常规-8.25鸿蒙 鸿蒙 卧室有5样东西，当心被癌症盯上! 为什么你总睡不好、嗓子疼? all 不向I0S推送 "2026-08-25 20:00:00 未执行\n'
+    'bc030d27-29a4-4417-96fe-09dfb56ca214 常规-8.25ios 主包 卧室有5样东西，当心被癌症盯上! 为什么你总睡不好、嗓子疼? 不向安卓推送 "all 2026-08-25 16:00:00 未执行'
 )
 
 
@@ -339,13 +339,13 @@ def make_sync_backend_records():
     """三条推送记录（安卓/鸿蒙/iOS），与 SYNC_OCR_TEXT 对应。"""
     return [
         make_backend_record(
-            taskTitle='常规-8.25安卓', taskBody='为什么你总睡不好、嗓子疼?',
+            taskTitle='卧室有5样东西，当心被癌症盯上!', taskBody='为什么你总睡不好、嗓子疼?',
             pushTarget='0,1', versionType='1', versionTypeIOS='7'),
         make_backend_record(
-            id=2, taskTitle='常规-8.25鸿蒙', taskBody='为什么你总睡不好、嗓子疼?',
+            id=2, taskTitle='卧室有5样东西，当心被癌症盯上!', taskBody='为什么你总睡不好、嗓子疼?',
             pushTarget='2', versionType='1', versionTypeIOS='7'),
         make_backend_record(
-            id=3, taskTitle='常规-8.25ios', taskBody='为什么你总睡不好、嗓子疼?',
+            id=3, taskTitle='卧室有5样东西，当心被癌症盯上!', taskBody='为什么你总睡不好、嗓子疼?',
             pushTarget='0', versionType='7', versionTypeIOS='1'),
     ]
 
@@ -415,7 +415,7 @@ class SyncCheckEngineTests(TestCase):
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
             push_check_engine, 'search_push',
-            side_effect=[make_search_result([r]) for r in make_sync_backend_records()],
+            side_effect=[make_search_result(make_sync_backend_records()) for _ in range(3)],
         ):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
         self.assertTrue(result['ok'])
@@ -427,14 +427,15 @@ class SyncCheckEngineTests(TestCase):
 
     def test_compare_fail_lists_diffs(self):
         recs = make_sync_backend_records()
-        recs[0]['versionType'] = '7'  # 安卓记录期望「不向安卓推送」，但 OCR 行1 是 all
+        # 安卓记录（target=0,1）版本改错：期望「不向安卓推送」，但 OCR 行1 是 all
+        recs[1]['versionType'] = '7'
         with mock.patch.object(
             sync_check_engine, 'find_sync_email', return_value=make_sync_email()
         ), mock.patch.object(
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
             push_check_engine, 'search_push',
-            side_effect=[make_search_result([r]) for r in recs],
+            side_effect=[make_search_result(recs) for _ in range(3)],
         ):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
         self.assertFalse(result['ok'])
@@ -454,14 +455,14 @@ class SyncCheckEngineTests(TestCase):
         self.assertTrue(any('后台未找到匹配记录' in d for d in result['summary']['diffs']))
 
     def test_fuzzy_title_tolerates_ocr_misread(self):
-        # OCR 把「鸿蒙」误识成「鸿莹」，仍应判定标题一致
+        # OCR 误识（了明子疼 vs 嗓子疼），仍应判定内容一致
         row = {
             'uid': '40c3636d-5539-4c08-98b4-726f58a519e6',
             'compact': '40c3636d-5539-4c08-98b4-726f58a519e6常规-8.25鸿莹鸿蒙'
                        '卧室有5样东西为什么你总睡不好、了明子疼?all不向IOS推送',
         }
-        self.assertTrue(sync_check_engine._fuzzy_contains('常规-8.25鸿蒙', row['compact']))
         self.assertTrue(sync_check_engine._fuzzy_contains('为什么你总睡不好、嗓子疼?', row['compact']))
+        self.assertTrue(sync_check_engine._fuzzy_contains('卧室有5样东西', row['compact']))
         self.assertFalse(sync_check_engine._fuzzy_contains('完全不同的标题', row['compact']))
 
     def test_ocr_missing_marks_fail(self):
@@ -490,7 +491,7 @@ class SyncCheckEngineTests(TestCase):
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
             push_check_engine, 'search_push',
-            side_effect=[make_search_result([r]) for r in make_sync_backend_records()],
+            side_effect=[make_search_result(make_sync_backend_records()) for _ in range(3)],
         ):
             result = sync_check_engine.run_sync_check_engine(
                 config=self._base_config(), state=state, force=True)
