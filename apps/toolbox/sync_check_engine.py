@@ -66,8 +66,8 @@ def log(*args):
     _log_lines.append(text)
 
 
-def find_sync_email(subject_keyword, body_keyword):
-    """IMAP 找当天最新一封标题含 subject_keyword、正文含 body_keyword 的邮件。"""
+def _find_email_by_headers(subject_predicate, body_keyword=None):
+    """IMAP 找当天最新一封满足标题判定、可选正文关键词的邮件。"""
     cfg = pce.get_config()
     imap_cfg = cfg['imap']
     now = datetime.now()
@@ -101,7 +101,7 @@ def find_sync_email(subject_keyword, body_keyword):
                 uid = int(um.group(1))
                 header = email.message_from_bytes(item[1] or b'')
                 subject = pce.decode_mime_words(header.get('Subject', ''))
-                if subject_keyword in subject:
+                if subject_predicate(subject):
                     candidates.append((uid, subject))
         if not candidates:
             return None
@@ -117,7 +117,7 @@ def find_sync_email(subject_keyword, body_keyword):
         iso = parsed_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
         text, html = pce.get_text_and_html(msg)
         plain_text = (text or '') + re.sub(r'<[^>]+>', '', html or '')
-        if body_keyword not in plain_text:
+        if body_keyword and body_keyword not in plain_text:
             return None
         return {
             'uid': latest_uid,
@@ -132,6 +132,17 @@ def find_sync_email(subject_keyword, body_keyword):
             imap.logout()
         except Exception:
             pass
+
+
+def find_sync_email(subject_keyword, body_keyword):
+    """IMAP 找当天最新一封标题含 subject_keyword、正文含 body_keyword 的邮件。"""
+    return _find_email_by_headers(lambda s: subject_keyword in s, body_keyword)
+
+
+def find_push_schedule_email_today():
+    """IMAP 找当天是否有「测试需求」排期邮件（PUSH + 测试需求 + 非回复），用于判定当天有推送。"""
+    return _find_email_by_headers(
+        lambda s: 'PUSH' in s and '测试需求' in s and '回复' not in s)
 
 
 def ocr_extract_sync_fields(text):
@@ -253,7 +264,7 @@ def main(force=False):
         deadline_str = '18:30'
         deadline = datetime.combine(today, datetime.strptime(deadline_str, '%H:%M').time())
 
-    log('%s[%s] 同步确认检查...%s' % ('', now.strftime('%Y/%m/%d %H:%M:%S'), ''))
+    log('[%s] 同步确认检查...' % now.strftime('%Y/%m/%d %H:%M:%S'))
 
     if state.get('done') and not force:
         log('ℹ 当天已处理（%s），跳过；勾选强制重新对比可重查' % (state.get('status') or ''))
@@ -266,6 +277,13 @@ def main(force=False):
             'backend_record': state.get('backend_record') or {},
             'diffs': state.get('diffs') or [],
         })
+        return
+
+    if cfg.get('require_push_activity', True) and not cfg.get('has_push_today', False):
+        state.update({'status': 'pending', 'checked_at': now.isoformat()})
+        save_state(state)
+        log('ℹ 当天无推送活动（无推送对比记录、无测试需求排期邮件），跳过监听，不报超时')
+        _last_summary.update({'status': 'pending', 'message': '当天无推送活动，跳过监听'})
         return
 
     if now >= deadline and not state.get('done'):

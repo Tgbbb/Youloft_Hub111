@@ -71,6 +71,9 @@ class SyncCheckConfig(models.Model):
     """同步确认工具配置（单例）：监听「已同步至线上」邮件的间隔与截止时间。"""
 
     enabled = models.BooleanField(default=True, verbose_name='启用自动监听')
+    require_push_activity = models.BooleanField(
+        default=True, verbose_name='当天无推送活动时跳过监听',
+        help_text='当天无推送对比记录且无测试需求排期邮件时，不监听、不报超时')
     interval_minutes = models.IntegerField(default=15, verbose_name='检查间隔(分钟)')
     deadline_time = models.CharField(max_length=8, default='18:30', verbose_name='当天截止时间(HH:MM)')
     mail_subject = models.CharField(

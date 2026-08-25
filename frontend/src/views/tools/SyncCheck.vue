@@ -52,6 +52,13 @@
               <span class="sc-toggle__label">启用自动监听</span>
             </label>
           </div>
+          <div class="sc-field sc-field--full">
+            <label class="sc-toggle" :class="{ 'is-on': form.require_push_activity }">
+              <input v-model="form.require_push_activity" class="sc-toggle__input" type="checkbox" role="switch" />
+              <span class="sc-toggle__track" aria-hidden="true"><span class="sc-toggle__thumb"></span></span>
+              <span class="sc-toggle__label">当天无推送活动时跳过监听（不报超时）</span>
+            </label>
+          </div>
 
           <div class="sc-field sc-field--num">
             <label class="sc-field__label" for="sc-interval">检查间隔(分钟)</label>
@@ -192,6 +199,7 @@ import {
 
 const form = ref({
   enabled: true,
+  require_push_activity: true,
   interval_minutes: 15,
   deadline_time: '18:30',
   mail_subject: '回复：【测试需求】关于常规PUSH的测试需求',
@@ -219,6 +227,7 @@ const loadConfig = async () => {
     const data = response.data
     form.value = {
       enabled: data.enabled,
+      require_push_activity: data.require_push_activity,
       interval_minutes: data.interval_minutes,
       deadline_time: data.deadline_time,
       mail_subject: data.mail_subject,
@@ -236,6 +245,7 @@ const saveConfig = async () => {
     const response = await saveSyncCheckConfig(form.value)
     form.value = {
       enabled: response.data.enabled,
+      require_push_activity: response.data.require_push_activity,
       interval_minutes: response.data.interval_minutes,
       deadline_time: response.data.deadline_time,
       mail_subject: response.data.mail_subject,

@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """工具合集 - Celery 异步任务"""
 import traceback
+from datetime import datetime, timedelta
 
 from celery import shared_task
 from django.utils import timezone
 
 from .models import PushCheckRun, ToolboxConfig, SyncCheckConfig, SyncCheckRun
 from .push_check_engine import run_push_check_engine
-from .sync_check_engine import run_sync_check_engine
+from . import sync_check_engine
+from .sync_check_engine import run_sync_check_engine, find_push_schedule_email_today
 
 
 @shared_task(bind=True, max_retries=0)
@@ -81,6 +83,7 @@ def _build_sync_config():
         'push_cookie': toolbox.push_cookie,
         'tesseract_path': toolbox.tesseract_path,
         'enabled': cfg_obj.enabled,
+        'require_push_activity': cfg_obj.require_push_activity,
         'interval_minutes': cfg_obj.interval_minutes,
         'deadline_time': cfg_obj.deadline_time,
         'mail_subject': cfg_obj.mail_subject,
@@ -106,8 +109,12 @@ def _execute_sync_check(force=False):
     cfg_obj = SyncCheckConfig.get_singleton()
     today = timezone.localdate()
     run, _ = SyncCheckRun.objects.get_or_create(date=today, defaults={'status': 'pending'})
+    config = _build_sync_config()
+    state = _build_sync_state(run)
+    sync_check_engine.configure(config, state)
+    config['has_push_today'] = _has_push_today()
     try:
-        result = run_sync_check_engine(force=force, config=_build_sync_config(), state=_build_sync_state(run))
+        result = run_sync_check_engine(force=force, config=config, state=state)
         es = result.get('state') or {}
         run.status = es.get('status') or ('ok' if result['ok'] else 'fail')
         run.mail_uid = es.get('mail_uid')
@@ -124,6 +131,19 @@ def _execute_sync_check(force=False):
         run.checked_at = timezone.now()
         run.save()
     SyncCheckConfig.objects.filter(pk=cfg_obj.pk).update(last_check_at=timezone.now())
+
+
+def _has_push_today():
+    """当天是否有推送活动：有推送对比运行记录，或当天有测试需求排期邮件。"""
+    now = timezone.localtime()
+    day_start = timezone.make_aware(datetime.combine(now.date(), datetime.min.time()))
+    day_end = day_start + timedelta(days=1)
+    if PushCheckRun.objects.filter(started_at__gte=day_start, started_at__lt=day_end).exists():
+        return True
+    try:
+        return find_push_schedule_email_today() is not None
+    except Exception:
+        return False
 
 
 @shared_task(bind=True, max_retries=0)
