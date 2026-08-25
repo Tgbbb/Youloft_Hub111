@@ -573,6 +573,23 @@ def get_text_and_html(msg):
     return text, html
 
 
+def _looks_like_image(payload):
+    """按文件头魔数识别图片（兼容部分客户端把图片标成 application/octet-stream）。"""
+    if not payload:
+        return False
+    if payload.startswith(b'\x89PNG\r\n\x1a\n'):
+        return True
+    if payload.startswith(b'\xff\xd8\xff'):
+        return True
+    if payload.startswith((b'GIF87a', b'GIF89a')):
+        return True
+    if payload.startswith(b'BM'):
+        return True
+    if payload.startswith(b'RIFF') and payload[8:12] == b'WEBP':
+        return True
+    return False
+
+
 def get_image_attachments(msg):
     atts = []
     for part in msg.walk():
@@ -580,6 +597,10 @@ def get_image_attachments(msg):
         if ctype and ctype.startswith('image'):
             payload = part.get_payload(decode=True) or b''
             atts.append({'content': payload, 'size': len(payload), 'contentType': ctype})
+        elif ctype == 'application/octet-stream':
+            payload = part.get_payload(decode=True) or b''
+            if _looks_like_image(payload):
+                atts.append({'content': payload, 'size': len(payload), 'contentType': ctype})
     return atts
 
 
@@ -690,10 +711,25 @@ def ocr_image(image_bytes):
         return None
     tmp = None
     try:
+        data = image_bytes
+        # 预处理：放大 2x + 灰度 + 增强对比度，显著提升小字号表格/截图的识别率
+        try:
+            from PIL import Image, ImageEnhance
+            import io as _io
+            img = Image.open(_io.BytesIO(image_bytes))
+            if img.width * img.height <= 2000000:
+                img = img.convert('L')
+                img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
+                img = ImageEnhance.Contrast(img).enhance(1.6)
+                buf = _io.BytesIO()
+                img.save(buf, format='PNG')
+                data = buf.getvalue()
+        except Exception:
+            data = image_bytes
         fd, tmp = tempfile.mkstemp(suffix='.png')
         os.close(fd)
         with open(tmp, 'wb') as f:
-            f.write(image_bytes)
+            f.write(data)
         cmd = [tesseract, tmp, 'stdout', '--tessdata-dir', TESSDATA_DIR, '-l', 'chi_sim']
         proc = subprocess.run(cmd, capture_output=True, timeout=120)
         return proc.stdout.decode('utf-8', errors='replace')

@@ -99,6 +99,26 @@ class PushCheckEngineTests(TestCase):
         self.assertEqual(pushes[0]['platforms'][0]['key'], '123')
         self.assertEqual(pushes[0]['platforms'][0]['client'], 'iOS')
 
+    def test_get_image_attachments_detects_octet_stream_png(self):
+        from email import encoders
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+
+        msg = MIMEMultipart()
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(b'\x89PNG\r\n\x1a\n' + b'x' * 100)
+        encoders.encode_base64(part)
+        msg.attach(part)
+        atts = push_check_engine.get_image_attachments(msg)
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0]['contentType'], 'application/octet-stream')
+
+        msg2 = MIMEMultipart()
+        part2 = MIMEBase('application', 'octet-stream')
+        part2.set_payload(b'not an image payload')
+        msg2.attach(part2)
+        self.assertEqual(push_check_engine.get_image_attachments(msg2), [])
+
     def test_missing_imap_config(self):
         cfg = make_config()
         cfg['imap']['user'] = ''
@@ -295,11 +315,10 @@ class PushCheckTaskTests(TestCase):
 
 
 SYNC_OCR_TEXT = (
-    '推送目标：主包、黄历\n'
-    '推送标题：标题A\n'
-    '推送内容：内容B\n'
-    '安卓版本：all\n'
-    'IOS版本：all'
+    '上报ID 推送名称 推送目标 "推送标题 推送内容 安卓版本 10S版本 推送时间 区域 "推送状态 "操作\n'
+    'b035abf1-86b6-4f23-867f-dddc4fa6f6al 常规-8.25安卓 主包,黄历 "卧室有5样东西 为什么你总睡不好、嗓子疼? all 不向I0S推送。" 2026-08-25 20:00:00 未执行\n'
+    '40c3636d-5539-4c08-98b4-726f58a519e6 常规-8.25鸿蒙 鸿蒙 卧室有5样东西 为什么你总睡不好、嗓子疼? all 不向I0S推送 "2026-08-25 20:00:00 未执行\n'
+    'bc030d27-29a4-4417-96fe-09dfb56ca214 常规-8.25ios 主包 卧室有5样东西 为什么你总睡不好、嗓子疼? 不向安卓推送 "all 2026-08-25 16:00:00 未执行'
 )
 
 
@@ -316,6 +335,21 @@ def make_sync_email(**overrides):
     return data
 
 
+def make_sync_backend_records():
+    """三条推送记录（安卓/鸿蒙/iOS），与 SYNC_OCR_TEXT 对应。"""
+    return [
+        make_backend_record(
+            taskTitle='常规-8.25安卓', taskBody='为什么你总睡不好、嗓子疼?',
+            pushTarget='0,1', versionType='1', versionTypeIOS='7'),
+        make_backend_record(
+            id=2, taskTitle='常规-8.25鸿蒙', taskBody='为什么你总睡不好、嗓子疼?',
+            pushTarget='2', versionType='1', versionTypeIOS='7'),
+        make_backend_record(
+            id=3, taskTitle='常规-8.25ios', taskBody='为什么你总睡不好、嗓子疼?',
+            pushTarget='0', versionType='7', versionTypeIOS='1'),
+    ]
+
+
 class SyncCheckEngineTests(TestCase):
     """同步确认引擎：OCR 提取、归一化、对比、超时与重复处理。"""
 
@@ -330,21 +364,12 @@ class SyncCheckEngineTests(TestCase):
         })
         return cfg
 
-    def test_ocr_extract_sync_fields(self):
-        parsed = sync_check_engine.ocr_extract_sync_fields(SYNC_OCR_TEXT)
-        self.assertEqual(parsed['fields']['push_target'], '主包、黄历')
-        self.assertEqual(parsed['fields']['title'], '标题A')
-        self.assertEqual(parsed['fields']['content'], '内容B')
-        self.assertEqual(parsed['fields']['android_version'], 'all')
-        self.assertEqual(parsed['fields']['ios_version'], 'all')
-
-    def test_norm_functions(self):
-        self.assertEqual(sync_check_engine.norm_push_target('主包、黄历'), '0,1')
-        self.assertEqual(sync_check_engine.norm_push_target('鸿蒙'), '2')
-        self.assertEqual(sync_check_engine.norm_push_target('iOS、安卓'), '0,1')
-        self.assertEqual(sync_check_engine.norm_version('all'), '1')
-        self.assertEqual(sync_check_engine.norm_version('不向iOS推送'), '7')
-        self.assertEqual(sync_check_engine.norm_version('7'), '7')
+    def test_ocr_extract_sync_rows(self):
+        parsed = sync_check_engine.ocr_extract_sync_rows(SYNC_OCR_TEXT)
+        self.assertEqual(len(parsed['rows']), 3)
+        self.assertTrue(parsed['rows'][0]['uid'].startswith('b035abf1'))
+        self.assertIn('常规-8.25安卓', parsed['rows'][0]['compact'])
+        self.assertIn('主包', parsed['rows'][0]['compact'])
 
     def test_no_email_keeps_pending(self):
         with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):
@@ -384,15 +409,13 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(result['summary']['status'], 'pending')
 
     def test_compare_ok(self):
-        rec = make_backend_record(
-            taskTitle='标题A', taskBody='内容B', pushTarget='0,1',
-            versionType='1', versionTypeIOS='1')
         with mock.patch.object(
             sync_check_engine, 'find_sync_email', return_value=make_sync_email()
         ), mock.patch.object(
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
-            push_check_engine, 'search_push', return_value=make_search_result([rec])
+            push_check_engine, 'search_push',
+            side_effect=[make_search_result([r]) for r in make_sync_backend_records()],
         ):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
         self.assertTrue(result['ok'])
@@ -400,22 +423,46 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(result['summary']['diffs'], [])
         self.assertEqual(result['state']['done'], True)
         self.assertEqual(result['state']['mail_uid'], 5001)
+        self.assertEqual(len(result['state']['backend_record']), 3)
 
     def test_compare_fail_lists_diffs(self):
-        rec = make_backend_record(
-            taskTitle='其他标题', taskBody='内容B', pushTarget='0,1',
-            versionType='1', versionTypeIOS='1')
+        recs = make_sync_backend_records()
+        recs[0]['versionType'] = '7'  # 安卓记录期望「不向安卓推送」，但 OCR 行1 是 all
         with mock.patch.object(
             sync_check_engine, 'find_sync_email', return_value=make_sync_email()
         ), mock.patch.object(
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
-            push_check_engine, 'search_push', return_value=make_search_result([rec])
+            push_check_engine, 'search_push',
+            side_effect=[make_search_result([r]) for r in recs],
         ):
             result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
         self.assertFalse(result['ok'])
         self.assertEqual(result['summary']['status'], 'fail')
-        self.assertTrue(any('标题不一致' in d for d in result['summary']['diffs']))
+        self.assertTrue(any('安卓版本不一致' in d for d in result['summary']['diffs']))
+
+    def test_compare_backend_not_found(self):
+        with mock.patch.object(
+            sync_check_engine, 'find_sync_email', return_value=make_sync_email()
+        ), mock.patch.object(
+            push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
+        ), mock.patch.object(
+            push_check_engine, 'search_push', return_value=None
+        ):
+            result = sync_check_engine.run_sync_check_engine(config=self._base_config(), state={})
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('后台未找到匹配记录' in d for d in result['summary']['diffs']))
+
+    def test_fuzzy_title_tolerates_ocr_misread(self):
+        # OCR 把「鸿蒙」误识成「鸿莹」，仍应判定标题一致
+        row = {
+            'uid': '40c3636d-5539-4c08-98b4-726f58a519e6',
+            'compact': '40c3636d-5539-4c08-98b4-726f58a519e6常规-8.25鸿莹鸿蒙'
+                       '卧室有5样东西为什么你总睡不好、了明子疼?all不向IOS推送',
+        }
+        self.assertTrue(sync_check_engine._fuzzy_contains('常规-8.25鸿蒙', row['compact']))
+        self.assertTrue(sync_check_engine._fuzzy_contains('为什么你总睡不好、嗓子疼?', row['compact']))
+        self.assertFalse(sync_check_engine._fuzzy_contains('完全不同的标题', row['compact']))
 
     def test_ocr_missing_marks_fail(self):
         with mock.patch.object(
@@ -437,15 +484,13 @@ class SyncCheckEngineTests(TestCase):
         self.assertEqual(result['summary']['status'], 'ok')
         mock_find.assert_not_called()
 
-        rec = make_backend_record(
-            taskTitle='标题A', taskBody='内容B', pushTarget='0,1',
-            versionType='1', versionTypeIOS='1')
         with mock.patch.object(
             sync_check_engine, 'find_sync_email', return_value=make_sync_email()
         ), mock.patch.object(
             push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT
         ), mock.patch.object(
-            push_check_engine, 'search_push', return_value=make_search_result([rec])
+            push_check_engine, 'search_push',
+            side_effect=[make_search_result([r]) for r in make_sync_backend_records()],
         ):
             result = sync_check_engine.run_sync_check_engine(
                 config=self._base_config(), state=state, force=True)
