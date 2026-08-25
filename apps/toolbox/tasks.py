@@ -196,6 +196,10 @@ def run_sync_check_tick(self):
     now = timezone.now()
     if cfg_obj.last_check_at and (now - cfg_obj.last_check_at).total_seconds() < cfg_obj.interval_minutes * 60:
         return
+    # 当天已闭环（通过/不一致/超时）后不再自动触发，避免反复空跑
+    if SyncCheckRun.objects.filter(date=timezone.localdate(),
+                                   status__in=('ok', 'fail', 'timeout')).exists():
+        return
     _execute_sync_check(force=False)
 
 

@@ -617,6 +617,16 @@ class SyncCheckTaskTests(TestCase):
             run_sync_check_tick.run()
         mock_exec.assert_not_called()
 
+    def test_tick_skips_when_day_done(self):
+        cfg = SyncCheckConfig.get_singleton()
+        cfg.enabled = True
+        cfg.last_check_at = timezone.now() - timedelta(minutes=30)
+        cfg.save(update_fields=['enabled', 'last_check_at'])
+        SyncCheckRun.objects.create(date=timezone.localdate(), status='ok')
+        with mock.patch('apps.toolbox.tasks._execute_sync_check') as mock_exec:
+            run_sync_check_tick.run()
+        mock_exec.assert_not_called()
+
     def test_execute_persists_today(self):
         cfg = SyncCheckConfig.get_singleton()
         cfg.enabled = True
