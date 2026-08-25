@@ -58,9 +58,18 @@ def send_dingtalk_markdown(title, text, timeout=10):
             resp = requests.post(
                 url, json=payload,
                 headers={'Content-Type': 'application/json'}, timeout=timeout)
-            item['ok'] = resp.status_code == 200
-            if not item['ok']:
+            if resp.status_code != 200:
                 item['error'] = 'HTTP {}: {}'.format(resp.status_code, resp.text[:200])
+            else:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {}
+                errcode = data.get('errcode', 0)
+                errmsg = data.get('errmsg', '')
+                item['ok'] = (errcode == 0)
+                if not item['ok']:
+                    item['error'] = 'errcode={} errmsg={}'.format(errcode, errmsg)
         except Exception as exc:
             item['error'] = str(exc)
         results.append(item)

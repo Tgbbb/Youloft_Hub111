@@ -78,6 +78,7 @@ class CoreNotifyTests(TestCase):
         self._config({'dingtalk': bot})
         with mock.patch('apps.core.notifications.requests.post') as m:
             m.return_value.status_code = 200
+            m.return_value.json.return_value = {'errcode': 0, 'errmsg': 'ok'}
             res = send_dingtalk_markdown('T', 'X')
         self.assertTrue(res[0]['ok'])
         url = m.call_args[0][0]
@@ -96,3 +97,14 @@ class CoreNotifyTests(TestCase):
             res = send_dingtalk_markdown('T', 'X')
         self.assertFalse(res[0]['ok'])
         self.assertIn('boom', res[0]['error'])
+
+    def test_err_code_nonzero_is_failure(self):
+        from apps.core.notifications import send_dingtalk_markdown
+        bot = {'name': '钉钉群', 'webhook_url': 'https://x', 'enabled': True}
+        self._config({'dingtalk': bot})
+        with mock.patch('apps.core.notifications.requests.post') as m:
+            m.return_value.status_code = 200
+            m.return_value.json.return_value = {'errcode': 310000, 'errmsg': 'sign not match'}
+            res = send_dingtalk_markdown('T', 'X')
+        self.assertFalse(res[0]['ok'])
+        self.assertIn('sign not match', res[0]['error'])
