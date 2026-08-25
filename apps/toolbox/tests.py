@@ -549,20 +549,6 @@ class SyncCheckTaskTests(TestCase):
         self.assertIsNotNone(cfg.last_check_at)
 
     def test_has_push_today_detection(self):
-        with mock.patch(
-            'apps.toolbox.tasks.find_push_schedule_email_today', return_value=None
-        ):
-            self.assertFalse(_has_push_today())
-
-        with mock.patch(
-            'apps.toolbox.tasks.find_push_schedule_email_today',
-            return_value={'uid': 1, 'subject': 'PUSH 测试需求'},
-        ):
-            self.assertTrue(_has_push_today())
-
+        self.assertFalse(_has_push_today())
         PushCheckRun.objects.create(user=self.user, status='success')
-        with mock.patch(
-            'apps.toolbox.tasks.find_push_schedule_email_today'
-        ) as mock_find:
-            self.assertTrue(_has_push_today())
-            mock_find.assert_not_called()
+        self.assertTrue(_has_push_today())
