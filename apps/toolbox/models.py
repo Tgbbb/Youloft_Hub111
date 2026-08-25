@@ -80,6 +80,9 @@ class SyncCheckConfig(models.Model):
         max_length=255, default='回复：【测试需求】关于常规PUSH的测试需求', verbose_name='邮件标题关键词')
     mail_body_keyword = models.CharField(max_length=100, default='已同步至线上', verbose_name='正文关键词')
     last_check_at = models.DateTimeField(null=True, blank=True, verbose_name='上次检查时间')
+    enable_dingtalk_notify = models.BooleanField(
+        default=False, verbose_name='异常钉钉通知',
+        help_text='对比不一致或超时未收到时，通过统一通知配置中的钉钉机器人推送')
     updated_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, verbose_name='最后修改人')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
@@ -119,6 +122,9 @@ class SyncCheckRun(models.Model):
     diffs = models.JSONField(default=list, blank=True, verbose_name='差异列表')
     log = models.TextField(blank=True, default='', verbose_name='检查日志')
     checked_at = models.DateTimeField(null=True, blank=True, verbose_name='最近检查时间')
+    notify_sent_status = models.CharField(
+        max_length=10, blank=True, default='', verbose_name='已通知的异常状态',
+        help_text='当天已推送钉钉的异常状态，用于去重')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 

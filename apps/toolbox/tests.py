@@ -607,3 +607,73 @@ class SyncCheckTaskTests(TestCase):
         self.assertFalse(_has_push_today())
         PushCheckRun.objects.create(user=self.user, status='success')
         self.assertTrue(_has_push_today())
+
+
+class SyncCheckNotifyTests(TestCase):
+    """同步确认钉钉异常通知：时机、开关与去重。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='tester2', password='pass')
+
+    def _run_with(self, status, diffs=None, enable=True, notify_sent=''):
+        cfg = SyncCheckConfig.get_singleton()
+        cfg.enable_dingtalk_notify = enable
+        cfg.save(update_fields=['enable_dingtalk_notify'])
+        run, _ = SyncCheckRun.objects.get_or_create(
+            date=timezone.localdate(), defaults={'status': 'pending'})
+        run.notify_sent_status = notify_sent
+        run.save(update_fields=['notify_sent_status'])
+        engine_result = {
+            'ok': status == 'ok',
+            'summary': {'status': status, 'message': 'x'},
+            'log': '运行日志',
+            'state': {
+                'done': True, 'status': status,
+                'mail_uid': 5001, 'mail_subject': '回复：测试需求',
+                'parsed_fields': {}, 'backend_record': {},
+                'diffs': diffs or [], 'checked_at': '2026-08-25T02:00:00',
+            },
+        }
+        with mock.patch(
+            'apps.toolbox.tasks.run_sync_check_engine', return_value=engine_result
+        ), mock.patch('apps.toolbox.tasks._has_push_today', return_value=True):
+            run_sync_check_task.run(force=False)
+        run.refresh_from_db()
+        return run
+
+    def test_notify_on_fail(self):
+        with mock.patch(
+            'apps.core.notifications.send_dingtalk_markdown',
+            return_value=[{'ok': True}],
+        ) as m:
+            run = self._run_with('fail', diffs=['第 1 条差异'])
+        self.assertTrue(m.called)
+        self.assertEqual(run.notify_sent_status, 'fail')
+        self.assertIn('钉钉通知: 成功 1 / 失败 0', run.log)
+
+    def test_notify_on_timeout(self):
+        with mock.patch(
+            'apps.core.notifications.send_dingtalk_markdown',
+            return_value=[{'ok': True}],
+        ) as m:
+            run = self._run_with('timeout')
+        self.assertTrue(m.called)
+        self.assertEqual(run.notify_sent_status, 'timeout')
+
+    def test_no_notify_on_ok_and_clears_flag(self):
+        with mock.patch('apps.core.notifications.send_dingtalk_markdown') as m:
+            run = self._run_with('ok', notify_sent='fail')
+        m.assert_not_called()
+        self.assertEqual(run.notify_sent_status, '')
+
+    def test_no_notify_when_disabled(self):
+        with mock.patch('apps.core.notifications.send_dingtalk_markdown') as m:
+            run = self._run_with('fail', enable=False)
+        m.assert_not_called()
+        self.assertEqual(run.notify_sent_status, '')
+
+    def test_no_duplicate_notify_same_status(self):
+        with mock.patch('apps.core.notifications.send_dingtalk_markdown') as m:
+            run = self._run_with('timeout', notify_sent='timeout')
+        m.assert_not_called()
+        self.assertEqual(run.notify_sent_status, 'timeout')

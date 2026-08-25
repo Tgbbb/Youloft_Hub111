@@ -1,9 +1,15 @@
 """核心模块测试"""
 import re
+from unittest import mock
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
+from django.test import TestCase
 
 from apps.core.variable_resolver import VariableResolver
+from apps.core.models import UnifiedNotificationConfig
+
+User = get_user_model()
 
 
 class VariableResolverTests(SimpleTestCase):
@@ -45,3 +51,48 @@ class VariableResolverTests(SimpleTestCase):
     def test_random_tool_still_works(self):
         out = self.resolver.resolve("${random_int(1, 9)}")
         self.assertNotIn("${", out)
+
+
+class CoreNotifyTests(TestCase):
+    """统一通知钉钉发送器。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='bot', password='pass')
+
+    def _config(self, bots):
+        return UnifiedNotificationConfig.objects.create(
+            name='钉钉', config_type='webhook_dingtalk',
+            webhook_bots=bots, is_active=True, created_by=self.user)
+
+    def test_no_active_bots_no_send(self):
+        from apps.core.notifications import send_dingtalk_markdown
+        self.assertEqual(send_dingtalk_markdown('T', 'X'), [])
+
+    def test_send_with_secret_signs_url_and_payload(self):
+        from apps.core.notifications import send_dingtalk_markdown
+        bot = {
+            'name': '钉钉群',
+            'webhook_url': 'https://oapi.dingtalk.com/robot/send?access_token=abc',
+            'enabled': True, 'secret': 'SEC',
+        }
+        self._config({'dingtalk': bot})
+        with mock.patch('apps.core.notifications.requests.post') as m:
+            m.return_value.status_code = 200
+            res = send_dingtalk_markdown('T', 'X')
+        self.assertTrue(res[0]['ok'])
+        url = m.call_args[0][0]
+        self.assertIn('timestamp=', url)
+        self.assertIn('sign=', url)
+        payload = m.call_args[1]['json']
+        self.assertEqual(payload['msgtype'], 'markdown')
+        self.assertEqual(payload['markdown']['title'], 'T')
+
+    def test_send_failure_returns_error_not_raise(self):
+        from apps.core.notifications import send_dingtalk_markdown
+        bot = {'name': '钉钉群', 'webhook_url': 'https://x', 'enabled': True}
+        self._config({'dingtalk': bot})
+        with mock.patch(
+            'apps.core.notifications.requests.post', side_effect=Exception('boom')):
+            res = send_dingtalk_markdown('T', 'X')
+        self.assertFalse(res[0]['ok'])
+        self.assertIn('boom', res[0]['error'])

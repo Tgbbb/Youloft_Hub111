@@ -59,6 +59,14 @@
               <span class="sc-toggle__label">当天无推送活动时跳过监听（不报超时）</span>
             </label>
           </div>
+          <div class="sc-field sc-field--full">
+            <label class="sc-toggle" :class="{ 'is-on': form.enable_dingtalk_notify }">
+              <input v-model="form.enable_dingtalk_notify" class="sc-toggle__input" type="checkbox" role="switch" />
+              <span class="sc-toggle__track" aria-hidden="true"><span class="sc-toggle__thumb"></span></span>
+              <span class="sc-toggle__label">钉钉通知（异常时发送）</span>
+            </label>
+            <p class="sc-field__note">对比不一致或超时未收到时，通过「统一通知配置」中的钉钉机器人推送</p>
+          </div>
 
           <div class="sc-field sc-field--num">
             <label class="sc-field__label" for="sc-interval">检查间隔(分钟)</label>
@@ -205,7 +213,8 @@ const form = ref({
   interval_minutes: 15,
   deadline_time: '18:30',
   mail_subject: '回复：【测试需求】关于常规PUSH的测试需求',
-  mail_body_keyword: '已同步至线上'
+  mail_body_keyword: '已同步至线上',
+  enable_dingtalk_notify: false
 })
 
 const saving = ref(false)
@@ -233,7 +242,8 @@ const loadConfig = async () => {
       interval_minutes: data.interval_minutes,
       deadline_time: data.deadline_time,
       mail_subject: data.mail_subject,
-      mail_body_keyword: data.mail_body_keyword
+      mail_body_keyword: data.mail_body_keyword,
+      enable_dingtalk_notify: data.enable_dingtalk_notify
     }
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '配置加载失败')
@@ -251,7 +261,8 @@ const saveConfig = async () => {
       interval_minutes: response.data.interval_minutes,
       deadline_time: response.data.deadline_time,
       mail_subject: response.data.mail_subject,
-      mail_body_keyword: response.data.mail_body_keyword
+      mail_body_keyword: response.data.mail_body_keyword,
+      enable_dingtalk_notify: response.data.enable_dingtalk_notify
     }
     configMessage.value = '配置已保存'
     configMessageType.value = 'success'
@@ -749,6 +760,13 @@ onUnmounted(() => {
     font-size: 12px;
     color: var(--sc-muted);
   }
+}
+
+.sc-field__note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--sc-faint, #7b8496);
 }
 
 /* ---------- Run bar / summary ---------- */

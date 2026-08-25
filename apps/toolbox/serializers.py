@@ -51,7 +51,7 @@ class SyncCheckConfigSerializer(serializers.ModelSerializer):
         model = SyncCheckConfig
         fields = [
             'id', 'enabled', 'require_push_activity', 'interval_minutes', 'deadline_time',
-            'mail_subject', 'mail_body_keyword', 'last_check_at',
+            'mail_subject', 'mail_body_keyword', 'enable_dingtalk_notify', 'last_check_at',
             'updated_by', 'updated_at',
         ]
         read_only_fields = ['id', 'last_check_at', 'updated_by', 'updated_at']
@@ -67,5 +67,6 @@ class SyncCheckRunDetailSerializer(SyncCheckRunListSerializer):
     class Meta(SyncCheckRunListSerializer.Meta):
         fields = [
             'id', 'date', 'status', 'mail_uid', 'mail_subject', 'ocr_text',
-            'parsed_fields', 'backend_record', 'diffs', 'log', 'checked_at', 'created_at',
+            'parsed_fields', 'backend_record', 'diffs', 'log', 'notify_sent_status',
+            'checked_at', 'created_at',
         ]

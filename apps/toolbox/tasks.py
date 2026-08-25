@@ -125,11 +125,13 @@ def _execute_sync_check(force=False):
         run.log = ((run.log + '\n') if run.log else '') + result['log']
         run.checked_at = timezone.now()
         run.save()
+        _notify_sync_check(run, cfg_obj.enable_dingtalk_notify)
     except Exception as exc:
         run.status = 'fail'
         run.log = ((run.log + '\n') if run.log else '') + traceback.format_exc()
         run.checked_at = timezone.now()
         run.save()
+        _notify_sync_check(run, cfg_obj.enable_dingtalk_notify)
     SyncCheckConfig.objects.filter(pk=cfg_obj.pk).update(last_check_at=timezone.now())
 
 
@@ -139,6 +141,50 @@ def _has_push_today():
     day_start = timezone.make_aware(datetime.combine(now.date(), datetime.min.time()))
     day_end = day_start + timedelta(days=1)
     return PushCheckRun.objects.filter(started_at__gte=day_start, started_at__lt=day_end).exists()
+
+
+def _notify_sync_check(run, enable):
+    """异常终态（fail/timeout）时推送钉钉告警；同一天相同异常状态只推送一次。"""
+    status = run.status or ''
+    if status not in ('fail', 'timeout'):
+        # 回到非异常状态，清空已推送标记，允许之后再次提醒
+        if run.notify_sent_status:
+            run.notify_sent_status = ''
+            run.save(update_fields=['notify_sent_status'])
+        return
+    if not enable or run.notify_sent_status == status:
+        return
+
+    lines = [
+        '## 同步确认异常提醒',
+        '',
+        '- 日期: {}'.format(run.date),
+        '- 状态: {}'.format(run.get_status_display()),
+    ]
+    if run.mail_subject:
+        lines.append('- 邮件: {}'.format(run.mail_subject))
+    if run.mail_uid:
+        lines.append('- 邮件UID: {}'.format(run.mail_uid))
+    if run.diffs:
+        lines.append('')
+        lines.append('**差异（{}）:**'.format(len(run.diffs)))
+        for d in run.diffs[:10]:
+            lines.append('- {}'.format(d))
+        if len(run.diffs) > 10:
+            lines.append('- ... 共 {} 项'.format(len(run.diffs)))
+    lines.append('')
+    lines.append('请到 TestHub → 工具合集 → 同步确认 查看详情。')
+
+    from apps.core.notifications import send_dingtalk_markdown
+    results = send_dingtalk_markdown('同步确认异常提醒', '\n'.join(lines))
+    ok = sum(1 for r in results if r.get('ok'))
+    fail = len(results) - ok
+
+    run.notify_sent_status = status
+    run.save(update_fields=['notify_sent_status'])
+    note = '钉钉通知: 成功 {} / 失败 {}'.format(ok, fail)
+    run.log = ((run.log + '\n') if run.log else '') + note
+    run.save(update_fields=['log'])
 
 
 @shared_task(bind=True, max_retries=0)
