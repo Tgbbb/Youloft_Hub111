@@ -139,12 +139,6 @@ def find_sync_email(subject_keyword, body_keyword):
     return _find_email_by_headers(lambda s: subject_keyword in s, body_keyword)
 
 
-def find_push_schedule_email_today():
-    """IMAP 找当天是否有「测试需求」排期邮件（PUSH + 测试需求 + 非回复），用于判定当天有推送。"""
-    return _find_email_by_headers(
-        lambda s: 'PUSH' in s and '测试需求' in s and '回复' not in s)
-
-
 def ocr_extract_sync_fields(text):
     """把 OCR 原文解析成五字段（compact 文本定位，兼容 OCR 空格/换行干扰）。"""
     raw = re.sub(r'[ \t]+', ' ', text or '')
@@ -282,7 +276,7 @@ def main(force=False):
     if cfg.get('require_push_activity', True) and not cfg.get('has_push_today', False):
         state.update({'status': 'pending', 'checked_at': now.isoformat()})
         save_state(state)
-        log('ℹ 当天无推送活动（无推送对比记录、无测试需求排期邮件），跳过监听，不报超时')
+        log('ℹ 当天无推送对比运行记录，跳过监听，不报超时')
         _last_summary.update({'status': 'pending', 'message': '当天无推送活动，跳过监听'})
         return
 

@@ -9,7 +9,7 @@ from django.utils import timezone
 from .models import PushCheckRun, ToolboxConfig, SyncCheckConfig, SyncCheckRun
 from .push_check_engine import run_push_check_engine
 from . import sync_check_engine
-from .sync_check_engine import run_sync_check_engine, find_push_schedule_email_today
+from .sync_check_engine import run_sync_check_engine
 
 
 @shared_task(bind=True, max_retries=0)
@@ -134,16 +134,11 @@ def _execute_sync_check(force=False):
 
 
 def _has_push_today():
-    """当天是否有推送活动：有推送对比运行记录，或当天有测试需求排期邮件。"""
+    """当天是否有推送活动：存在当天的推送对比运行记录。"""
     now = timezone.localtime()
     day_start = timezone.make_aware(datetime.combine(now.date(), datetime.min.time()))
     day_end = day_start + timedelta(days=1)
-    if PushCheckRun.objects.filter(started_at__gte=day_start, started_at__lt=day_end).exists():
-        return True
-    try:
-        return find_push_schedule_email_today() is not None
-    except Exception:
-        return False
+    return PushCheckRun.objects.filter(started_at__gte=day_start, started_at__lt=day_end).exists()
 
 
 @shared_task(bind=True, max_retries=0)
