@@ -20,20 +20,10 @@ _log_lines = []
 _last_ok = True
 _last_summary = {}
 
-# 五字段提取顺序：每个字段用 start 关键字定位、stop 关键字截断（compact 文本已去空白）
-_SYNC_FIELD_SPECS = [
-    ('push_target', ['推送目标'], ['推送标题', '标题', '推送内容', '内容', '安卓版本', 'IOS版本', 'iOS版本', '推送链接']),
-    ('title', ['推送标题', '标题'], ['推送内容', '内容', '安卓版本', 'IOS版本', 'iOS版本', '推送目标', '推送链接']),
-    ('content', ['推送内容', '内容'], ['安卓版本', 'IOS版本', 'iOS版本', '推送目标', '推送标题', '推送链接']),
-    ('android_version', ['安卓版本'], ['IOS版本', 'iOS版本', '推送目标', '推送标题', '推送内容', '推送链接']),
-    ('ios_version', ['IOS版本', 'iOS版本'], ['推送目标', '推送标题', '推送内容', '安卓版本', '推送链接']),
-]
-
-# 推送目标显示名 → 后台代码集合（后台 pushTarget：0=主包/万年历, 1=黄历, 2=鸿蒙）
-_TARGET_ALIASES = [
-    ('主包', '0'), ('万年历', '0'), ('黄历', '1'), ('鸿蒙', '2'),
-    ('iOS', '0'), ('苹果', '0'), ('安卓', '0,1'), ('Android', '0,1'),
-]
+# 上报ID 用于切分表格数据行（后台配置截图每行以上报ID 开头，uuid 末尾字符 OCR 可能误识）
+_UUID_RE = re.compile(
+    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{10,}',
+    re.I)
 
 
 def configure(config, state):
@@ -139,109 +129,110 @@ def find_sync_email(subject_keyword, body_keyword):
     return _find_email_by_headers(lambda s: subject_keyword in s, body_keyword)
 
 
-def ocr_extract_sync_fields(text):
-    """把 OCR 原文解析成五字段（compact 文本定位，兼容 OCR 空格/换行干扰）。"""
+def ocr_extract_sync_rows(text):
+    """把 OCR 原文按上报ID 切分成表格数据行（每行含该条推送的完整字段）。"""
     raw = re.sub(r'[ \t]+', ' ', text or '')
     raw = re.sub(r'\n\s*\n', '\n', raw).strip()
     compact = re.sub(r'\s+', '', raw)
-    fields = {}
-    for key, starts, stops in _SYNC_FIELD_SPECS:
-        fields[key] = pce.ocr_extract_field(compact, starts, stops)
-    return {'raw': raw, 'fields': fields}
+    matches = list(_UUID_RE.finditer(compact))
+    rows = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(compact)
+        rows.append({
+            'uid': m.group(0),
+            'compact': compact[start:end],
+        })
+    return {'raw': raw, 'rows': rows}
 
 
-def norm_push_target(value):
-    """推送目标显示名 → 后台代码集合字符串（如 '0,1'）；识别不到返回原文。"""
-    s = (value or '').strip()
-    if not s:
-        return ''
-    codes = set()
-    for word, code in _TARGET_ALIASES:
-        if word in s:
-            for c in code.split(','):
-                codes.add(c)
-    if codes:
-        return ','.join(sorted(codes))
-    return s
+def _norm_ocr_versions(text):
+    """把 OCR 常见的 IOS 误识归一化（I0S / 1OS / 10S → iOS）。"""
+    return (text or '').replace('I0S', 'iOS').replace('1OS', 'iOS') \
+        .replace('10S', 'iOS').replace('IOS', 'iOS')
 
 
-def norm_version(value):
-    """版本类别归一化：1=all，7=不向该端推送。"""
-    s = str(value or '').strip()
-    if '不向' in s:
-        return '7'
-    if s.lower() in ('all', '全部'):
-        return '1'
-    if s in ('1', '7'):
-        return s
-    return s
+def _backend_version_text(value, platform):
+    """后台版本代码转显示文本：1=all，7=不向该端推送。"""
+    v = str(value or '').strip()
+    if v == '7':
+        return '不向%s推送' % ('安卓' if platform == '安卓' else 'iOS')
+    if v == '1':
+        return 'all'
+    return ''
 
 
-def compare_with_backend(fields):
-    """OCR 五字段 vs 推送后台记录，返回 {'matched': record|None, 'diffs': [...]}。"""
+def _fuzzy_contains(needle, haystack, min_ratio=0.72):
+    """容错包含匹配：归一化子串命中，或允许少量 OCR 误识（含单字变多字）。"""
+    n = pce.normalize_title(needle or '').lower()
+    h = pce.normalize_title(haystack or '').lower()
+    if not n or not h:
+        return False
+    if n in h:
+        return True
+    if len(n) >= 6:
+        from difflib import SequenceMatcher
+        best = 0.0
+        for w in range(max(4, len(n) - 3), len(n) + 4):
+            for i in range(len(h) - w + 1):
+                ratio = SequenceMatcher(None, n, h[i:i + w]).ratio()
+                if ratio > best:
+                    best = ratio
+        return best >= min_ratio
+    return False
+
+
+def compare_with_backend(rows):
+    """按行 × 后台记录反向包含校验：后台记录字段应都能在对应 OCR 行文本中找到。"""
     diffs = []
-    title = (fields.get('title') or '').strip()
-    content = (fields.get('content') or '').strip()
-    sources = [s for s in (title, content) if s]
-    result = pce.search_push(sources) if sources else None
-    if not result or not result.get('succ'):
-        return {'matched': None, 'diffs': ['后台未找到匹配记录（标题/内容未命中）']}
-    records = (result.get('record') or {}).get('records') or []
-    if not records:
-        return {'matched': None, 'diffs': ['后台未找到匹配记录']}
+    matched_records = []
+    for idx, row in enumerate(rows, start=1):
+        row_compact = _norm_ocr_versions(row['compact'])
+        search_text = _UUID_RE.sub('', row_compact)
+        result = pce.search_push([search_text]) if search_text else None
+        records = ((result or {}).get('record') or {}).get('records') or []
+        matched = None
+        if records:
+            for r in records:
+                t = pce.normalize_title(r.get('taskTitle') or '').lower()
+                if t and t in pce.normalize_title(row_compact).lower():
+                    matched = r
+                    break
+            if matched is None:
+                matched = records[0]
+        if matched is None:
+            diffs.append('第 %d 条推送（上报ID=%s）：后台未找到匹配记录' % (idx, row['uid']))
+            continue
+        matched_records.append(matched)
 
-    matched = None
-    if title:
-        for r in records:
-            if pce.normalize_title(r.get('taskTitle') or '') == pce.normalize_title(title):
-                matched = r
-                break
-    if matched is None:
-        matched = records[0]
+        # 标题
+        back_title = matched.get('taskTitle') or ''
+        if not _fuzzy_contains(back_title, row_compact):
+            diffs.append('第 %d 条推送标题不一致 → 邮件行未包含后台标题:「%s」'
+                         % (idx, back_title))
+        # 推送内容
+        back_body = matched.get('taskBody') or ''
+        if not _fuzzy_contains(back_body, row_compact):
+            diffs.append('第 %d 条推送内容不一致 → 邮件行未包含后台内容:「%s」'
+                         % (idx, back_body))
+        # 推送目标
+        for code in str(matched.get('pushTarget') or '').split(','):
+            if not code:
+                continue
+            word = pce.TARGET_NAME.get(code)
+            if word and word not in row_compact:
+                diffs.append('第 %d 条推送目标缺少「%s」（后台:%s）'
+                             % (idx, word, pce.target_names([code])))
+        # 安卓版本
+        back_android = _backend_version_text(matched.get('versionType'), '安卓')
+        if back_android and back_android not in row_compact:
+            diffs.append('第 %d 条安卓版本不一致 → 邮件行未包含:「%s」' % (idx, back_android))
+        # IOS版本
+        back_ios = _backend_version_text(matched.get('versionTypeIOS'), 'IOS')
+        if back_ios and back_ios not in row_compact:
+            diffs.append('第 %d 条IOS版本不一致 → 邮件行未包含:「%s」' % (idx, back_ios))
 
-    # 1. 推送目标
-    ocr_target = norm_push_target(fields.get('push_target') or '')
-    back_raw = str(matched.get('pushTarget') or '')
-    back_target = ','.join(sorted(x for x in back_raw.split(',') if x))
-    if not ocr_target:
-        diffs.append('推送目标未识别')
-    elif ocr_target != back_target:
-        diffs.append('推送目标不一致 → 邮件:「%s」 后台:「%s」'
-                     % (fields.get('push_target'), pce.target_names(back_raw.split(',')) or '(未配置)'))
-
-    # 2. 推送标题
-    back_title = (matched.get('taskTitle') or '').strip()
-    if not title:
-        diffs.append('推送标题未识别')
-    elif pce.normalize_title(title) != pce.normalize_title(back_title):
-        diffs.append('推送标题不一致 → 邮件:「%s」 后台:「%s」' % (title, back_title))
-
-    # 3. 推送内容
-    back_content = (matched.get('taskBody') or '').strip()
-    if not content:
-        diffs.append('推送内容未识别')
-    elif pce.normalize_title(content) != pce.normalize_title(back_content):
-        diffs.append('推送内容不一致 → 邮件:「%s」 后台:「%s」' % (content, back_content))
-
-    # 4. 安卓版本
-    ocr_android = norm_version(fields.get('android_version') or '')
-    back_android = norm_version(matched.get('versionType'))
-    if not ocr_android:
-        diffs.append('安卓版本未识别')
-    elif ocr_android != back_android:
-        diffs.append('安卓版本不一致 → 邮件:「%s」 后台:「%s」'
-                     % (fields.get('android_version'), pce.ANDROID_VERSION_MAP.get(back_android, back_android)))
-
-    # 5. IOS版本
-    ocr_ios = norm_version(fields.get('ios_version') or '')
-    back_ios = norm_version(matched.get('versionTypeIOS'))
-    if not ocr_ios:
-        diffs.append('IOS版本未识别')
-    elif ocr_ios != back_ios:
-        diffs.append('IOS版本不一致 → 邮件:「%s」 后台:「%s」'
-                     % (fields.get('ios_version'), pce.IOS_VERSION_MAP.get(back_ios, back_ios)))
-
-    return {'matched': matched, 'diffs': diffs}
+    return {'matched': matched_records, 'diffs': diffs}
 
 
 def main(force=False):
@@ -307,7 +298,7 @@ def main(force=False):
         att = max(atts, key=lambda a: a['size'])
         ocr_text = pce.ocr_image(att['content'])
         if ocr_text:
-            parsed = ocr_extract_sync_fields(ocr_text)
+            parsed = ocr_extract_sync_rows(ocr_text)
     if parsed is None:
         state.update({
             'done': True, 'status': 'fail',
@@ -323,11 +314,24 @@ def main(force=False):
         })
         return
 
-    fields = parsed['fields']
-    log('OCR 解析: 推送目标=%s 标题=%s 内容=%s 安卓=%s IOS=%s'
-        % (fields.get('push_target'), fields.get('title'), fields.get('content'),
-           fields.get('android_version'), fields.get('ios_version')))
-    cmp = compare_with_backend(fields)
+    rows = parsed['rows']
+    if not rows:
+        state.update({
+            'done': True, 'status': 'fail',
+            'mail_uid': email_data['uid'], 'mail_subject': email_data['subject'],
+            'checked_at': now.isoformat(),
+        })
+        save_state(state)
+        log('✖ 已收到邮件但 OCR 未解析出推送配置行（图片内容与预期表格结构不符）')
+        _last_ok = False
+        _last_summary.update({
+            'status': 'fail', 'message': '已收到邮件但 OCR 未解析出推送配置行',
+            'mail_uid': email_data['uid'], 'mail_subject': email_data['subject'],
+        })
+        return
+
+    log('OCR 解析到 %d 条推送记录' % len(rows))
+    cmp = compare_with_backend(rows)
     diffs = cmp['diffs']
     matched = cmp.get('matched')
 
@@ -336,8 +340,8 @@ def main(force=False):
         'status': 'ok' if not diffs else 'fail',
         'mail_uid': email_data['uid'],
         'mail_subject': email_data['subject'],
-        'parsed_fields': fields,
-        'backend_record': matched or {},
+        'parsed_fields': {'rows': [{'uid': r['uid'], 'compact': r['compact']} for r in rows]},
+        'backend_record': matched or [],
         'diffs': diffs,
         'checked_at': now.isoformat(),
     })
@@ -346,8 +350,8 @@ def main(force=False):
         'status': state['status'],
         'mail_uid': email_data['uid'],
         'mail_subject': email_data['subject'],
-        'parsed_fields': fields,
-        'backend_record': matched or {},
+        'parsed_fields': {'rows': [{'uid': r['uid'], 'compact': r['compact']} for r in rows]},
+        'backend_record': matched or [],
         'diffs': diffs,
     })
     if diffs:
