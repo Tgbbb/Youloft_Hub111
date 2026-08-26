@@ -33,16 +33,70 @@ if sys_platform.system() == 'Windows':
 
 def parse_ai_prompt(ai_prompt):
     steps = []
+    raw = []
     for line in ai_prompt.strip().split('\n'):
-        line = line.strip()
-        if not line: continue
-        # 检测「重复」前缀
-        repeat_mode = line.startswith('重复')
-        if repeat_mode:
-            line = line[2:].strip()
-        line = re.sub(r'^(\d+[\.\)、]\s*)', '', line)
-        line = re.sub(r'^[-*•]\s*', '', line)
-        if line: steps.append({'instruction': line, 'repeat': repeat_mode})
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 行首空白（空格/制表符均可）视为缩进，用于识别分支子步骤
+        indent = len(line) - len(line.lstrip())
+        raw.append({'text': stripped, 'indent': indent})
+
+    def _clean(text):
+        repeat = text.startswith('重复')
+        if repeat:
+            text = text[2:].strip()
+        text = re.sub(r'^(\d+[\.\)、]\s*)', '', text)
+        text = re.sub(r'^[-*•]\s*', '', text)
+        return text, repeat
+
+    i = 0
+    while i < len(raw):
+        ln = raw[i]
+        instruction, repeat = _clean(ln['text'])
+        if not instruction:
+            i += 1
+            continue
+        # 分支头：以「如果/若」开头、列首无缩进、以冒号结尾
+        is_branch = (
+            ln['indent'] == 0
+            and (instruction.startswith('如果') or instruction.startswith('若'))
+            and (instruction.rstrip().endswith(':') or instruction.rstrip().endswith('：'))
+        )
+        if is_branch:
+            children_raw = []
+            j = i + 1
+            while j < len(raw) and raw[j]['indent'] > 0:
+                ctext, crepeat = _clean(raw[j]['text'])
+                if ctext:
+                    children_raw.append({'instruction': ctext, 'repeat': crepeat})
+                j += 1
+            if not children_raw:
+                raise ValueError(f'分支 "{instruction}" 必须至少有一个缩进的子步骤')
+            header_index = len(steps)
+            condition = (
+                instruction.rstrip('：:')
+                .replace('如果', '', 1)
+                .replace('若', '', 1)
+                .strip()
+            )
+            node = {
+                'instruction': instruction,
+                'repeat': repeat,
+                'type': 'branch',
+                'condition': condition,
+                'children': [],
+            }
+            steps.append(node)
+            for ct in children_raw:
+                child_index = len(steps)
+                steps.append({'instruction': ct['instruction'], 'repeat': ct['repeat'],
+                              'branch_parent': header_index})
+                node['children'].append(child_index)
+            i = j
+        else:
+            steps.append({'instruction': instruction, 'repeat': repeat})
+            i += 1
     return steps
 
 
@@ -203,6 +257,8 @@ def _build_action_rec(action, png):
         rec['y1'] = action.get('y1', 0)
         rec['x2'] = action.get('x2', 0)
         rec['y2'] = action.get('y2', 0)
+    if t == 'wait':
+        rec['duration'] = _clamp_wait_duration(action)
     return rec
 
 
@@ -422,6 +478,19 @@ def _clamp_wait_after(seconds, floor=0.2, ceil=5.0):
         return floor
 
 
+def _clamp_wait_duration(action, default=3, floor=0.5, ceil=60):
+    """wait 动作时长解析：仅当指令明确给出秒数（duration）时按该值等待。
+    缺失/非法回落 default（3s），越界 clamp 到 [floor, ceil]（0.5~60s）。"""
+    raw = (action or {}).get('duration', default)
+    try:
+        dur = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if dur <= 0:
+        return default
+    return min(max(dur, floor), ceil)
+
+
 def _norm_instruction(text):
     """规范化步骤文案：NFKC 统一全半角，去空白与常见标点，用于宽松匹配。"""
     import unicodedata
@@ -527,6 +596,11 @@ def _execute_replay_action(device_id, ios_dev, a):
         if not ev.get('ok', True):
             result['ok'] = False
             result['message'] = f"{'WDA' if ios_dev else 'ADB'} long_press 失败: {ev.get('error') or ev.get('stderr', '')}"
+    elif action_type == 'wait':
+        # 显式等待：仅当录制时带 duration 才按该时长等；无 duration 保持默认 3s。
+        # wait 本身就是等待，结束后直接返回，不再追加"页面稳定等待"。
+        time.sleep(_clamp_wait_duration(a))
+        return result
     # swipe 动画需要更长等待（基线），之后统一走页面稳定等待
     if action_type in ('swipe',):
         time.sleep(1.5)
@@ -683,6 +757,37 @@ def _smart_wait(device_id, ios_dev, before_png, max_wait=2.0, check_interval=0.5
         time.sleep(check_interval)
 
 
+def _wait_after_input(device_id, ios_dev, before_png, min_wait=1.2, max_wait=4.0,
+                      check_interval=0.4):
+    """input 后等待：先静默等 min_wait 给网络校验/自动跳转留时间；
+    期间页面若开始变化（如验证码输入后自动跳转），继续跟踪到连续两次稳定为止（最多 max_wait）。
+    普通输入（页面一直静止）在 min_wait 后返回，避免拖慢流程。"""
+    start = time.time()
+    changed = False
+    while time.time() - start < max_wait:
+        time.sleep(check_interval)
+        try:
+            cur = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        except Exception:
+            continue
+        if _is_same_page(before_png, cur):
+            if not changed and time.time() - start >= min_wait:
+                return  # 普通输入：静默窗口已过，页面未动，直接继续
+            continue
+        # 页面开始变化（跳转/加载）：跟踪到连续两次稳定
+        changed = True
+        before_png = cur
+        time.sleep(check_interval)
+        try:
+            cur2 = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        except Exception:
+            continue
+        if _is_same_page(before_png, cur2):
+            return
+        before_png = cur2
+    logger.info(f'[Runner] input 后等待结束(页面变化={changed}, 耗时{time.time()-start:.1f}s)')
+
+
 def _wait_screen_stable(device_id, ios_dev, timeout=15.0, check_interval=0.8, label='页面'):
     """等待页面稳定：连续两次截图相同（pHash 距离 <3）即认为页面稳定。
     用于启动后等待首帧稳定、条件步骤判定前等待跳转/加载完成等场景。
@@ -716,32 +821,54 @@ def _is_same_page_by_hash(png_bytes, expected_hash):
 CONDITION_CONFIRM_PROMPT = (
     '当前是条件步骤，指令: {instruction}\n'
     '请观察截图，判断指令条件中描述的目标页面/元素是否出现。\n'
-    '只输出 JSON，不要输出任何其他内容：{{"present": true或false, "reasoning": "一句话说明"}}'
+    '同时判断当前截图是否属于「全局提示」中需要先处理的障碍（如权限弹窗、渠道选择页等）；若是，请把 anomaly 填 true。\n'
+    '只输出 JSON，不要输出任何其他内容：{{"present": true或false, "anomaly": true或false, "reasoning": "一句话说明"}}'
 )
 
 
-def _ask_condition_present(png_bytes, instruction, model_config, width, height, stop_checker=None):
-    """轻量 VLM 确认：条件步骤的目标元素是否出现在当前截图。返回 (present, reasoning)。"""
+GLOBAL_OBSTACLE_PROMPT = (
+    '当前任务：清理「全局提示」中需要先处理的障碍（如权限弹窗、渠道选择页、活动/会员弹窗等）。\n'
+    '请观察截图：若有这类障碍，按全局提示执行相应动作；若当前没有任何需要处理的障碍，直接返回 {{"action":"done"}}。\n'
+    '只输出动作 JSON，不要输出其他内容。'
+)
+
+
+# 元素确认只用最轻量的 system prompt：只做判断、不执行动作，减小请求体避免慢响应
+CONDITION_CONFIRM_SYSTEM = (
+    '你是移动端界面识别助手。根据截图判断条件目标是否出现、以及当前是否为需先处理的全局障碍。\n'
+    '{context}\n'
+    '只输出 JSON，不要输出多余内容。'
+)
+
+
+def _ask_condition_present(png_bytes, instruction, model_config, width, height, context='', stop_checker=None):
+    """轻量 VLM 确认：条件步骤目标元素是否出现、当前是否为全局障碍。
+    返回 (present, anomaly, reasoning)；anomaly 缺省视为 False（向后兼容）。"""
     raw = call_vlm(png_bytes, CONDITION_CONFIRM_PROMPT.format(instruction=instruction),
-                   model_config, width=width, height=height, return_raw=True, max_tokens=256,
-                   stop_checker=stop_checker)
+                   model_config, width=width, height=height, context=context,
+                   system_prompt=CONDITION_CONFIRM_SYSTEM,
+                   return_raw=True, max_tokens=256, stop_checker=stop_checker)
     logger.info(f'[Condition] 元素确认响应: {str(raw)[:200]}')
     m = re.search(r'"present"\s*:\s*(true|false)', raw, re.IGNORECASE)
     if not m:
         raise ValueError(f'元素确认响应缺少 present 字段: {str(raw)[:200]}')
+    present = m.group(1).lower() == 'true'
+    am = re.search(r'"anomaly"\s*:\s*(true|false)', raw, re.IGNORECASE)
+    anomaly = bool(am) and am.group(1).lower() == 'true'
     reasoning = ''
     rm = re.search(r'"reasoning"\s*:\s*"([^"]*)"', raw)
     if rm:
         reasoning = rm.group(1)
-    return m.group(1).lower() == 'true', reasoning
+    return present, anomaly, reasoning
 
 
 def _confirm_condition_target(device_id, ios_dev, instruction, model_config, width, height,
                               initial_png=None, max_attempts=2, wait_interval=2.0,
-                              stop_checker=None):
+                              context='', stop_checker=None):
     """条件步骤目标元素确认（带加载等待）：
-    - present=true → (True, 当前截图, reasoning)，播放录制动作
-    - 页面稳定且仍不存在 → (False, 当前截图, reasoning)，判定条件不满足跳过
+    - 目标存在 → ('present', 当前截图, reasoning)，播放录制动作
+    - 页面稳定且目标不存在、也非全局障碍 → ('absent', 当前截图, reasoning)，判定条件不满足跳过
+    - 当前截图是全局提示里的障碍 → ('anomaly', 截图, reasoning)，由调用方降至 VLM 先处理障碍
     - 页面一直在变化(加载中)重试耗尽 / 确认调用失败 → (None, 截图, reasoning)，由调用方降至 VLM
     """
     png = initial_png
@@ -752,8 +879,9 @@ def _confirm_condition_target(device_id, ios_dev, instruction, model_config, wid
         if png is None:
             png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
         try:
-            present, reasoning = _ask_condition_present(
-                png, instruction, model_config, width, height, stop_checker=stop_checker)
+            present, anomaly, reasoning = _ask_condition_present(
+                png, instruction, model_config, width, height, context=context,
+                stop_checker=stop_checker)
         except ExecutionStopped:
             raise  # 用户停止：不降级、不重试，直接向上传递
         except Exception as e:
@@ -761,7 +889,10 @@ def _confirm_condition_target(device_id, ios_dev, instruction, model_config, wid
             return None, png, ''
         if present:
             logger.info(f'[Condition] 目标元素确认存在: {reasoning[:120]}')
-            return True, png, reasoning
+            return 'present', png, reasoning
+        if anomaly:
+            logger.info(f'[Condition] 检测到全局障碍，降至VLM处理: {reasoning[:120]}')
+            return 'anomaly', png, reasoning
         # 未出现：判断页面是否仍在变化（加载中）
         if last_png is not None and _is_same_page(last_png, png):
             stable_count += 1
@@ -770,12 +901,27 @@ def _confirm_condition_target(device_id, ios_dev, instruction, model_config, wid
         last_png = png
         if attempt >= 1 and stable_count >= 1:
             logger.info(f'[Condition] 页面稳定且目标未出现，条件不满足: {reasoning[:120]}')
-            return False, png, reasoning
+            return 'absent', png, reasoning
         logger.info(f'[Condition] 目标未出现(第{attempt+1}/{max_attempts}次)，页面仍在变化，{wait_interval}s后重试')
         png = None
         time.sleep(wait_interval)
     logger.warning('[Condition] 重试耗尽仍未确认目标元素，降至VLM')
     return None, last_png, reasoning
+
+
+def _clear_global_obstacle(device_id, ios_dev, model_config, width, height, context='',
+                           max_attempts=3, stop_checker=None):
+    """用完整 VLM 把当前屏幕的全局障碍清掉；已清完/无障碍返回 (True, '')，否则 (False, 描述)。"""
+    for attempt in range(max_attempts):
+        if stop_checker and stop_checker():
+            raise ExecutionStopped('用户已停止执行')
+        png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+        action = call_vlm(png, GLOBAL_OBSTACLE_PROMPT, model_config, width, height,
+                          context=context, stop_checker=stop_checker)
+        if action.get('action') == 'done':
+            return True, ''
+        _replay_actions(device_id, ios_dev, [action], width, height)
+    return False, f'全局障碍清理尝试{max_attempts}次未完成'
 
 
 def _action_fingerprint(action):
@@ -855,7 +1001,7 @@ VLM_SYSTEM_PROMPT = """你是移动端自动化测试助手。观察手机截图
 {"action":"input","text":"hello","step_status":"done","reasoning":"..."}
 {"action":"swipe","x1_pct":50,"y1_pct":80,"x2_pct":50,"y2_pct":30,"step_status":"done","reasoning":"..."}
 {"action":"back","step_status":"done","reasoning":"..."}
-{"action":"wait","step_status":"in_progress","reasoning":"页面加载中，等待..."}
+{"action":"wait","duration":5,"step_status":"in_progress","reasoning":"页面加载中，等待..."}
 {"action":"assert","passed":true,"reasoning":"..."}
 {"action":"query","data":"提取的数据","reasoning":"..."}
 {"action":"done","reasoning":"..."}
@@ -869,7 +1015,7 @@ step_status 说明：
 - 断言时页面仍在加载（加载转圈/骨架屏/进度条）→先用wait，不要断言，等页面加载完成再判断
 - 指令含"提取/获取/查询"→用query，data字段放提取结果
 - 如果界面加载完毕但找不到目标→用swipe滑动查找。绝对不要猜坐标
-- 如果界面还在加载/动画/过渡中→用wait等待
+- 如果界面还在加载/动画/过渡中→用wait等待；仅当指令明确给出秒数（如"等待20秒"）时，duration填该秒数（1-60），未等完可连续输出wait；指令没有明确时长时不要填duration（保持默认3秒）
 - 滚动选项列表/下拉框：
   - 从可滚动的选择器、下拉框、菜单等选项列表中选择时，先打开该控件；列表打开后与列表本身交互，不要操作页面其他区域
   - 列表打开且目标选项可见→直接精确点击该选项；目标不可见→先滚动打开的列表/下拉框查找，不要放弃或去点其他元素
@@ -972,7 +1118,8 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
 # ============================================================
 
 def run_midscene_test(ai_prompt, device, model_config, execution_record, progress_callback=None,
-                      record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False):
+                      record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False,
+                      app_package_override=''):
     steps = parse_ai_prompt(ai_prompt)
     if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
 
@@ -1036,9 +1183,10 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
         # ---- 启动应用 ----
         if platform == 'android':
-            # Android: 用例包名 → 项目Android包名
-            app_pkg = (mc.app_package if mc and mc.app_package
-                       else (mc.project.default_app_package if mc and mc.project else ''))
+            # Android: 执行前指定安装包 → 用例包名 → 项目Android包名
+            app_pkg = (app_package_override or
+                       (mc.app_package if mc and mc.app_package
+                        else (mc.project.default_app_package if mc and mc.project else '')))
             if app_pkg:
                 # 清除App数据
                 if clear_app_data:
@@ -1094,6 +1242,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 'height': height,
             }
             use_locate = getattr(mc, 'use_locate', None) if mc is not None else None
+            use_deep_locate = getattr(mc, 'use_deep_locate', None) if mc is not None else None
             return run_ai_act(
                 goal=full_goal,
                 device_ctx=device_ctx,
@@ -1104,6 +1253,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 progress_callback=progress_callback,
                 execution_record=execution_record,
                 use_locate=use_locate,
+                use_deep_locate=use_deep_locate,
             )
 
         # ---- 逐步执行 ----
@@ -1119,6 +1269,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         if replay_available:
             logger.info(f'[Runner] 回放模式: 已录制{len(replay_data["steps"])}步')
         replay_pass = 0; replay_fail = 0
+        branch_state = {}  # 缩进分组分支：记录每个分支头是否进入，用于门控其子步骤
 
         while step_idx < len(steps):
             step = steps[step_idx]
@@ -1128,6 +1279,155 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             # 本步骤异常采集：启动阶段异常并入第一步，纠错埋点随后追加
             step_anomalies = list(pre_step_anomalies)
             pre_step_anomalies = []
+
+            # ---- 缩进分组分支：子步骤门控 + 分支头门控 ----
+            parent = step.get('branch_parent')
+            if parent is not None and branch_state.get(parent) is False:
+                # 所属分支未进入 → 整组跳过，不再单独判断
+                logger.info(f'[Runner] 步骤 {step_idx+1} 分支未进入，跳过: {instruction}')
+                if progress_callback:
+                    progress_callback(step_idx+1, len(steps), {
+                        'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
+                        'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
+                    })
+                replay_pass += 1
+                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                'screenshot': '', 'aiReasoning': ['[回放] 分支未进入，跳过'],
+                                'action': 'skip', 'anomalies': list(step_anomalies)})
+                _push_step_memory(step_memory, step_idx + 1, instruction, 'skip')
+                if record_mode:
+                    while len(recording) <= step_idx:
+                        recording.append(None)
+                    recording[step_idx] = None
+                step_idx += 1
+                if progress_callback:
+                    progress_callback(step_idx, len(steps), {
+                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                        'instruction': instruction, 'status': 'passed', 'screenshot': '',
+                        'aiReasoning': ['[回放] 分支未进入，跳过'],
+                        'anomalies': list(step_anomalies),
+                        'progress': int(step_idx / len(steps) * 100)
+                    })
+                continue
+
+            if step.get('type') == 'branch':
+                # 分支头：只做一次门控，命中激活子步骤，未命中整组跳过
+                if progress_callback:
+                    progress_callback(step_idx+1, len(steps), {
+                        'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
+                        'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
+                    })
+                png_gate = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                entered = None
+                gate_reason = ''
+                r_step_gate = None
+                if replay_available and step_idx < len(replay_data['steps']):
+                    candidate = replay_data['steps'][step_idx]
+                    if candidate and _instruction_similar(candidate.get('instruction', ''), instruction):
+                        r_step_gate = candidate
+                rec_entered = r_step_gate.get('branch_entered') if r_step_gate else None
+                act_hash = (r_step_gate.get('act_before_hash', '') if r_step_gate else '')
+                after_hash = (r_step_gate.get('after_hash', '') if r_step_gate else '')
+                if rec_entered is True and act_hash and _is_same_page_by_hash(png_gate, act_hash):
+                    entered = True
+                    gate_reason = '分支命中-录制同路径'
+                elif rec_entered is False and after_hash and _is_same_page_by_hash(png_gate, after_hash):
+                    entered = False
+                    gate_reason = '分支跳过-录制同路径'
+                if entered is None:
+                    # 快速路径未命中 → 元素确认兜底；无法判定时按未进入处理并记异常
+                    try:
+                        status, png_gate, reasoning = _confirm_condition_target(
+                            device_id, ios_dev, step.get('condition', instruction), model_config,
+                            width, height, context=ai_context, initial_png=png_gate,
+                            stop_checker=_user_stopped)
+                        entered = (status == 'present')
+                        if status == 'anomaly':
+                            # B方案：先清全局障碍，再重新门控判断
+                            cleared, clr_desc = _clear_global_obstacle(
+                                device_id, ios_dev, model_config, width, height,
+                                context=ai_context, stop_checker=_user_stopped)
+                            step_anomalies.append(_build_anomaly(
+                                'hash_mismatch_fallback',
+                                f'分支头{step_idx+1} 检测到全局障碍，清理后重新判断',
+                                evidence={'step': step_idx + 1, 'reason': 'global_anomaly',
+                                          'cleared': cleared},
+                                recovered=True))
+                            if cleared:
+                                status, png_gate, reasoning = _confirm_condition_target(
+                                    device_id, ios_dev, step.get('condition', instruction),
+                                    model_config, width, height, context=ai_context,
+                                    stop_checker=_user_stopped)
+                                entered = (status == 'present')
+                                if status == 'present':
+                                    gate_reason = '分支命中-清理障碍后元素确认: ' + reasoning[:80]
+                                elif status == 'absent':
+                                    gate_reason = '分支跳过-清理障碍后元素确认: ' + reasoning[:80]
+                                else:
+                                    gate_reason = '分支门控清理障碍后仍异常/无法判定，按未进入处理'
+                            else:
+                                entered = False
+                                gate_reason = '分支门控全局障碍清理未完成，按未进入处理: ' + str(clr_desc)[:80]
+                        elif status == 'absent':
+                            gate_reason = '分支跳过-元素确认: ' + reasoning[:80]
+                        elif status == 'present':
+                            gate_reason = '分支命中-元素确认: ' + reasoning[:80]
+                        else:
+                            gate_reason = '分支门控无法判定，按未进入处理'
+                    except ExecutionStopped:
+                        stopped = True
+                        results.append({'step': step_idx+1, 'instruction': instruction,
+                                        'status': 'stopped', 'screenshot': '',
+                                        'aiReasoning': ['[停止] 用户已停止执行'],
+                                        'action': 'stopped', 'anomalies': list(step_anomalies)})
+                        break
+                    except Exception as e:
+                        logger.warning(f'[Runner] 分支头 {step_idx+1} 门控确认失败({e})，按未进入处理')
+                        entered = False
+                        gate_reason = f'分支门控确认失败，按未进入处理: {str(e)[:80]}'
+                        step_anomalies.append(_build_anomaly(
+                            'hash_mismatch_fallback',
+                            f'分支头{step_idx+1} 门控确认失败，按未进入处理',
+                            evidence={'step': step_idx + 1, 'error': str(e)[:200]},
+                            recovered=True))
+                branch_state[step_idx] = bool(entered)
+                if record_mode:
+                    gate_rec = {
+                        'instruction': instruction,
+                        'type': 'branch',
+                        'condition': step.get('condition', ''),
+                        'branch_entered': bool(entered),
+                        'actions': [],
+                    }
+                    if entered:
+                        gate_rec['act_before_hash'] = str(_phash(png_gate))
+                        gate_rec['after_hash'] = ''
+                    else:
+                        gate_rec['after_hash'] = str(_phash(png_gate))
+                        gate_rec['act_before_hash'] = ''
+                    while len(recording) <= step_idx:
+                        recording.append(None)
+                    recording[step_idx] = gate_rec
+                prev_png = png_gate
+                screenshot_url = save_screenshot(png_gate, execution_record.id, step_idx+1)
+                replay_pass += 1
+                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                'screenshot': screenshot_url,
+                                'aiReasoning': ['[回放] 分支门控: ' + gate_reason],
+                                'action': 'branch', 'anomalies': list(step_anomalies)})
+                _push_step_memory(step_memory, step_idx + 1, instruction,
+                                  'branch' if entered else 'branch_skip')
+                step_idx += 1
+                if progress_callback:
+                    progress_callback(step_idx, len(steps), {
+                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                        'instruction': instruction, 'status': 'passed',
+                        'screenshot': screenshot_url,
+                        'aiReasoning': ['[回放] 分支门控: ' + gate_reason],
+                        'anomalies': list(step_anomalies),
+                        'progress': int(step_idx / len(steps) * 100)
+                    })
+                continue
 
             if not auto_plan and re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
@@ -1203,9 +1503,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 continue
                             # 主路径：指纹未命中 → 元素级确认（等待加载完成，避免录制到加载帧导致永久不匹配）
                             try:
-                                present, png_conf, reasoning = _confirm_condition_target(
+                                status, png_conf, reasoning = _confirm_condition_target(
                                     device_id, ios_dev, instruction, model_config, width, height,
-                                    initial_png=png, stop_checker=_user_stopped)
+                                    context=ai_context, initial_png=png, stop_checker=_user_stopped)
                             except ExecutionStopped:
                                 stopped = True
                                 results.append({'step': step_idx+1, 'instruction': instruction,
@@ -1214,7 +1514,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                                 'action': 'stopped',
                                                 'anomalies': list(step_anomalies)})
                                 break
-                            if present is True:
+                            if status == 'present':
                                 _replay_actions(device_id, ios_dev, r_actions, width, height,
                                                 anomalies=step_anomalies)
                                 png_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
@@ -1256,7 +1556,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                     })
                                 logger.info(f'[Runner] 条件步骤 {step_idx} 回放通过(元素确认-条件满足)')
                                 continue
-                            if present is False:
+                            if status == 'absent':
                                 # 页面稳定且目标元素不存在 → 条件不满足，跳过
                                 replay_pass += 1
                                 screenshot_url = save_screenshot(png_conf, execution_record.id, step_idx+1)
@@ -1282,13 +1582,22 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                 continue
                             # 确认失败/无法判定 → 降至VLM
                             replay_fail += 1
-                            logger.info(f'[Runner] 条件步骤 {step_idx+1} 元素确认无法判定，降至VLM')
-                            step_anomalies.append(_build_anomaly(
-                                'hash_mismatch_fallback',
-                                f'条件步骤{step_idx+1} 元素确认无法判定，降至VLM',
-                                evidence={'step': step_idx + 1, 'reason': 'element_confirm_failed'},
-                                recovered=True,
-                            ))
+                            if status == 'anomaly':
+                                logger.info(f'[Runner] 条件步骤 {step_idx+1} 检测到全局障碍，降至VLM处理')
+                                step_anomalies.append(_build_anomaly(
+                                    'hash_mismatch_fallback',
+                                    f'条件步骤{step_idx+1} 检测到全局障碍，降至VLM处理',
+                                    evidence={'step': step_idx + 1, 'reason': 'global_anomaly'},
+                                    recovered=True,
+                                ))
+                            else:
+                                logger.info(f'[Runner] 条件步骤 {step_idx+1} 元素确认无法判定，降至VLM')
+                                step_anomalies.append(_build_anomaly(
+                                    'hash_mismatch_fallback',
+                                    f'条件步骤{step_idx+1} 元素确认无法判定，降至VLM',
+                                    evidence={'step': step_idx + 1, 'reason': 'element_confirm_failed'},
+                                    recovered=True,
+                                ))
                         else:
                             # 录制时条件不满足(无动作)：after_hash 即"跳过"指纹
                             if after_hash and _is_same_page_by_hash(png, after_hash):
@@ -1344,7 +1653,25 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                           or steps[step_idx + 1]['instruction'].startswith('若')))
                         png = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                         expected_hash = r_step.get('after_hash', '') if not next_cond else ''
-                        if not expected_hash or _is_same_page_by_hash(png, expected_hash):
+                        # 动作生效判据：执行前后页面发生变化 或 与录制 after_hash 匹配。
+                        # after_hash 在页面分叉/动态内容/加载时序下会失真，若动作已生效
+                        # （页面确实变了）仍按通过处理并记警告，避免"已成功却降级重做"。
+                        hash_ok = (not expected_hash) or _is_same_page_by_hash(png, expected_hash)
+                        page_changed = not _is_same_page(before_png, png)
+                        if hash_ok or page_changed:
+                            if not hash_ok:
+                                logger.warning(
+                                    f'[Runner] 回放步骤{step_idx+1} 动作已生效但执行后pHash与录制不一致'
+                                    f'(页面分叉/动态内容)，按通过处理')
+                                step_anomalies.append(_build_anomaly(
+                                    'hash_mismatch_fallback',
+                                    f'回放步骤{step_idx+1} 动作已生效但执行后pHash与录制不一致'
+                                    f'(页面分叉/动态内容)，按通过处理',
+                                    evidence={'step': step_idx + 1,
+                                              'expected_hash': str(expected_hash),
+                                              'current_hash': str(_phash(png))},
+                                    recovered=True,
+                                ))
                             replay_pass += 1
                             screenshot_url = save_screenshot(before_png, execution_record.id, step_idx+1)
                             after_url = save_screenshot(png, execution_record.id, step_idx+1, '_after') if step_anomalies else ''
@@ -1372,10 +1699,12 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             continue
                         else:
                             replay_fail += 1
-                            logger.warning(f'[Runner] 回放步骤{step_idx+1} pHash不匹配，降至VLM')
+                            logger.warning(
+                                f'[Runner] 回放步骤{step_idx+1} 动作未生效'
+                                f'(页面未变且pHash不匹配)，降至VLM')
                             step_anomalies.append(_build_anomaly(
                                 'hash_mismatch_fallback',
-                                f'回放步骤{step_idx+1} pHash不匹配，降至VLM',
+                                f'回放步骤{step_idx+1} 动作未生效(页面未变且pHash不匹配)，降至VLM',
                                 evidence={'step': step_idx + 1,
                                           'expected_hash': str(expected_hash),
                                           'current_hash': str(_phash(png))},
@@ -1557,7 +1886,9 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
 
                     # 1. 按类型执行
                     if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
-                    if t == 'wait': time.sleep(3); continue  # 加载中等待
+                    if t == 'wait':
+                        time.sleep(_clamp_wait_duration(action))  # 指令明确时长则按时长等待，否则默认3s
+                        continue  # 加载中等待
                     if t == 'swipe':
                         ev = ios_dev.execute_action(action) if ios_dev else adb_execute(device_id, action)
                         if ev and not ev.get('ok', True):
@@ -1628,9 +1959,14 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         else:
                             last_tap_feedback = ''
                     else:
-                        w = {'long_press':0.5,'back':0.5,'input':0.2,'swipe':1.5,
-                             'wait':0,'assert':0,'query':0,'done':0}.get(t,0.5)
-                        if w: time.sleep(w)
+                        if t == 'input':
+                            # 输入后可能触发网络校验/自动跳转（验证码、登录等），
+                            # 先静默等 1.2s，页面开始变化则跟踪到稳定（最多 4s）
+                            _wait_after_input(device_id, ios_dev, png)
+                        else:
+                            w = {'long_press':0.5,'back':0.5,'swipe':1.5,
+                                 'wait':0,'assert':0,'query':0,'done':0}.get(t,0.5)
+                            if w: time.sleep(w)
 
                     # 3. aiAct 继续循环；逐行模式按 step_status 决定是否结束本轮
                     if is_ai_act: continue

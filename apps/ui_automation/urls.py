@@ -27,6 +27,7 @@ from .views_config import EnvironmentConfigViewSet, AIIntelligentModeConfigViewS
 from .views_midscene import (
     MidsceneProjectViewSet, MidsceneDeviceViewSet,
     MidsceneCaseViewSet, MidsceneCaseFolderViewSet, MidsceneExecutionRecordViewSet,
+    MidsceneAppPackageViewSet, MidsceneAppInstallRecordViewSet, MidsceneConfigView,
 )
 
 router = DefaultRouter()
@@ -63,9 +64,12 @@ router.register(r'midscene/devices', MidsceneDeviceViewSet, basename='midscene-d
 router.register(r'midscene/cases', MidsceneCaseViewSet, basename='midscene-cases')
 router.register(r'midscene/folders', MidsceneCaseFolderViewSet, basename='midscene-folders')
 router.register(r'midscene/executions', MidsceneExecutionRecordViewSet, basename='midscene-executions')
+router.register(r'midscene/packages', MidsceneAppPackageViewSet, basename='midscene-packages')
+router.register(r'midscene/install-records', MidsceneAppInstallRecordViewSet, basename='midscene-install-records')
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('midscene/config/', MidsceneConfigView.as_view(), name='midscene-config'),
 ]
 
 # 添加媒体文件路由

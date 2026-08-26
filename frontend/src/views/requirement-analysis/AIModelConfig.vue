@@ -674,8 +674,9 @@ export default {
         return
       }
       
-      // 检查唯一约束冲突（仅在创建新配置且is_active为true时）
-      if (!this.isEditing && this.configForm.is_active) {
+      // 检查唯一约束冲突（仅在创建新配置且is_active为true时；
+      // APP自动化-VLM视觉模型允许同时启用多个，跳过互斥检查）
+      if (!this.isEditing && this.configForm.is_active && this.configForm.role !== 'app_automation_vision') {
         const existingConfig = this.configs.find(config => 
           config.model_type === this.configForm.model_type && 
           config.role === this.configForm.role && 
@@ -781,7 +782,8 @@ export default {
     },
 
     async toggleActive(config) {
-      if (config.is_active) {
+      // APP自动化-VLM视觉模型允许多个同时启用，不弹互斥确认
+      if (config.is_active && config.role !== 'app_automation_vision') {
         const activeConfigs = this.configs.filter(c => c.id !== config.id && c.role === config.role && c.is_active)
         if (activeConfigs.length > 0) {
           const activeConfigNames = activeConfigs.map(c => c.name).join(', ')

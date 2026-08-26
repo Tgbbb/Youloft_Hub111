@@ -46,11 +46,42 @@ def _env_bool(name, default):
     return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def resolve_locate_switches(use_locate=None, use_deep_locate=None):
+    """解析定位开关的最终生效值（供 engine 与配置 API 共用）。
+
+    优先级：实例参数 > 后台全局配置(MidsceneGlobalConfig) > 环境变量 > 代码默认。
+      use_locate:     默认 True（AIACT_USE_LOCATE 可覆盖）
+      use_deep_locate: off/auto/on，默认 auto（AIACT_USE_DEEP_LOCATE 可覆盖）
+    """
+    cfg = None
+    try:
+        from ..models import MidsceneGlobalConfig
+        cfg = MidsceneGlobalConfig.get_singleton()
+    except Exception:
+        cfg = None
+
+    if use_locate is None:
+        if cfg is not None and cfg.use_locate is not None:
+            use_locate = bool(cfg.use_locate)
+        else:
+            use_locate = _env_bool('AIACT_USE_LOCATE', True)
+
+    if use_deep_locate is None:
+        if cfg is not None and cfg.use_deep_locate:
+            use_deep_locate = cfg.use_deep_locate
+        else:
+            use_deep_locate = str(os.environ.get('AIACT_USE_DEEP_LOCATE', 'auto')).strip().lower() or 'auto'
+    if use_deep_locate not in ('off', 'auto', 'on'):
+        use_deep_locate = 'auto'
+    return bool(use_locate), use_deep_locate
+
+
 def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                context='', progress_callback=None, execution_record=None,
                use_locate=True, replanning_cycle_limit=None,
                max_errors_per_loop=None, feedback_truncate=None,
-               stuck_threshold=None, no_progress_threshold=None):
+               stuck_threshold=None, no_progress_threshold=None,
+               use_deep_locate=None):
     """执行一个 aiAct 目标，返回与逐行模式一致的结果结构。
 
     参数：
@@ -68,7 +99,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
     返回 {'status','totalSteps','passedSteps','failedSteps','steps'}，
     steps 每动作一条，含可选字段 query_data/assert_passed/complete_message。
     """
-    from ..midscene_runner import call_vlm, png_size, ExecutionStopped, _build_anomaly  # 延迟导入避免循环依赖
+    from ..midscene_runner import call_vlm, png_size, ExecutionStopped, _build_anomaly, save_screenshot  # 延迟导入避免循环依赖
 
     width = int(device_ctx.get('width', 1080))
     height = int(device_ctx.get('height', 1920))
@@ -84,8 +115,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                           else _env_int('AIACT_STUCK_THRESHOLD', 2))
     no_progress_threshold = int(no_progress_threshold if no_progress_threshold is not None
                                 else _env_int('AIACT_NO_PROGRESS_LIMIT', 3))
-    if use_locate is None:
-        use_locate = _env_bool('AIACT_USE_LOCATE', True)
+    use_locate, use_deep_locate = resolve_locate_switches(use_locate, use_deep_locate)
 
     history = ConversationHistory(feedback_truncate=feedback_truncate)
     steps = []
@@ -309,10 +339,20 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
 
         # ---- 两阶段定位 ----
         try:
+            def _save_deep_crop(crop_png):
+                if execution_record is None or not getattr(execution_record, 'id', None):
+                    return ''
+                try:
+                    return save_screenshot(crop_png, execution_record.id, len(steps) + 1, '_deep_locate')
+                except Exception:
+                    return ''
+
             ok, norm_action, locate_err, locate_info = resolve_action_coords(
                 norm_action, png, model_config, w, h, ctx_text,
                 use_locate=use_locate,
                 call_vlm_fn=_call_vlm,
+                use_deep_locate=use_deep_locate,
+                crop_saver=_save_deep_crop,
             )
         except ExecutionStopped:
             _record_step(None, 'stopped', goal, ['[停止] 用户已停止执行'], 'stopped')
@@ -331,7 +371,7 @@ def run_ai_act(goal, device_ctx, model_config, max_steps=30, action_delay=0.5,
                 break
             continue
         loc = (locate_info or {}).get('locate') or {}
-        if loc.get('retries') or loc.get('fallback'):
+        if loc.get('retries') or loc.get('fallback') or loc.get('deep_locate'):
             pending_anomalies.append(_build_anomaly(
                 'locate_retry',
                 '定位重试/降级后完成',

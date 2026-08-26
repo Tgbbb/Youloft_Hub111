@@ -15,10 +15,12 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.views import APIView
 
 from .models import (
     MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
-    MidsceneExecutionRecord
+    MidsceneExecutionRecord, MidsceneAppPackage, MidsceneAppInstallRecord,
+    MidsceneGlobalConfig,
 )
 from .serializers_midscene import (
     MidsceneProjectSerializer,
@@ -28,6 +30,9 @@ from .serializers_midscene import (
     MidsceneCaseCreateSerializer,
     MidsceneCaseFolderSerializer,
     MidsceneExecutionRecordSerializer,
+    MidsceneAppPackageSerializer,
+    MidsceneAppInstallRecordSerializer,
+    MidsceneGlobalConfigSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -703,6 +708,18 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         replay_mode = request.data.get('replay', False)
         clear_app_data = request.data.get('clear_app_data', False)
 
+        # 安装包（可选）：选了执行前自动安装并清数据；仅 Android 支持
+        install_package_id = request.data.get('install_package_id')
+        if install_package_id in (None, '', 0, '0', 'null'):
+            install_package_id = None
+        else:
+            try:
+                install_package_id = int(install_package_id)
+            except (TypeError, ValueError):
+                return Response({'error': '无效的安装包 ID'}, status=400)
+            if not MidsceneAppPackage.objects.filter(id=install_package_id).exists():
+                return Response({'error': '安装包不存在或已被删除'}, status=400)
+
         # 解析设备请求：兼容单设备 device_id 与多设备 devices 数组
         try:
             default_replay_index = int(request.data.get('replay_index', 0) or 0)
@@ -761,6 +778,10 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
                     failed.append({'device_id': did, 'status': 400,
                                    'error': f'设备 {device.name or device.device_id} 不在线'})
                     continue
+                if install_package_id and device.platform != 'android':
+                    failed.append({'device_id': did, 'status': 400,
+                                   'error': f'设备 {device.name or device.device_id} 是 iOS，暂不支持自动安装'})
+                    continue
                 busy = MidsceneExecutionRecord.objects.filter(
                     device=device, status__in=['pending', 'running'],
                 ).exists()
@@ -796,6 +817,7 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
             task = execute_midscene_task.delay(
                 execution.id, record_mode=record_mode, replay_mode=replay_mode,
                 replay_index=ridx, clear_app_data=clear_app_data,
+                install_package_id=install_package_id,
             )
             execution.task_id = task.id
             execution.save(update_fields=['task_id'])
@@ -988,3 +1010,230 @@ class MidsceneExecutionRecordViewSet(viewsets.ReadOnlyModelViewSet, mixins.Destr
         except Exception as e:
             logger.error(f'[Report] 生成测试报告失败: {e}', exc_info=True)
             return Response({'error': f'生成报告失败: {e}'}, status=500)
+
+
+class MidsceneAppPackageViewSet(viewsets.ModelViewSet):
+    """Midscene 安装包管理（APK/IPA 上传、删除、一键安装）"""
+    queryset = MidsceneAppPackage.objects.all()
+    serializer_class = MidsceneAppPackageSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['platform', 'package_name']
+    search_fields = ['name', 'package_name', 'version_name']
+    ordering_fields = ['created_at', 'updated_at', 'file_size']
+
+    def create(self, request, *args, **kwargs):
+        """上传安装包：自动识别平台、解析包名/版本、MD5 去重。"""
+        upload = request.FILES.get('file')
+        if not upload:
+            return Response({'error': '请选择要上传的安装包文件'}, status=400)
+
+        filename = (upload.name or '').strip()
+        ext = os.path.splitext(filename)[1].lower()
+        platform_map = {'.apk': 'android', '.ipa': 'ios'}
+        platform = platform_map.get(ext)
+        if not platform:
+            return Response({'error': f'不支持的文件类型: {ext or "未知"}，仅支持 .apk / .ipa'}, status=400)
+
+        from .app_package_utils import compute_md5, parse_package_file
+
+        # 先落盘（Django 写入 media），再从文件解析元信息
+        instance = MidsceneAppPackage(
+            name=request.data.get('name', '').strip() or os.path.splitext(filename)[0],
+            platform=platform,
+            file=upload,
+            description=request.data.get('description', '').strip(),
+            created_by=request.user,
+        )
+        instance.save()
+
+        try:
+            path = instance.file.path
+            instance.file_size = os.path.getsize(path)
+            instance.md5 = compute_md5(path)
+            info = parse_package_file(path, platform, filename)
+            instance.package_name = info.get('package_name', '')
+            instance.version_name = info.get('version_name', '')
+            instance.version_code = info.get('version_code', '')
+            if not instance.package_name and not request.data.get('name'):
+                instance.name = os.path.splitext(filename)[0]
+            instance.save()
+        except Exception as e:
+            logger.error(f'[Package] 安装包解析失败: {e}', exc_info=True)
+            file_name = instance.file.name
+            instance.delete()
+            if file_name:
+                try:
+                    instance.file.storage.delete(file_name)
+                except Exception:
+                    pass
+            return Response({'error': f'安装包解析失败: {e}'}, status=400)
+
+        # 同包名同版本去重（解析出包名后才检查）
+        if instance.package_name and instance.version_code:
+            dup = MidsceneAppPackage.objects.filter(
+                platform=platform,
+                package_name=instance.package_name,
+                version_code=instance.version_code,
+            ).exclude(id=instance.id).first()
+            if dup:
+                file_name = instance.file.name
+                instance.delete()
+                if file_name:
+                    try:
+                        instance.file.storage.delete(file_name)
+                    except Exception:
+                        pass
+                return Response({
+                    'error': f'已存在相同包名和版本: {dup.name} ({dup.version_name})，无需重复上传',
+                    'existing_id': dup.id,
+                }, status=400)
+
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def perform_destroy(self, instance):
+        file_name = instance.file.name
+        super().perform_destroy(instance)
+        if file_name:
+            try:
+                instance.file.storage.delete(file_name)
+            except Exception:
+                logger.warning(f'[Package] 删除安装包文件失败: {file_name}')
+
+    @action(detail=True, methods=['post'], url_path='install')
+    def install(self, request, pk=None):
+        """一键安装到指定设备（每设备一个安装任务，异步执行）。"""
+        pkg = self.get_object()
+        if pkg.platform != 'android':
+            return Response({'error': '当前仅支持 Android 安装包安装，iOS 请先完成签名接入'}, status=400)
+
+        device_ids = request.data.get('device_ids') or request.data.get('devices')
+        if not device_ids:
+            return Response({'error': '请选择安装设备'}, status=400)
+        if isinstance(device_ids, (str, int)):
+            device_ids = [device_ids]
+        try:
+            device_ids = sorted({int(x) for x in device_ids})
+        except (TypeError, ValueError):
+            return Response({'error': '无效的设备 ID'}, status=400)
+
+        options = {
+            'overwrite': bool(request.data.get('overwrite', True)),
+            'downgrade': bool(request.data.get('downgrade', False)),
+            'launch': bool(request.data.get('launch', False)),
+        }
+
+        # 与执行共用互斥：设备在线、未被他人锁定、无 pending/running 任务
+        created = []
+        failed = []
+        with transaction.atomic():
+            for did in device_ids:
+                try:
+                    device = MidsceneDevice.objects.select_for_update().get(id=did)
+                except MidsceneDevice.DoesNotExist:
+                    failed.append({'device_id': did, 'error': '设备不存在'})
+                    continue
+                if device.status == 'locked' and device.locked_by != request.user:
+                    failed.append({'device_id': did,
+                                   'error': f'设备已被 {device.locked_by.username} 锁定'})
+                    continue
+                if device.status in ('offline',):
+                    failed.append({'device_id': did,
+                                   'error': f'设备 {device.name or device.device_id} 不在线'})
+                    continue
+                busy = (
+                    MidsceneExecutionRecord.objects.filter(
+                        device=device, status__in=['pending', 'running', 'stopping']
+                    ).exists()
+                    or MidsceneAppInstallRecord.objects.filter(
+                        device=device, status__in=['pending', 'running']
+                    ).exists()
+                )
+                if busy:
+                    failed.append({'device_id': did,
+                                   'error': f'设备 {device.name or device.device_id} 正在执行任务，请等待完成'})
+                    continue
+                record = MidsceneAppInstallRecord.objects.create(
+                    package=pkg, device=device, status='pending',
+                    options=options, created_by=request.user,
+                )
+                created.append(record)
+
+        # 事务提交后投递任务
+        from .tasks import install_app_package_task
+        results = []
+        for record in created:
+            task = install_app_package_task.delay(record.id)
+            record.task_id = task.id
+            record.save(update_fields=['task_id'])
+            results.append({
+                'install_id': record.id,
+                'task_id': task.id,
+                'device_id': record.device_id,
+            })
+
+        return Response({
+            'installs': results,
+            'failed': failed,
+            'message': f'已提交 {len(results)} 台设备安装，{len(failed)} 台失败',
+        })
+
+
+class MidsceneAppInstallRecordViewSet(viewsets.ReadOnlyModelViewSet):
+    """Midscene 安装记录（只读，前端轮询进度）"""
+    queryset = MidsceneAppInstallRecord.objects.all()
+    serializer_class = MidsceneAppInstallRecordSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['package', 'device', 'status']
+    ordering_fields = ['created_at', 'status', 'duration']
+
+
+class MidsceneConfigView(APIView):
+    """Midscene 全局引擎配置（单例）：GET 读当前配置与生效值，PUT 保存（改完立即生效）。"""
+    permission_classes = [IsAuthenticated]
+
+    def _payload(self, cfg):
+        from .midscene_ai.engine import resolve_locate_switches
+        eff_locate, eff_deep = resolve_locate_switches()
+        return {
+            'config': MidsceneGlobalConfigSerializer(cfg).data,
+            'effective': {
+                'use_locate': eff_locate,
+                'use_deep_locate': eff_deep,
+            },
+            'defaults': {
+                'use_locate': True,
+                'use_deep_locate': 'auto',
+            },
+        }
+
+    def get(self, request):
+        cfg = MidsceneGlobalConfig.get_singleton()
+        return Response(self._payload(cfg))
+
+    def put(self, request):
+        cfg = MidsceneGlobalConfig.get_singleton()
+        if 'use_locate' in request.data:
+            v = request.data.get('use_locate')
+            if isinstance(v, str):
+                low = v.strip().lower()
+                if low in ('true', '1', 'yes', 'on'):
+                    cfg.use_locate = True
+                elif low in ('false', '0', 'no', 'off'):
+                    cfg.use_locate = False
+                elif low in ('', 'null', 'none'):
+                    cfg.use_locate = None
+                else:
+                    return Response({'error': 'use_locate 仅支持 true/false/不覆盖'}, status=400)
+            else:
+                cfg.use_locate = v
+        if 'use_deep_locate' in request.data:
+            deep = str(request.data.get('use_deep_locate', '')).strip().lower()
+            if deep not in ('', 'off', 'auto', 'on'):
+                return Response({'error': 'use_deep_locate 仅支持 off/auto/on/不覆盖'}, status=400)
+            cfg.use_deep_locate = deep
+        cfg.updated_by = request.user
+        cfg.save()
+        return Response(self._payload(cfg))

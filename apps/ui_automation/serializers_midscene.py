@@ -6,7 +6,8 @@ from rest_framework import serializers
 from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
     MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
-    MidsceneExecutionRecord
+    MidsceneExecutionRecord, MidsceneAppPackage, MidsceneAppInstallRecord,
+    MidsceneGlobalConfig,
 )
 
 
@@ -216,3 +217,91 @@ class MidsceneExecutionRecordSerializer(serializers.ModelSerializer):
 
     def get_executed_by_name(self, obj):
         return obj.executed_by.username if obj.executed_by else None
+
+
+class MidsceneAppPackageSerializer(serializers.ModelSerializer):
+    platform_display = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    size_display = serializers.SerializerMethodField()
+    install_count = serializers.SerializerMethodField()
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneAppPackage
+        fields = [
+            'id', 'name', 'platform', 'platform_display', 'file',
+            'file_url', 'package_name', 'version_name', 'version_code',
+            'file_size', 'size_display', 'md5', 'description',
+            'created_by', 'created_by_name', 'install_count',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'file', 'created_by', 'created_at', 'updated_at']
+
+    def get_platform_display(self, obj):
+        return obj.get_platform_display()
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else None
+
+    def get_size_display(self, obj):
+        size = obj.file_size or 0
+        if size >= 1024 * 1024 * 1024:
+            return f'{size / (1024 * 1024 * 1024):.1f} GB'
+        if size >= 1024 * 1024:
+            return f'{size / (1024 * 1024):.1f} MB'
+        if size >= 1024:
+            return f'{size / 1024:.1f} KB'
+        return f'{size} B'
+
+    def get_install_count(self, obj):
+        return obj.install_records.count()
+
+    def get_file_url(self, obj):
+        try:
+            if obj.file:
+                return obj.file.url
+        except Exception:
+            pass
+        return ''
+
+
+class MidsceneAppInstallRecordSerializer(serializers.ModelSerializer):
+    device_name = serializers.SerializerMethodField()
+    package_name = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneAppInstallRecord
+        fields = [
+            'id', 'package', 'package_name', 'device', 'device_name',
+            'status', 'status_display', 'options', 'log', 'error_message',
+            'task_id', 'started_at', 'finished_at', 'duration',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_device_name(self, obj):
+        return f"{obj.device.name or obj.device.device_id} ({obj.device.get_platform_display()})" if obj.device else None
+
+    def get_package_name(self, obj):
+        return f"{obj.package.name} ({obj.package.get_platform_display()})" if obj.package else None
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else None
+
+
+class MidsceneGlobalConfigSerializer(serializers.ModelSerializer):
+    use_deep_locate_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneGlobalConfig
+        fields = ['id', 'use_locate', 'use_deep_locate', 'use_deep_locate_display',
+                  'updated_by', 'updated_at']
+        read_only_fields = ['id', 'use_deep_locate_display', 'updated_by', 'updated_at']
+
+    def get_use_deep_locate_display(self, obj):
+        return obj.get_use_deep_locate_display() if obj.use_deep_locate else '不覆盖'

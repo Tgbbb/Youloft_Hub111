@@ -90,3 +90,16 @@ LOCATE_SYSTEM_PROMPT = """你是移动端UI元素定位器。观察截图，定�
 
 def build_locate_user_prompt(target_desc):
     return f'请定位以下目标元素的中心坐标：{target_desc}'
+
+
+REGION_SYSTEM_PROMPT = """你是移动端UI元素区域定位器。观察截图，确定目标元素所在的搜索区域，只输出一行JSON：
+{"x_pct":20,"y_pct":10,"w_pct":60,"h_pct":40,"reasoning":"简短说明"}
+- x_pct/y_pct 是区域左上角在截图中的百分比（0-100，0=最左/最上，100=最右/最下）
+- w_pct/h_pct 是区域的宽高百分比（1-100），区域应完整包含目标元素并留少量边距
+- 不要输出像素坐标，只输出百分比
+截图分辨率: {width}x{height} 像素
+{context}"""
+
+
+def build_region_user_prompt(target_desc):
+    return f'请确定包含以下目标元素的搜索区域：{target_desc}'

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """回放坐标解析与动作级门控测试：百分比优先、旧像素兜底、10x 百分比兼容、障碍动作条件化。"""
 import io
+import time
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -935,3 +936,474 @@ class ReplayMatchApiTests(TestCase):
     def test_invalid_index_rejected(self):
         resp = self._get(index=99)
         self.assertEqual(resp.status_code, 400)
+
+
+class WaitAfterInputTests(TestCase):
+    """input 后等待：静默窗口、跳转跟踪稳定、持续变化超时。"""
+
+    def _wait(self, same_side_effect, min_wait=0.2, max_wait=1.0):
+        with mock.patch.object(midscene_runner, 'adb_screenshot', return_value=b'png'), \
+             mock.patch.object(midscene_runner, '_is_same_page',
+                               side_effect=same_side_effect) as same:
+            t0 = time.time()
+            midscene_runner._wait_after_input(
+                'dev', None, b'before', min_wait=min_wait, max_wait=max_wait,
+                check_interval=0.05,
+            )
+            return time.time() - t0, same.call_count
+
+    def test_stable_page_returns_after_min_wait(self):
+        dt, calls = self._wait([True] * 20)
+        self.assertGreaterEqual(dt, 0.15)
+        self.assertLess(dt, 1.0)
+
+    def test_jump_then_stable_returns(self):
+        # 页面先静止(等静默窗) → 变化一次 → 稳定 → 返回
+        dt, calls = self._wait([True, False, True] + [True] * 20)
+        self.assertLess(dt, 1.0)
+        self.assertGreaterEqual(calls, 3)
+
+    def test_continuous_change_timeout(self):
+        dt, calls = self._wait([False] * 100, max_wait=0.4)
+        self.assertGreaterEqual(dt, 0.35)
+
+
+class NormalStepReplayHashTests(TestCase):
+    """普通步骤回放后校验：动作生效（页面有变化）但 after_hash 不符 → 按通过记警告，
+    不降级 VLM 重做（避免"已成功却重复操作"）；页面未变且 hash 不符才降级 VLM。"""
+
+    def setUp(self):
+        self.sleep = mock.patch('time.sleep', return_value=None)
+        self.sleep_mock = self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+        self.adb = mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0))
+        self.adb_mock = self.adb.start()
+        self.addCleanup(self.adb.stop)
+        self.size = mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160))
+        self.size.start()
+        self.addCleanup(self.size.stop)
+        self.save = mock.patch.object(
+            midscene_runner, 'save_screenshot', return_value='/media/midscene/1/step_1.png',
+        )
+        self.save.start()
+        self.addCleanup(self.save.stop)
+        self.vlm = mock.patch.object(
+            midscene_runner, 'call_vlm',
+            return_value={'action': 'done', 'reasoning': 'x'},
+        )
+        self.vlm_mock = self.vlm.start()
+        self.addCleanup(self.vlm.stop)
+
+    def _img_png(self, seed):
+        import random
+        rnd = random.Random(seed)
+        img = Image.new('L', (64, 64))
+        img.putdata([rnd.randint(0, 255) for _ in range(64 * 64)])
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    def _context(self):
+        mc = mock.Mock()
+        mc.ai_act_context = ''
+        mc.app_package = ''
+        mc.project = mock.Mock(default_app_package='')
+        mc.use_locate = True
+        mc.max_steps = 30
+        mc.action_delay = 0.5
+        mc.replay_data = [{
+            'steps': [{
+                'instruction': '点击底部手机登录按钮',
+                'actions': [{'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'x': 540, 'y': 1080}],
+                'after_hash': 'H_AFTER',
+            }],
+        }]
+        execution = mock.Mock()
+        execution.id = 1
+        execution.midscene_case = mc
+        execution.auto_plan = False
+        execution.status = 'running'
+        device = mock.Mock()
+        device.platform = 'android'
+        device.adb_serial = 'dev'
+        device.name = '设备'
+        model = mock.Mock()
+        model.api_key = 'k'
+        return mc, execution, device, model
+
+    def _run(self, shot_pngs, hash_match):
+        mc, execution, device, model = self._context()
+        state = {'i': 0}
+        def shot(*_args):
+            frame = shot_pngs[min(state['i'], len(shot_pngs) - 1)]
+            state['i'] += 1
+            return frame
+        with mock.patch.object(midscene_runner, 'adb_screenshot', side_effect=shot), \
+             mock.patch.object(midscene_runner, '_is_same_page_by_hash', side_effect=hash_match):
+            return midscene_runner.run_midscene_test(
+                ai_prompt='点击底部手机登录按钮',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=True, replay_index=0,
+            )
+
+    def test_page_changed_hash_mismatch_passes_without_vlm(self):
+        # 动作生效（执行前后页面不同，如点击后弹出隐私弹窗）但 after_hash 不符
+        # → 按通过处理 + 记 hash 警告，不降级 VLM 重做
+        result = self._run([self._img_png(31), self._img_png(31),
+                            self._img_png(32), self._img_png(32)],
+                           lambda _png, expected: False)
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_not_called()
+        types = [a['type'] for a in result['steps'][0]['anomalies']]
+        self.assertEqual(types, ['hash_mismatch_fallback'])
+
+    def test_page_unchanged_hash_mismatch_falls_back_to_vlm(self):
+        # 页面未变且 hash 不符 → 动作疑似未生效，降级 VLM 兜底
+        result = self._run([self._img_png(41)],
+                           lambda _png, expected: False)
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_called()
+
+
+class WaitDurationTests(TestCase):
+    """wait 时长支持：显式 duration 按时长等待，无 duration 保持默认 3s。"""
+
+    def test_clamp_wait_duration(self):
+        from apps.ui_automation.midscene_runner import _clamp_wait_duration
+        self.assertEqual(_clamp_wait_duration({'duration': 20}), 20)
+        self.assertEqual(_clamp_wait_duration({}), 3)           # 缺省
+        self.assertEqual(_clamp_wait_duration({'duration': None}), 3)
+        self.assertEqual(_clamp_wait_duration({'duration': 0}), 3)    # 0 回落默认
+        self.assertEqual(_clamp_wait_duration({'duration': -5}), 3)   # 负数回落默认
+        self.assertEqual(_clamp_wait_duration({'duration': 'abc'}), 3)
+        self.assertEqual(_clamp_wait_duration({'duration': 100}), 60)  # 超上限 clamp
+        self.assertEqual(_clamp_wait_duration({'duration': 0.1}), 0.5)  # 低于下限 clamp
+
+    def test_build_action_rec_saves_wait_duration(self):
+        rec = midscene_runner._build_action_rec({'action': 'wait', 'duration': 20}, b'png')
+        self.assertEqual(rec['duration'], 20)
+        tap_rec = midscene_runner._build_action_rec(
+            {'action': 'tap', 'x_pct': 50, 'y_pct': 50, 'step_status': 'done'}, b'png')
+        self.assertNotIn('duration', tap_rec)
+
+    def test_replay_wait_sleeps_duration_and_skips_stable_wait(self):
+        with mock.patch('time.sleep') as sleep_mock, \
+             mock.patch.object(midscene_runner, '_wait_screen_stable') as stable:
+            result = midscene_runner._execute_replay_action('dev', None,
+                                                            {'action': 'wait', 'duration': 20})
+        self.assertTrue(result['ok'])
+        sleep_mock.assert_any_call(20)
+        stable.assert_not_called()
+
+    def test_replay_wait_default_3s(self):
+        with mock.patch('time.sleep') as sleep_mock, \
+             mock.patch.object(midscene_runner, '_wait_screen_stable') as stable:
+            result = midscene_runner._execute_replay_action('dev', None, {'action': 'wait'})
+        self.assertTrue(result['ok'])
+        sleep_mock.assert_any_call(3)
+        stable.assert_not_called()
+
+    def test_line_by_line_wait_uses_duration(self):
+        # 逐行执行："等待20秒" → VLM 输出 wait duration=20 → sleep(20)，再 done 结束
+        frame = _make_png(61)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+                mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+                mock.patch.object(
+                    midscene_runner, 'save_screenshot', return_value='/media/midscene/1/step_1.png',
+                ), \
+                mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame), \
+                mock.patch.object(
+                    midscene_runner, 'call_vlm',
+                    side_effect=[
+                        {'action': 'wait', 'duration': 20, 'step_status': 'in_progress',
+                         'reasoning': '动画播放中'},
+                        {'action': 'done', 'reasoning': 'x'},
+                    ],
+                ):
+            mc = mock.Mock()
+            mc.ai_act_context = ''
+            mc.app_package = ''
+            mc.project = mock.Mock(default_app_package='')
+            mc.replay_data = None
+            execution = mock.Mock()
+            execution.id = 1
+            execution.midscene_case = mc
+            execution.auto_plan = False
+            execution.status = 'running'
+            device = mock.Mock()
+            device.platform = 'android'
+            device.adb_serial = 'dev'
+            device.name = '设备'
+            model = mock.Mock()
+            model.api_key = 'k'
+
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='等待动画播放完成，约20秒',
+                device=device, model_config=model, execution_record=execution,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertTrue(any(call.args and call.args[0] == 20
+                            for call in sleep_mock.mock_calls))
+
+
+class BranchGroupTests(TestCase):
+    """缩进分组分支：分支头做一次门控，子步骤按分支激活与否整组执行/跳过。"""
+
+    def _build_mocks(self, replay_steps):
+        mc = mock.Mock()
+        mc.ai_act_context = ''
+        mc.app_package = ''
+        mc.project = mock.Mock(default_app_package='')
+        mc.replay_data = replay_steps
+        execution = mock.Mock()
+        execution.id = 1
+        execution.midscene_case = mc
+        execution.auto_plan = False
+        execution.status = 'running'
+        device = mock.Mock()
+        device.platform = 'android'
+        device.adb_serial = 'dev'
+        device.name = '设备'
+        model = mock.Mock()
+        model.api_key = 'k'
+        return mc, execution, device, model
+
+    def test_parse_branch_group(self):
+        steps = midscene_runner.parse_ai_prompt(
+            '打开应用\n如果展示会员页:\n    点击左上角关闭\n    点击下次一定\n输入密码')
+        self.assertEqual(len(steps), 5)
+        self.assertEqual(steps[1]['type'], 'branch')
+        self.assertEqual(steps[1]['condition'], '展示会员页')
+        self.assertEqual(steps[1]['children'], [2, 3])
+        self.assertEqual(steps[2]['branch_parent'], 1)
+        self.assertEqual(steps[3]['branch_parent'], 1)
+        self.assertNotIn('type', steps[0])
+        self.assertNotIn('branch_parent', steps[4])
+
+    def test_parse_single_conditional_unchanged(self):
+        steps = midscene_runner.parse_ai_prompt(
+            '如果展示会员购买页，就点击左上角关闭\n点击返回')
+        self.assertEqual(len(steps), 2)
+        self.assertNotIn('type', steps[0])
+        self.assertIsNone(steps[0].get('branch_parent'))
+
+    def test_parse_branch_requires_children(self):
+        with self.assertRaises(ValueError):
+            midscene_runner.parse_ai_prompt('如果展示会员页:')
+
+    def test_replay_branch_entered_plays_children(self):
+        frame = _make_png(71)
+        ph = str(midscene_runner._phash(frame))
+        replay_steps = {
+            'steps': [
+                {'instruction': '如果展示会员页:', 'type': 'branch', 'condition': '展示会员页',
+                 'branch_entered': True, 'act_before_hash': ph, 'after_hash': '', 'actions': []},
+                {'instruction': '等待页面加载完成',
+                 'actions': [{'action': 'wait', 'duration': 2}],
+                 'after_hash': '', 'act_before_hash': ''},
+            ]
+        }
+        mc, execution, device, model = self._build_mocks(replay_steps)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+             mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+             mock.patch.object(midscene_runner, 'save_screenshot',
+                               return_value='/media/midscene/1/step_1.png'), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame):
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员页:\n    等待页面加载完成',
+                device=device, model_config=model, execution_record=execution, replay_mode=True)
+        self.assertEqual(result['status'], 'passed')
+        actions = [s.get('action') for s in result['steps']]
+        self.assertEqual(actions[0], 'branch')
+        self.assertEqual(actions[1], 'wait')
+        self.assertTrue(any(call.args and call.args[0] == 2 for call in sleep_mock.mock_calls),
+                        '子步骤的 wait 动作应被播放')
+
+    def test_replay_branch_not_entered_skips_children(self):
+        frame = _make_png(72)
+        ph = str(midscene_runner._phash(frame))
+        replay_steps = {
+            'steps': [
+                {'instruction': '如果展示会员页:', 'type': 'branch', 'condition': '展示会员页',
+                 'branch_entered': False, 'act_before_hash': '', 'after_hash': ph, 'actions': []},
+            ]
+        }
+        mc, execution, device, model = self._build_mocks(replay_steps)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+             mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+             mock.patch.object(midscene_runner, 'save_screenshot',
+                               return_value='/media/midscene/1/step_1.png'), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame):
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员页:\n    等待页面加载完成',
+                device=device, model_config=model, execution_record=execution, replay_mode=True)
+        self.assertEqual(result['status'], 'passed')
+        actions = [s.get('action') for s in result['steps']]
+        self.assertEqual(actions[0], 'branch')
+        self.assertEqual(actions[1], 'skip')
+        self.assertFalse(any(call.args and call.args[0] == 2 for call in sleep_mock.mock_calls),
+                         '分支未进入时子步骤不应被播放')
+
+    def test_replay_branch_element_confirm_fallback(self):
+        frame = _make_png(73)
+        other = _make_png(74)  # 与当前帧不同的指纹，迫使走元素确认
+        replay_steps = {
+            'steps': [
+                {'instruction': '如果展示会员页:', 'type': 'branch', 'condition': '展示会员页',
+                 'branch_entered': True, 'act_before_hash': str(midscene_runner._phash(other)),
+                 'after_hash': '', 'actions': []},
+                {'instruction': '等待页面加载完成',
+                 'actions': [{'action': 'wait', 'duration': 2}],
+                 'after_hash': '', 'act_before_hash': ''},
+            ]
+        }
+        mc, execution, device, model = self._build_mocks(replay_steps)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+             mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+             mock.patch.object(midscene_runner, 'save_screenshot',
+                               return_value='/media/midscene/1/step_1.png'), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame), \
+             mock.patch.object(midscene_runner, 'call_vlm',
+                               return_value='{"present": true, "reasoning": "ok"}') as vlm:
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员页:\n    等待页面加载完成',
+                device=device, model_config=model, execution_record=execution, replay_mode=True)
+        self.assertEqual(result['status'], 'passed')
+        actions = [s.get('action') for s in result['steps']]
+        self.assertEqual(actions[0], 'branch')
+        self.assertEqual(actions[1], 'wait')
+        self.assertTrue(any(call.args and call.args[0] == 2 for call in sleep_mock.mock_calls),
+                        '元素确认命中后子步骤应被播放')
+        self.assertTrue(any('[回放] 分支门控' in r.get('aiReasoning', [''])[0] for r in result['steps']))
+
+    def test_replay_branch_anomaly_clears_and_enters(self):
+        frame = _make_png(91)
+        other = _make_png(92)
+        replay_steps = {
+            'steps': [
+                {'instruction': '如果展示会员页:', 'type': 'branch', 'condition': '展示会员页',
+                 'branch_entered': True, 'act_before_hash': str(midscene_runner._phash(other)),
+                 'after_hash': '', 'actions': []},
+                {'instruction': '等待页面加载完成',
+                 'actions': [{'action': 'wait', 'duration': 2}],
+                 'after_hash': '', 'act_before_hash': ''},
+            ]
+        }
+        mc, execution, device, model = self._build_mocks(replay_steps)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+             mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+             mock.patch.object(midscene_runner, 'save_screenshot',
+                               return_value='/media/midscene/1/step_1.png'), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame), \
+             mock.patch.object(midscene_runner, '_confirm_condition_target',
+                               side_effect=[('anomaly', frame, '障碍'), ('present', frame, '可见')]) as confirm, \
+             mock.patch.object(midscene_runner, '_clear_global_obstacle', return_value=(True, '')) as clear:
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员页:\n    等待页面加载完成',
+                device=device, model_config=model, execution_record=execution, replay_mode=True)
+        self.assertEqual(result['status'], 'passed')
+        actions = [s.get('action') for s in result['steps']]
+        self.assertEqual(actions[0], 'branch')
+        self.assertEqual(actions[1], 'wait')
+        self.assertEqual(confirm.call_count, 2, '应先确认异常，清理后再重新确认')
+        clear.assert_called_once()
+        self.assertTrue(any(call.args and call.args[0] == 2 for call in sleep_mock.mock_calls),
+                        '清理障碍后命中，子步骤应被播放')
+
+    def test_replay_branch_anomaly_clear_fail_skips(self):
+        frame = _make_png(93)
+        other = _make_png(94)
+        replay_steps = {
+            'steps': [
+                {'instruction': '如果展示会员页:', 'type': 'branch', 'condition': '展示会员页',
+                 'branch_entered': True, 'act_before_hash': str(midscene_runner._phash(other)),
+                 'after_hash': '', 'actions': []},
+                {'instruction': '等待页面加载完成',
+                 'actions': [{'action': 'wait', 'duration': 2}],
+                 'after_hash': '', 'act_before_hash': ''},
+            ]
+        }
+        mc, execution, device, model = self._build_mocks(replay_steps)
+        with mock.patch('time.sleep', return_value=None) as sleep_mock, \
+             mock.patch.object(midscene_runner, '_adb', return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(midscene_runner, 'adb_get_screen_size', return_value=(1080, 2160)), \
+             mock.patch.object(midscene_runner, 'save_screenshot',
+                               return_value='/media/midscene/1/step_1.png'), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame), \
+             mock.patch.object(midscene_runner, '_confirm_condition_target',
+                               side_effect=[('anomaly', frame, '障碍')]) as confirm, \
+             mock.patch.object(midscene_runner, '_clear_global_obstacle',
+                               return_value=(False, '清理失败')) as clear:
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='如果展示会员页:\n    等待页面加载完成',
+                device=device, model_config=model, execution_record=execution, replay_mode=True)
+        self.assertEqual(result['status'], 'passed')
+        actions = [s.get('action') for s in result['steps']]
+        self.assertEqual(actions[0], 'branch')
+        self.assertEqual(actions[1], 'skip')
+        clear.assert_called_once()
+        self.assertFalse(any(call.args and call.args[0] == 2 for call in sleep_mock.mock_calls),
+                         '清理失败时子步骤不应被播放')
+
+
+class ConditionConfirmStateTests(TestCase):
+    """条件元素确认三态：present / absent / anomaly（全局障碍）。"""
+
+    def _model(self):
+        m = mock.Mock()
+        m.api_key = 'k'
+        return m
+
+    def test_ask_condition_present_anomaly(self):
+        frame = _make_png(81)
+        raw = '{"present": false, "anomaly": true, "reasoning": "权限弹窗"}'
+        with mock.patch.object(midscene_runner, 'call_vlm', return_value=raw) as vlm:
+            present, anomaly, reasoning = midscene_runner._ask_condition_present(
+                frame, '条件', self._model(), 1080, 2160, context='遇到权限弹窗先点允许')
+        self.assertFalse(present)
+        self.assertTrue(anomaly)
+        self.assertEqual(reasoning, '权限弹窗')
+        self.assertTrue(vlm.call_args.kwargs.get('context') == '遇到权限弹窗先点允许')
+
+    def test_ask_condition_present_missing_anomaly_defaults_false(self):
+        frame = _make_png(82)
+        raw = '{"present": false, "reasoning": "目标不存在"}'
+        with mock.patch.object(midscene_runner, 'call_vlm', return_value=raw):
+            present, anomaly, reasoning = midscene_runner._ask_condition_present(
+                frame, '条件', self._model(), 1080, 2160)
+        self.assertFalse(present)
+        self.assertFalse(anomaly)
+
+    def test_confirm_condition_target_present(self):
+        frame = _make_png(83)
+        with mock.patch.object(midscene_runner, '_ask_condition_present',
+                               return_value=(True, False, '可见')):
+            status, png, reasoning = midscene_runner._confirm_condition_target(
+                'dev', None, '条件', self._model(), 1080, 2160, initial_png=frame)
+        self.assertEqual(status, 'present')
+        self.assertEqual(png, frame)
+
+    def test_confirm_condition_target_anomaly(self):
+        frame = _make_png(84)
+        with mock.patch.object(midscene_runner, '_ask_condition_present',
+                               return_value=(False, True, '权限弹窗')):
+            status, png, reasoning = midscene_runner._confirm_condition_target(
+                'dev', None, '条件', self._model(), 1080, 2160, initial_png=frame)
+        self.assertEqual(status, 'anomaly')
+
+    def test_confirm_condition_target_absent(self):
+        frame = _make_png(85)
+        with mock.patch.object(midscene_runner, '_ask_condition_present',
+                               return_value=(False, False, '未出现')), \
+             mock.patch.object(midscene_runner, 'adb_screenshot', return_value=frame), \
+             mock.patch('time.sleep', return_value=None):
+            status, png, reasoning = midscene_runner._confirm_condition_target(
+                'dev', None, '条件', self._model(), 1080, 2160, initial_png=frame)
+        self.assertEqual(status, 'absent')

@@ -11,6 +11,7 @@ from apps.projects.models import Project
 from apps.ui_automation import midscene_runner
 from apps.ui_automation.models import (
     MidsceneProject, MidsceneCase, MidsceneDevice, MidsceneExecutionRecord,
+    MidsceneAppPackage,
 )
 
 
@@ -375,3 +376,83 @@ class StopExecutionTests(TestCase):
         self.assertEqual(resp.status_code, 400, resp.data)
         rec.refresh_from_db()
         self.assertEqual(rec.status, 'stopping')
+
+
+class ExecuteWithInstallPackageTests(TestCase):
+    """执行时选择安装包：装包 ID 透传、iOS/离线设备拦截、包不存在报错。"""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner-pkg', password='pass')
+        main = Project.objects.create(name='主项目-pkg', owner=self.owner)
+        project = MidsceneProject.objects.create(
+            name='Midscene项目-pkg', owner=self.owner, main_project=main,
+        )
+        self.case = MidsceneCase.objects.create(
+            project=project, name='装包执行用例', ai_prompt='点击登录\n打开应用',
+            created_by=self.owner,
+        )
+        self.device_android = MidsceneDevice.objects.create(
+            platform='android', device_id='dev-pkg-a', name='Pixel A',
+            adb_serial='SERPA', status='online',
+        )
+        self.device_ios = MidsceneDevice.objects.create(
+            platform='ios', device_id='dev-pkg-i', name='iPhone A',
+            wda_host='127.0.0.1:8100', status='online',
+        )
+        self.pkg = MidsceneAppPackage.objects.create(
+            name='测试包', platform='android',
+            package_name='com.example.test', version_name='1.0.0', version_code='1',
+            file='midscene/packages/202608/test.apk', created_by=self.owner,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+        self.delay_patcher = mock.patch(
+            'apps.ui_automation.tasks.execute_midscene_task.delay',
+            return_value=mock.Mock(id='TASK-PKG'),
+        )
+        self.delay = self.delay_patcher.start()
+        self.addCleanup(self.delay_patcher.stop)
+
+    def test_execute_passes_install_package_id(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
+            {'device_id': self.device_android.id, 'install_package_id': self.pkg.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.delay.assert_called_once()
+        self.assertEqual(self.delay.call_args.kwargs['install_package_id'], self.pkg.id)
+
+    def test_execute_ios_device_with_package_failed(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
+            {'devices': [self.device_ios.id], 'install_package_id': self.pkg.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['executions'], [])
+        self.assertEqual(len(resp.data['failed']), 1)
+        self.assertIn('iOS', resp.data['failed'][0]['error'])
+        self.delay.assert_not_called()
+
+    def test_execute_install_package_not_found(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
+            {'device_id': self.device_android.id, 'install_package_id': 99999},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn('安装包不存在', resp.data['error'])
+        self.delay.assert_not_called()
+
+    def test_execute_offline_device_with_package_failed(self):
+        self.device_android.status = 'offline'
+        self.device_android.save(update_fields=['status'])
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
+            {'device_id': self.device_android.id, 'install_package_id': self.pkg.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn('不在线', resp.data['error'])
+        self.delay.assert_not_called()

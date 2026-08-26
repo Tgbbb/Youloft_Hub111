@@ -1328,6 +1328,119 @@ class MidsceneExecutionRecord(models.Model):
         return round((self.passed_steps / self.total_steps) * 100, 2)
 
 
+class MidsceneAppPackage(models.Model):
+    """Midscene 安装包管理（APK / IPA 文件仓库）"""
+    PLATFORM_CHOICES = [
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+    ]
+
+    name = models.CharField(max_length=200, verbose_name='应用名称')
+    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name='平台类型')
+    file = models.FileField(upload_to='midscene/packages/%Y%m/', max_length=500, verbose_name='安装包文件')
+    package_name = models.CharField(max_length=255, blank=True, default='', verbose_name='包名/Bundle ID',
+                                    help_text='Android包名或iOS Bundle ID')
+    version_name = models.CharField(max_length=100, blank=True, default='', verbose_name='版本名',
+                                    help_text='如 2.1.0')
+    version_code = models.CharField(max_length=100, blank=True, default='', verbose_name='版本号',
+                                    help_text='Android versionCode / iOS Build')
+    file_size = models.BigIntegerField(default=0, verbose_name='文件大小(字节)')
+    md5 = models.CharField(max_length=32, blank=True, default='', verbose_name='文件MD5')
+    description = models.TextField(blank=True, default='', verbose_name='备注')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='uploaded_midscene_packages', verbose_name='上传人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='上传时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_app_packages'
+        verbose_name = 'Midscene安装包'
+        verbose_name_plural = 'Midscene安装包管理'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['platform', 'package_name']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_platform_display()})"
+
+
+class MidsceneAppInstallRecord(models.Model):
+    """Midscene 安装包安装记录（每设备一条）"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('running', '安装中'),
+        ('success', '成功'),
+        ('failed', '失败'),
+    ]
+
+    package = models.ForeignKey(MidsceneAppPackage, on_delete=models.CASCADE,
+                                related_name='install_records', verbose_name='安装包')
+    device = models.ForeignKey(MidsceneDevice, on_delete=models.SET_NULL, null=True,
+                               related_name='install_records', verbose_name='安装设备')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='安装状态')
+    options = models.JSONField(default=dict, verbose_name='安装选项',
+                               help_text='覆盖安装/降级/装完启动等选项快照')
+    log = models.TextField(blank=True, default='', verbose_name='安装日志')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    task_id = models.CharField(max_length=255, blank=True, default='', verbose_name='Celery任务ID')
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name='结束时间')
+    duration = models.FloatField(default=0, verbose_name='安装时长(秒)')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='created_midscene_installs', verbose_name='发起人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_app_install_records'
+        verbose_name = 'Midscene安装记录'
+        verbose_name_plural = 'Midscene安装记录'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.package} -> {self.device} ({self.get_status_display()})"
+
+
+class MidsceneGlobalConfig(models.Model):
+    """Midscene 全局引擎配置（单例）：定位/深度定位开关，后台界面可改，改完立即生效。"""
+    DEEP_LOCATE_CHOICES = [
+        ('', '不覆盖（跟随环境变量/默认）'),
+        ('off', '关闭'),
+        ('auto', '自动升级（默认）'),
+        ('on', '强制深度定位'),
+    ]
+
+    use_locate = models.BooleanField(
+        null=True, blank=True, verbose_name='AI两阶段定位开关',
+        help_text='null=不覆盖，跟随环境变量 AIACT_USE_LOCATE（默认开）',
+    )
+    use_deep_locate = models.CharField(
+        max_length=10, blank=True, default='', choices=DEEP_LOCATE_CHOICES,
+        verbose_name='深度定位模式',
+        help_text='off/auto/on；空=不覆盖，跟随环境变量 AIACT_USE_DEEP_LOCATE（默认 auto）',
+    )
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='updated_midscene_global_config', verbose_name='更新人')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_global_config'
+        verbose_name = 'Midscene全局引擎配置'
+        verbose_name_plural = 'Midscene全局引擎配置'
+
+    def __str__(self):
+        return f'use_locate={self.use_locate}, use_deep_locate={self.use_deep_locate or "不覆盖"}'
+
+    @classmethod
+    def get_singleton(cls):
+        """获取单例配置，不存在则创建（不设置任何覆盖）。"""
+        obj = cls.objects.first()
+        if obj is None:
+            obj = cls.objects.create()
+        return obj
+
+
 # ============================================================
 # 信号：删除执行记录时同步清理截图目录
 # ============================================================

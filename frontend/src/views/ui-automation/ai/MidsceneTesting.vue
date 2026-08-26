@@ -130,11 +130,34 @@
                 <label class="ms-switch"><el-switch v-model="recordMode" size="small" /><span>录制</span></label>
                 <label class="ms-switch"><el-switch v-model="replayMode" size="small" :disabled="autoPlanMode" /><span>回放</span></label>
                 <label class="ms-switch">
-                  <el-switch v-model="clearAppData" size="small" :disabled="isIosDevice" />
-                  <el-tooltip :content="isIosDevice ? 'iOS 不支持' : '执行前清除App数据'" placement="top">
+                  <el-switch v-model="clearAppData" size="small" :disabled="isIosDevice || !!selectedInstallPackageId" />
+                  <el-tooltip :content="isIosDevice ? 'iOS 不支持' : (selectedInstallPackageId ? '选中安装包后自动清除数据' : '执行前清除App数据')" placement="top">
                     <span style="cursor:help">清除数据</span>
                   </el-tooltip>
                 </label>
+                <el-select v-model="selectedInstallPackageId" clearable size="small" placeholder="安装包（可选）"
+                  class="ms-select" style="width: 180px" @change="onInstallPackageChange">
+                  <el-option v-for="p in installPackages" :key="p.id"
+                    :label="`${p.name || p.package_name} ${p.version_name ? 'v' + p.version_name : ''}`"
+                    :value="p.id" />
+                </el-select>
+                <span class="ms-cmd-strip__divider" aria-hidden="true"></span>
+                <span class="ms-ai-config">
+                  <span class="ms-ai-config__label">AI引擎</span>
+                  <el-select v-model="midsceneConfig.use_locate" size="small" class="ms-select"
+                    style="width: 90px" @change="saveMidsceneConfig">
+                    <el-option label="不覆盖" value="" />
+                    <el-option label="开启" value="true" />
+                    <el-option label="关闭" value="false" />
+                  </el-select>
+                  <el-select v-model="midsceneConfig.use_deep_locate" size="small" class="ms-select"
+                    style="width: 110px" @change="saveMidsceneConfig">
+                    <el-option label="不覆盖" value="" />
+                    <el-option label="关闭" value="off" />
+                    <el-option label="自动升级" value="auto" />
+                    <el-option label="强制" value="on" />
+                  </el-select>
+                </span>
               </span>
             </div>
             <div class="ms-cmd-strip__right">
@@ -171,12 +194,52 @@
             <template #prepend>全局提示</template>
           </el-input>
           <div class="ms-editor">
-            <el-input
-              v-model="form.ai_prompt"
-              type="textarea"
-              :rows="8"
-              placeholder="每行一个自然语言操作步骤，例如：&#10;打开应用&#10;点击登录按钮&#10;输入用户名 admin&#10;输入密码 123456&#10;点击登录&#10;验证页面显示欢迎信息"
-            />
+            <div v-if="editorMode === 'list'" class="ms-field-console">
+              <div class="ms-field-console__head">
+                <span class="ms-field-console__count">共 {{ stepRows.length }} 步</span>
+                <button class="ms-raw-toggle" @click="toggleRaw">原始文本</button>
+              </div>
+              <div class="ms-field-console__list">
+                <div v-for="row in stepRows" :key="row.key"
+                     class="ms-step-row" :class="{ 'is-branch': row.kind === 'branch', 'is-child': row.kind === 'child' }">
+                  <span class="ms-step-row__idx">{{ row.num }}</span>
+                  <template v-if="row.kind === 'branch'">
+                    <span class="ms-step-row__prefix">{{ row.it.prefix }}</span>
+                    <el-input v-model="row.it.condition" class="ms-step-row__input" size="small"
+                              placeholder="条件，如 展示会员购买页" @input="onEdit" />
+                    <span class="ms-step-row__colon">:</span>
+                  </template>
+                  <el-input v-else v-model="row.it.text" class="ms-step-row__input" size="small"
+                            placeholder="步骤，如 点击登录" @input="onEdit" />
+                  <div class="ms-step-row__tools">
+                    <button v-if="row.kind !== 'child'" class="ms-iconbtn" title="上移" @click="moveTop(row.idx, -1)">↑</button>
+                    <button v-if="row.kind !== 'child'" class="ms-iconbtn" title="下移" @click="moveTop(row.idx, 1)">↓</button>
+                    <button v-if="row.kind === 'child'" class="ms-iconbtn" title="上移" @click="moveChild(row.branchId, row.cidx, -1)">↑</button>
+                    <button v-if="row.kind === 'child'" class="ms-iconbtn" title="下移" @click="moveChild(row.branchId, row.cidx, 1)">↓</button>
+                    <button v-if="row.kind === 'branch'" class="ms-iconbtn ms-textbtn" title="加子步骤" @click="addChild(row.branchId)">+ 子</button>
+                    <button v-if="row.kind === 'step'" class="ms-iconbtn ms-textbtn"
+                            :disabled="!(row.idx > 0 && stepItems[row.idx - 1] && stepItems[row.idx - 1].kind === 'branch')"
+                            title="缩进为子步骤" @click="indentStep(row.idx)">缩进</button>
+                    <button v-if="row.kind === 'child'" class="ms-iconbtn ms-textbtn" title="取消缩进" @click="outdentChild(row.branchId, row.cidx)">取消缩进</button>
+                    <button v-if="row.kind !== 'branch'" class="ms-iconbtn ms-iconbtn--danger" title="删除"
+                            @click="row.kind === 'child' ? removeChild(row.branchId, row.cidx) : removeStep(row.idx)">×</button>
+                  </div>
+                </div>
+              </div>
+              <div class="ms-field-console__add">
+                <button class="ms-addbtn" @click="addStep">＋ 添加步骤</button>
+                <button class="ms-addbtn ms-addbtn--accent" @click="addBranch">＋ 添加分支</button>
+                <span v-if="stepErrors" class="ms-field-console__error">{{ stepErrors }}</span>
+              </div>
+            </div>
+            <template v-else>
+              <el-input v-model="form.ai_prompt" type="textarea" :rows="14"
+                        placeholder="每行一个自然语言操作步骤（分支头以冒号结尾，子步骤缩进）" />
+              <div class="ms-editor__rawfoot">
+                <button class="ms-raw-toggle ms-raw-toggle--back" @click="toggleRaw">回到列表</button>
+                <span v-if="stepErrors" class="ms-field-console__error">{{ stepErrors }}</span>
+              </div>
+            </template>
           </div>
           <div class="ms-editor__actions">
             <el-button @click="showAiGen = true" :icon="MagicStick" class="ms-btn">AI 展开</el-button>
@@ -454,6 +517,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, MagicStick, DocumentAdd, VideoPlay, SwitchButton, Refresh, Connection, ArrowRight, Folder, FolderAdd, EditPen, View } from '@element-plus/icons-vue'
 import api from '@/utils/api'
 import MsLoading from '@/components/MsLoading.vue'
+import { parsePrompt, serialize, validate } from './midsceneSteps.mjs'
 
 const cases = ref([])
 const folders = ref([])
@@ -474,6 +538,9 @@ const autoPlanMode = ref(false)
 const recordMode = ref(false)
 const replayMode = ref(false)
 const clearAppData = ref(false)
+const installPackages = ref([])
+const selectedInstallPackageId = ref(null)
+const midsceneConfig = ref({ use_locate: null, use_deep_locate: '' })
 const filterProjectId = ref(null)
 const expandedFolders = ref([])
 const activeFolderId = ref(null)
@@ -538,6 +605,108 @@ const form = reactive({
   name: '', project_id: null, folder_id: null, ai_prompt: '', ai_model_config_id: null,
   max_steps: 30, action_delay: 0.5, app_package: '', ai_act_context: '',
 })
+
+// ---- PROCEDURE 结构化步骤编辑器（列表 <-> 原始文本） ----
+const editorMode = ref('list') // 'list' | 'raw'
+const stepItems = ref([])
+const stepErrors = ref('')
+let _eid = 0
+const nid = () => 'e' + (++_eid)
+const newStep = () => ({ id: nid(), kind: 'step', text: '', repeat: false })
+const newChild = () => ({ id: nid(), kind: 'child', text: '', repeat: false })
+const newBranch = () => ({ id: nid(), kind: 'branch', prefix: '如果', condition: '', repeat: false, children: [] })
+
+const updateStepsFromPrompt = () => {
+  try {
+    stepItems.value = parsePrompt(form.ai_prompt)
+    stepErrors.value = ''
+    return true
+  } catch (e) {
+    stepItems.value = []
+    stepErrors.value = e.message || '步骤解析失败'
+    editorMode.value = 'raw'
+    return false
+  }
+}
+const syncPrompt = () => { form.ai_prompt = serialize(stepItems.value) }
+const syncError = () => {
+  const v = validate(stepItems.value)
+  stepErrors.value = v.ok ? '' : v.errors.join('；')
+}
+const syncAll = () => { syncPrompt(); syncError() }
+const promptValid = computed(() => {
+  try { return validate(parsePrompt(form.ai_prompt)).ok } catch (e) { return false }
+})
+const stepRows = computed(() => {
+  const rows = []
+  let n = 0
+  stepItems.value.forEach((it, idx) => {
+    if (it.kind === 'branch') {
+      n += 1
+      rows.push({ key: it.id, kind: 'branch', num: n, it, idx, branchId: it.id })
+      it.children.forEach((c, cidx) => {
+        n += 1
+        rows.push({ key: c.id, kind: 'child', num: n, it: c, idx, cidx, branchId: it.id })
+      })
+    } else {
+      n += 1
+      rows.push({ key: it.id, kind: 'step', num: n, it, idx })
+    }
+  })
+  return rows
+})
+
+const addStep = () => { stepItems.value.push(newStep()); syncAll() }
+const addBranch = () => { const b = newBranch(); b.children.push(newChild()); stepItems.value.push(b); syncAll() }
+const addChild = (branchId) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (b) { b.children.push(newChild()); syncAll() }
+}
+const removeStep = (idx) => { stepItems.value.splice(idx, 1); syncAll() }
+const removeChild = (branchId, cidx) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (b) { b.children.splice(cidx, 1); syncAll() }
+}
+const moveTop = (idx, dir) => {
+  const arr = stepItems.value
+  const to = idx + dir
+  if (to < 0 || to >= arr.length) return
+  const tmp = arr[idx]; arr[idx] = arr[to]; arr[to] = tmp
+  syncAll()
+}
+const moveChild = (branchId, cidx, dir) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (!b) return
+  const to = cidx + dir
+  if (to < 0 || to >= b.children.length) return
+  const tmp = b.children[cidx]; b.children[cidx] = b.children[to]; b.children[to] = tmp
+  syncAll()
+}
+const indentStep = (idx) => {
+  if (idx > 0 && stepItems.value[idx - 1].kind === 'branch') {
+    const br = stepItems.value[idx - 1]
+    const it = stepItems.value[idx]
+    stepItems.value.splice(idx, 1)
+    br.children.push(it)
+    syncAll()
+  }
+}
+const outdentChild = (branchId, cidx) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (!b) return
+  const c = b.children.splice(cidx, 1)[0]
+  const bi = stepItems.value.indexOf(b)
+  stepItems.value.splice(bi + 1, 0, { id: c.id, kind: 'step', text: c.text, repeat: c.repeat })
+  syncAll()
+}
+const onEdit = () => syncAll()
+const toggleRaw = () => {
+  if (editorMode.value === 'list') {
+    editorMode.value = 'raw'
+  } else if (updateStepsFromPrompt()) {
+    editorMode.value = 'list'
+  }
+}
 const showAiGen = ref(false)
 const aiDesc = ref('')
 const genLoading = ref(false)
@@ -555,7 +724,7 @@ const iosDevices = computed(() => devices.value.filter(d => d.platform === 'ios'
 const networkDevices = computed(() => devices.value.filter(d => d.platform === 'android' && d.ip_address))
 const isRunning = computed(() => executions.value.some(e => ['pending', 'running'].includes(e.status)))
 const isExecRunning = (exec) => !!exec && ['pending', 'running'].includes(exec.status)
-const canExecute = computed(() => form.ai_prompt && selectedDeviceIds.value.length > 0 && form.ai_model_config_id)
+const canExecute = computed(() => form.ai_prompt && selectedDeviceIds.value.length > 0 && form.ai_model_config_id && promptValid.value)
 const selectedReplayIndex = ref(0)
 const showReplayDetail = ref(false)
 const replayList = computed(() => {
@@ -677,6 +846,38 @@ const loadCases = async () => { try { const { data } = await api.get('/ui-automa
 const loadFolders = async () => { try { const { data } = await api.get('/ui-automation/midscene/folders/'); folders.value = data.results || [] } catch (e) {} }
 const loadProjects = async () => { try { const { data } = await api.get('/ui-automation/midscene/projects/'); projects.value = data.results || [] } catch (e) {} }
 const loadDevices = async () => { try { const { data } = await api.get('/ui-automation/midscene/devices/'); devices.value = data.results || [] } catch (e) {} }
+const loadInstallPackages = async () => { try { const { data } = await api.get('/ui-automation/midscene/packages/'); installPackages.value = (data.results || []).filter(p => p.platform === 'android') } catch (e) {} }
+const onInstallPackageChange = (val) => { if (val) { clearAppData.value = true; if (isIosDevice.value) ElMessage.warning('iOS 设备暂不支持自动安装，执行时会被拦截') } }
+const loadMidsceneConfig = async () => {
+  try {
+    const { data } = await api.get('/ui-automation/midscene/config/')
+    midsceneConfig.value = {
+      use_locate: data.config?.use_locate === null || data.config?.use_locate === undefined
+        ? '' : String(data.config.use_locate),
+      use_deep_locate: data.config?.use_deep_locate || '',
+      effective: data.effective,
+    }
+  } catch (e) {}
+}
+const saveMidsceneConfig = async () => {
+  try {
+    const { data } = await api.put('/ui-automation/midscene/config/', {
+      use_locate: midsceneConfig.value.use_locate === '' ? null
+        : midsceneConfig.value.use_locate === 'true',
+      use_deep_locate: midsceneConfig.value.use_deep_locate || '',
+    })
+    midsceneConfig.value = {
+      use_locate: data.config?.use_locate === null || data.config?.use_locate === undefined
+        ? '' : String(data.config.use_locate),
+      use_deep_locate: data.config?.use_deep_locate || '',
+      effective: data.effective,
+    }
+    ElMessage.success('AI引擎配置已保存')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '保存失败')
+    loadMidsceneConfig()
+  }
+}
 const loadVisionModels = async () => {
   try { const { data } = await api.get('/requirement-analysis/ai-models/'); visionModels.value = (data.results || data || []).filter(m => m.role === 'app_automation_vision' && m.is_active); if (visionModels.value.length > 0 && !form.ai_model_config_id) form.ai_model_config_id = visionModels.value[0].id } catch (e) {}
 }
@@ -723,12 +924,20 @@ const newCase = () => {
   currentCaseId.value = draftId
   cases.value.unshift({ id: draftId, name: '新建用例', ai_prompt: '', project: filterProjectId.value, folder: null, _draft: true })
   form.name = ''; form.ai_prompt = ''
+  stepItems.value = []; stepErrors.value = ''; editorMode.value = 'list'
   form.project_id = filterProjectId.value || null
   const activeFolder = folders.value.find(f => f.id === activeFolderId.value)
   form.folder_id = activeFolder && (!activeFolder.project || !form.project_id || activeFolder.project === form.project_id) ? activeFolder.id : null
   recordMode.value = false; replayMode.value = false; clearAppData.value = false
+  selectedInstallPackageId.value = null
 }
-const loadCase = (c) => { stopPolling(); currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.folder_id = c.folder; form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30; form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || '' }
+const loadCase = (c) => {
+  stopPolling(); currentCaseId.value = c.id; form.name = c.name; form.project_id = c.project; form.folder_id = c.folder
+  form.ai_prompt = c.ai_prompt || ''; form.ai_model_config_id = c.ai_model_config; form.max_steps = c.max_steps || 30
+  form.action_delay = c.action_delay || 0.5; form.app_package = c.app_package || ''; form.ai_act_context = c.ai_act_context || ''
+  editorMode.value = 'list'
+  updateStepsFromPrompt()
+}
 const openNewFolder = () => { folderDialogMode.value = 'create'; folderDialogForm.id = null; folderDialogForm.name = ''; folderDialogForm.project = filterProjectId.value || null; showFolderDialog.value = true }
 const openRenameFolder = (f) => { folderDialogMode.value = 'rename'; folderDialogForm.id = f.id; folderDialogForm.name = f.name; folderDialogForm.project = f.project; showFolderDialog.value = true }
 const submitFolder = async () => {
@@ -760,6 +969,7 @@ const deleteFolder = async (f) => {
 const saveCase = async () => {
   if (!form.name.trim()) { ElMessage.warning('请输入用例名称'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
+  if (!promptValid.value) { ElMessage.warning('步骤存在错误：' + (stepErrors.value || '请检查步骤')); return }
   saving.value = true
   try {
     const payload = { ...form }; const isDraft = currentCaseId.value === draftId
@@ -771,11 +981,12 @@ const saveCase = async () => {
 }
 const deleteCase = async (c) => { try { await ElMessageBox.confirm(`删除「${c.name}」？`, '确认删除', { type: 'warning' }); await api.delete(`/ui-automation/midscene/cases/${c.id}/`); if (currentCaseId.value === c.id) newCase(); await loadCases(); ElMessage.success('已删除') } catch (e) { if (e !== 'cancel') ElMessage.error('删除失败') } }
 const getStepCount = (prompt) => { if (!prompt) return 0; return prompt.trim().split('\n').filter(l => l.trim()).length }
-const generateSteps = async () => { if (!aiDesc.value.trim()) { ElMessage.warning('请输入场景描述'); return }; genLoading.value = true; try { const { data } = await api.post('/ui-automation/midscene/cases/generate_steps/', { description: aiDesc.value, model_config_id: form.ai_model_config_id }); if (data.steps) { form.ai_prompt = data.steps; showAiGen.value = false; aiDesc.value = ''; ElMessage.success('步骤已生成') } } catch (e) { ElMessage.error('生成失败: ' + (e.response?.data?.error || e.message)) } finally { genLoading.value = false } }
+const generateSteps = async () => { if (!aiDesc.value.trim()) { ElMessage.warning('请输入场景描述'); return }; genLoading.value = true; try { const { data } = await api.post('/ui-automation/midscene/cases/generate_steps/', { description: aiDesc.value, model_config_id: form.ai_model_config_id }); if (data.steps) { form.ai_prompt = data.steps; editorMode.value = 'list'; updateStepsFromPrompt(); showAiGen.value = false; aiDesc.value = ''; ElMessage.success('步骤已生成') } } catch (e) { ElMessage.error('生成失败: ' + (e.response?.data?.error || e.message)) } finally { genLoading.value = false } }
 const doExecute = async () => {
   if (selectedDeviceIds.value.length === 0) { ElMessage.warning('请选择设备'); return }
   if (!form.ai_model_config_id) { ElMessage.warning('请选择 AI 模型'); return }
   if (!form.ai_prompt.trim()) { ElMessage.warning('请输入测试步骤'); return }
+  if (!promptValid.value) { ElMessage.warning('步骤存在错误：' + (stepErrors.value || '请检查步骤')); return }
   if (replayMode.value && replayList.value.length === 0) { ElMessage.warning('暂无录制数据，请先录制'); return }
   if (replayMode.value && replayList.value.length > 0 && !forceExecuteFlag.value) {
     let matched
@@ -793,7 +1004,7 @@ const doExecute = async () => {
   executing.value = true
   try {
     if (!currentCaseId.value || currentCaseId.value === draftId) await saveCase()
-    const basePayload = { auto_plan: autoPlanMode.value, record: recordMode.value, replay: replayMode.value, replay_index: selectedReplayIndex.value, clear_app_data: clearAppData.value }
+    const basePayload = { auto_plan: autoPlanMode.value, record: recordMode.value, replay: replayMode.value, replay_index: selectedReplayIndex.value, clear_app_data: clearAppData.value, install_package_id: selectedInstallPackageId.value }
     let data
     if (selectedDeviceIds.value.length === 1) {
       const { data: res } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/execute/`, { device_id: selectedDeviceIds.value[0], ...basePayload })
@@ -903,7 +1114,7 @@ const activeExecCriticalCount = computed(() =>
   (activeExec.value?.steps_detail || []).reduce(
     (n, s) => n + ((s.anomalies || []).filter(a => a.severity === 'critical').length), 0)
 )
-onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels() })
+onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels(); loadInstallPackages(); loadMidsceneConfig() })
 onUnmounted(() => stopPolling())
 </script>
 
@@ -1198,10 +1409,10 @@ onUnmounted(() => stopPolling())
    Command Strip
    ============================================ */
 .ms-cmd-strip {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; align-items: center;
   flex-wrap: wrap; gap: 10px;
-  &__left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  &__right { display: flex; align-items: center; gap: 6px; }
+  &__left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+  &__right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
   &__divider {
     display: inline-block; width: 1px; height: 20px; background: #e0e0dc; margin: 0 4px;
   }
@@ -1213,6 +1424,13 @@ onUnmounted(() => stopPolling())
 .ms-switch {
   display: flex; align-items: center; gap: 4px; cursor: pointer;
   span { font-size: 12px; color: #666; font-family: "Space Grotesk", system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; }
+}
+.ms-ai-config {
+  display: flex; align-items: center; gap: 10px;
+  &__label {
+    font-size: 11px; color: #999; font-family: "Space Grotesk", system-ui, sans-serif;
+    text-transform: uppercase; letter-spacing: .08em; white-space: nowrap;
+  }
 }
 
 /* ============================================
@@ -1516,10 +1734,91 @@ onUnmounted(() => stopPolling())
   .ms-stage { padding: 14px; }
   .ms-dual { grid-template-columns: 1fr; }
   .ms-cmd-strip { flex-direction: column; align-items: flex-start; }
+  .ms-cmd-strip__right { margin-left: 0; justify-content: flex-start; }
 }
 @media (max-width: 768px) {
   .ms-shell { flex-direction: column; }
   .ms-rail { width: 100%; max-height: 240px; }
   .ms-dual { grid-template-columns: 1fr; }
+}
+
+/* ============================================
+   PROCEDURE editor — Endfield field console
+   ============================================ */
+.ms-field-console {
+  border: 1px solid #d4d4ce;
+  background: var(--ms-paper);
+  position: relative;
+}
+.ms-field-console__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; border-bottom: 1px solid #d4d4ce;
+  font-family: "Space Grotesk", system-ui, sans-serif; font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: #666;
+}
+.ms-field-console__count { color: #444; }
+.ms-field-console__list { max-height: 360px; overflow: auto; }
+.ms-step-row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 0;
+  border-bottom: 1px solid rgba(0,0,0,.06);
+  min-height: 36px; position: relative;
+  &__idx {
+    width: 30px; flex-shrink: 0; text-align: right; padding-right: 8px;
+    font-family: "Space Grotesk", system-ui, sans-serif; font-variant-numeric: tabular-nums;
+    font-size: 12px; color: #9a9a94; border-right: 1px solid rgba(0,0,0,.08);
+  }
+  &::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    background: transparent;
+  }
+  &.is-branch {
+    background: linear-gradient(90deg, rgba(255,250,0,.14), rgba(255,250,0,0) 42%);
+    &::before { background: var(--ms-signal); }
+    & .ms-step-row__idx, & .ms-step-row__prefix, & .ms-step-row__colon { color: var(--ms-ink); font-weight: 700; }
+  }
+  &.is-child {
+    padding-left: 26px;
+    &::before { background: rgba(0,0,0,.14); }
+    & .ms-step-row__idx { border-left: 1px solid rgba(0,0,0,.12); }
+  }
+  &__prefix { flex-shrink: 0; font-size: 12px; }
+  &__colon { flex-shrink: 0; font-size: 13px; }
+  &__input {
+    flex: 1; min-width: 0;
+    :deep(.el-input__wrapper) { border-radius: 0 !important; box-shadow: none !important; background: transparent; }
+    :deep(.el-input__inner) { font-size: 13px; }
+  }
+  &__tools { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+}
+.ms-iconbtn {
+  width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  color: #8a8a84; font-size: 13px; line-height: 1; padding: 0;
+  &:hover { color: var(--ms-ink); border-color: #c9c9c2; background: #fafaf8; }
+  &:disabled { color: #d4d4ce; cursor: not-allowed; }
+  &.ms-textbtn { width: auto; padding: 0 6px; font-size: 12px; }
+  &.ms-iconbtn--danger { color: #b4532e; }
+}
+.ms-field-console__add {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid #d4d4ce;
+  & .ms-field-console__error { margin-left: auto; font-size: 12px; color: #b4532e; }
+}
+.ms-addbtn {
+  padding: 4px 10px; height: 28px; border: 1px solid #d4d4ce; background: #fafaf8; color: #444;
+  font-size: 12px; cursor: pointer; font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .05em;
+  &:hover { color: var(--ms-ink); border-color: var(--ms-ink); }
+  &.ms-addbtn--accent { border-color: var(--ms-ink); background: var(--ms-ink); color: #fff; }
+}
+.ms-raw-toggle {
+  border: 1px solid #d4d4ce; background: transparent; color: #666; font-size: 11px;
+  padding: 2px 8px; height: 22px; cursor: pointer; text-transform: uppercase; letter-spacing: .08em;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  &:hover { color: var(--ms-ink); border-color: var(--ms-ink); }
+  &--back { background: var(--ms-ink); color: #fff; border-color: var(--ms-ink); }
+}
+.ms-editor__rawfoot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px;
+  & .ms-field-console__error { font-size: 12px; color: #b4532e; }
 }
 </style>

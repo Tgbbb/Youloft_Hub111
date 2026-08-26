@@ -4,12 +4,49 @@ Midscene AI 移动端自动化 - Celery 异步任务
 纯 Python Runner，不依赖 Node.js Sidecar
 """
 import logging
+import platform as sys_platform
+import subprocess
+import time
 from celery import shared_task
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 from .midscene_runner import run_midscene_test
+
+_SUBPROCESS_KWARGS = {}
+if sys_platform.system() == 'Windows':
+    _SUBPROCESS_KWARGS['creationflags'] = subprocess.CREATE_NO_WINDOW
+
+
+def run_apk_install(pkg, device, options=None):
+    """同步执行 adb install（供安装任务与执行前装包复用）。
+    返回 (ok, log, error)；不更新安装记录、不锁定设备，由调用方负责。"""
+    def _run(cmd, timeout=600):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              encoding='utf-8', errors='replace', **_SUBPROCESS_KWARGS)
+
+    path = pkg.file.path
+    opts = options or {}
+    cmd = ['adb', '-s', device.adb_serial, 'install']
+    if opts.get('overwrite', True):
+        cmd.append('-r')
+    if opts.get('downgrade'):
+        cmd.append('-d')
+    cmd.append(path)
+
+    r = _run(cmd)
+    log = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        if opts.get('launch') and pkg.package_name:
+            try:
+                _run(['adb', '-s', device.adb_serial, 'shell', 'monkey',
+                      '-p', pkg.package_name, '-c', 'android.intent.category.LAUNCHER', '1'],
+                     timeout=60)
+            except Exception as e:
+                log += f'\n[安装后启动失败] {e}'
+        return True, log, ''
+    return False, log, log[-500:]
 
 
 def _append_replay_entry(midscene_case, entry, result):
@@ -58,7 +95,7 @@ def _send_progress_update(execution_id, status, progress, message=''):
 
 @shared_task(bind=True, max_retries=0)
 def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=False,
-                          replay_index=0, clear_app_data=False):
+                          replay_index=0, clear_app_data=False, install_package_id=None):
     """
     异步执行 Midscene 测试任务（纯 Python Runner）。
     """
@@ -100,6 +137,27 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
         execution.save(update_fields=['status', 'started_at'])
 
         _send_progress_update(execution.id, 'running', 5, '开始执行...')
+
+        # ---- 执行前安装：选了安装包则装包 + 强制清数据，失败则整个执行失败 ----
+        app_package_override = ''
+        if install_package_id:
+            from .models import MidsceneAppPackage
+            install_pkg = MidsceneAppPackage.objects.filter(id=install_package_id).first()
+            if not install_pkg:
+                raise ValueError('安装包不存在或已被删除')
+            if device.platform != 'android':
+                raise ValueError('iOS 设备暂不支持自动安装')
+            _send_progress_update(execution.id, 'running', 5,
+                                  f'安装 {install_pkg.name or install_pkg.package_name}...')
+            logger.info(f'[Task] 执行前安装: {install_pkg.name or install_pkg.package_name} -> {device.device_id}')
+            ok, log, err = run_apk_install(install_pkg, device, {'overwrite': True})
+            if not ok:
+                logger.error(f'[Task] 执行前安装失败(记录 {execution_id}): {err}')
+                raise ValueError(f'安装包安装失败: {err}')
+            logger.info(f'[Task] 安装完成: {install_pkg.name or install_pkg.package_name} '
+                        f'({install_pkg.package_name})')
+            app_package_override = install_pkg.package_name or ''
+            clear_app_data = True  # 选了包强制清数据
 
         # 进度回调
         def on_progress(step, total, data):
@@ -148,6 +206,7 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
             replay_mode=replay_mode,
             replay_index=replay_index,
             clear_app_data=clear_app_data,
+            app_package_override=app_package_override,
         )
 
         # ---- 保存结果 ----
@@ -205,3 +264,58 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
                 logger.error(f'解锁设备失败: {e}')
 
     return execution.status if execution else 'error'
+
+
+@shared_task(bind=True, max_retries=0)
+def install_app_package_task(self, install_id):
+    """异步安装 APK 到单台设备（adb install），安装期间锁定设备防冲突。"""
+    from .models import MidsceneAppInstallRecord
+
+    record = MidsceneAppInstallRecord.objects.select_related('package', 'device').get(id=install_id)
+    device = record.device
+    if not device:
+        record.status = 'failed'
+        record.error_message = '设备不存在'
+        record.finished_at = timezone.now()
+        record.save(update_fields=['status', 'error_message', 'finished_at'])
+        return 'failed'
+
+    locked_by_us = False
+    try:
+        device.lock(record.created_by)
+        locked_by_us = True
+        record.status = 'running'
+        record.started_at = timezone.now()
+        record.log = ''
+        record.error_message = ''
+        record.save(update_fields=['status', 'started_at', 'log', 'error_message'])
+
+        pkg = record.package
+        opts = record.options or {}
+        start = time.time()
+        ok, log, err = run_apk_install(pkg, device, opts)
+        record.log = log[-2000:]
+        if ok:
+            record.status = 'success'
+            record.error_message = ''
+        else:
+            record.status = 'failed'
+            record.error_message = err
+            logger.error(f'[Install] adb install 失败(设备 {device.device_id}): {err}')
+    except Exception as e:
+        logger.error(f'[Install] 安装异常(记录 {install_id}): {e}', exc_info=True)
+        record.status = 'failed'
+        record.error_message = str(e)[-500:]
+    finally:
+        record.finished_at = timezone.now()
+        if record.started_at:
+            record.duration = (record.finished_at - record.started_at).total_seconds()
+        record.save(update_fields=['status', 'log', 'error_message', 'finished_at', 'duration'])
+        if device and locked_by_us:
+            try:
+                device.refresh_from_db()
+                device.unlock()
+            except Exception as e:
+                logger.error(f'[Install] 解锁设备失败: {e}')
+
+    return record.status
