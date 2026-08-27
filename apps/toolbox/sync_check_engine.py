@@ -332,6 +332,112 @@ def compare_with_backend(rows):
     return {'matched': matched_records, 'diffs': diffs}
 
 
+_VISION_PROMPT = (
+    "你是表格识别助手。下面是一张「推送后台配置」表格截图。"
+    "请逐行读取每一条推送，输出严格的 JSON 数组；每个元素是一个对象，字段为："
+    "uid(上报ID, 字符串)、name(推送名称)、target(推送目标, 如'主包'/'黄历'/'鸿蒙'或其组合)、"
+    "title(推送标题)、body(推送内容)、android(安卓版本, 如'all'/'不向安卓推送')、"
+    "ios(IOS版本, 如'all'/'不向IOS推送')、time(推送时间)、status(推送状态)。"
+    "只输出 JSON 数组本身，不要 Markdown 代码块，不要额外说明；看不清的字段填空字符串。"
+)
+
+
+def _strip_code_fence(text):
+    text = (text or '').strip()
+    fence = re.match(r'^```[a-zA-Z]*\s*', text)
+    if fence:
+        text = text[fence.end():].strip()
+    return re.sub(r'\s*```\s*$', '', text).strip()
+
+
+def _pick(item, *keys):
+    for k in keys:
+        v = item.get(k)
+        if v not in (None, ''):
+            return str(v)
+    return ''
+
+
+def _parse_vision_rows(text):
+    """解析视觉模型返回的 JSON 数组为行字典列表；失败返回 None。"""
+    import json
+    text = _strip_code_fence(text)
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        data = data.get('rows') or data.get('data') or []
+    if not isinstance(data, list):
+        return None
+    rows = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            'uid': _pick(item, 'uid', 'uuid', 'id'),
+            'name': _pick(item, 'name'),
+            'target': _pick(item, 'target', 'pushTarget', 'targets'),
+            'title': _pick(item, 'title', 'pushTitle'),
+            'body': _pick(item, 'body', 'content', 'pushBody'),
+            'android': _pick(item, 'android', 'androidVersion', 'versionType'),
+            'ios': _pick(item, 'ios', 'iOS', 'iosVersion', 'versionTypeIOS'),
+            'time': _pick(item, 'time', 'pushTime'),
+            'status': _pick(item, 'status', 'pushStatus'),
+        })
+    return rows
+
+
+def _vision_rows_to_parsed(vrows):
+    """把视觉结构化行转成下游统一的 {uid, compact} 结构。"""
+    out = []
+    for r in vrows:
+        parts = [r['name'] or '', r['target'] or '', r['title'] or '',
+                 r['body'] or '', r['android'] or '', r['ios'] or '']
+        compact = _norm_ocr_versions(re.sub(r'\s+', '', ''.join(parts)))
+        out.append({
+            'uid': r['uid'] or '', 'compact': compact,
+            'name': r['name'], 'target': r['target'], 'title': r['title'],
+            'body': r['body'], 'android': r['android'], 'ios': r['ios'],
+        })
+    return {'raw': '', 'rows': out}
+
+
+def extract_rows_vision(image_bytes):
+    """复用 TestHub Agent 配置的视觉模型从截图提取推送配置行；失败返回 None（调用方回退 OCR）。"""
+    try:
+        from apps.assistant import sdk_runtime
+        from openai import OpenAI
+    except Exception:
+        return None
+    try:
+        cfg = sdk_runtime.load_llm_config()
+        if not cfg.get('api_key'):
+            return None
+        import base64
+        b64 = base64.b64encode(image_bytes).decode('utf-8')
+        base_url = (cfg.get('base_url') or '').rstrip('/') or None
+        client = OpenAI(api_key=cfg['api_key'], base_url=base_url, timeout=30, max_retries=0)
+        resp = client.chat.completions.create(
+            model=cfg['model'],
+            messages=[{
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': _VISION_PROMPT},
+                    {'type': 'image_url',
+                     'image_url': {'url': 'data:image/png;base64,' + b64}},
+                ],
+            }],
+            temperature=0,
+        )
+        text = (resp.choices[0].message.content) or ''
+        rows = _parse_vision_rows(text)
+        return _vision_rows_to_parsed(rows) if rows else None
+    except Exception as exc:
+        log('视觉模型提取失败，回退 OCR：%s' % exc)
+        return None
+
+
 def main(force=False):
     global _last_ok
     cfg = pce.get_config()
@@ -393,9 +499,16 @@ def main(force=False):
     atts = [a for a in email_data['attachments'] if a['size'] >= 5000]
     if atts:
         att = max(atts, key=lambda a: a['size'])
-        ocr_text = pce.ocr_image(att['content'])
-        if ocr_text:
-            parsed = ocr_extract_sync_rows(ocr_text)
+        if cfg.get('extract_mode') == 'vision_fallback':
+            parsed = extract_rows_vision(att['content'])
+            if parsed and parsed['rows']:
+                log('视觉模型提取到 %d 条推送记录' % len(parsed['rows']))
+            else:
+                parsed = None
+        if parsed is None:
+            ocr_text = pce.ocr_image(att['content'])
+            if ocr_text:
+                parsed = ocr_extract_sync_rows(ocr_text)
     if parsed is None:
         state.update({
             'done': True, 'status': 'fail',

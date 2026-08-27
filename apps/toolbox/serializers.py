@@ -51,7 +51,8 @@ class SyncCheckConfigSerializer(serializers.ModelSerializer):
         model = SyncCheckConfig
         fields = [
             'id', 'enabled', 'require_push_activity', 'interval_minutes', 'deadline_time',
-            'mail_subject', 'mail_body_keyword', 'enable_dingtalk_notify', 'last_check_at',
+            'mail_subject', 'mail_body_keyword', 'enable_dingtalk_notify', 'extract_mode',
+            'last_check_at',
             'updated_by', 'updated_at',
         ]
         read_only_fields = ['id', 'last_check_at', 'updated_by', 'updated_at']

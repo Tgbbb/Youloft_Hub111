@@ -79,6 +79,10 @@ class SyncCheckConfig(models.Model):
     mail_subject = models.CharField(
         max_length=255, default='回复：【测试需求】关于常规PUSH的测试需求', verbose_name='邮件标题关键词')
     mail_body_keyword = models.CharField(max_length=100, default='已同步至线上', verbose_name='正文关键词')
+    extract_mode = models.CharField(
+        max_length=20, default='vision_fallback', verbose_name='截图提取方式',
+        choices=[('ocr', 'OCR识别'), ('vision_fallback', '视觉模型优先·OCR回退')],
+        help_text='视觉模型从截图提取字段（复用 TestHub Agent 配置的模型），失败自动回退 OCR')
     last_check_at = models.DateTimeField(null=True, blank=True, verbose_name='上次检查时间')
     enable_dingtalk_notify = models.BooleanField(
         default=False, verbose_name='异常钉钉通知',

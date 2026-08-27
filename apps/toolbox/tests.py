@@ -361,6 +361,7 @@ class SyncCheckEngineTests(TestCase):
             'deadline_time': '23:59',
             'mail_subject': '回复：【测试需求】关于常规PUSH的测试需求',
             'mail_body_keyword': '已同步至线上',
+            'extract_mode': 'ocr',
         })
         return cfg
 
@@ -396,6 +397,64 @@ class SyncCheckEngineTests(TestCase):
         src = sync_check_engine._extract_search_source(comp)
         self.assertTrue(src.startswith('中元到:'), src)
         self.assertNotIn('鸿菜', src[:6], src)
+
+    def test_parse_vision_rows(self):
+        text = ('[{"uid":"a1","name":"常规-8.28安卓 (1)","target":"主包,黄历",'
+                '"title":"寿命短的人常有这三大表现!","body":"如果一个表现都没有，恭喜！你的身体很健康",'
+                '"android":"all","ios":"不向IOS推送","time":"2026-08-28 20:00:00","status":"未执行"},'
+                '{"uid":"a2","name":"常规-8.27鸿蒙","target":"鸿蒙",'
+                '"title":"五种吉人贵相，一生富贵长寿!","body":"来看看你的贵相是哪一种",'
+                '"android":"all","ios":"不向IOS推送","time":"2026-08-27 20:00:00","status":"未执行"}]')
+        rows = sync_check_engine._parse_vision_rows(text)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['title'], '寿命短的人常有这三大表现!')
+        self.assertEqual(rows[0]['target'], '主包,黄历')
+        self.assertEqual(rows[1]['target'], '鸿蒙')
+
+    def test_vision_rows_to_parsed_compact(self):
+        vrows = [{
+            'uid': 'a1', 'name': '常规-8.28安卓 (1)', 'target': '主包,黄历',
+            'title': '寿命短的人常有这三大表现!', 'body': '如果一个表现都没有，恭喜！你的身体很健康',
+            'android': 'all', 'ios': '不向IOS推送', 'time': '', 'status': '',
+        }]
+        parsed = sync_check_engine._vision_rows_to_parsed(vrows)
+        comp = parsed['rows'][0]['compact']
+        self.assertEqual(sorted(sync_check_engine._extract_target_codes(comp)), ['0', '1'])
+        self.assertTrue(sync_check_engine._extract_search_source(comp).startswith('寿命短的人常有这三大表现!'))
+        self.assertIn('不向iOS推送', comp)
+
+    def test_vision_primary_uses_rows(self):
+        cfg = self._base_config()
+        cfg['extract_mode'] = 'vision_fallback'
+        vparsed = sync_check_engine._vision_rows_to_parsed([
+            {'uid': 'x1', 'name': '常规-8.25安卓', 'target': '主包,黄历',
+             'title': '卧室有5样东西，当心被癌症盯上!', 'body': '为什么你总睡不好、嗓子疼?',
+             'android': 'all', 'ios': '不向iOS推送', 'time': '', 'status': ''},
+            {'uid': 'x2', 'name': '常规-8.25鸿蒙', 'target': '鸿蒙',
+             'title': '卧室有5样东西，当心被癌症盯上!', 'body': '为什么你总睡不好、嗓子疼?',
+             'android': 'all', 'ios': '不向iOS推送', 'time': '', 'status': ''},
+            {'uid': 'x3', 'name': '常规-8.25ios', 'target': '主包',
+             'title': '卧室有5样东西，当心被癌症盯上!', 'body': '为什么你总睡不好、嗓子疼?',
+             'android': '不向安卓推送', 'ios': 'all', 'time': '', 'status': ''},
+        ])
+        with mock.patch.object(sync_check_engine, 'extract_rows_vision', return_value=vparsed), \
+             mock.patch.object(sync_check_engine, 'find_sync_email', return_value=make_sync_email()), \
+             mock.patch.object(push_check_engine, 'search_push',
+                               side_effect=[make_search_result(make_sync_backend_records()) for _ in range(3)]):
+            result = sync_check_engine.run_sync_check_engine(config=cfg, state={})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['summary']['status'], 'ok')
+
+    def test_vision_fallback_to_ocr(self):
+        cfg = self._base_config()
+        cfg['extract_mode'] = 'vision_fallback'
+        with mock.patch.object(sync_check_engine, 'extract_rows_vision', return_value=None), \
+             mock.patch.object(sync_check_engine, 'find_sync_email', return_value=make_sync_email()), \
+             mock.patch.object(push_check_engine, 'ocr_image', return_value=SYNC_OCR_TEXT), \
+             mock.patch.object(push_check_engine, 'search_push',
+                               side_effect=[make_search_result(make_sync_backend_records()) for _ in range(3)]):
+            result = sync_check_engine.run_sync_check_engine(config=cfg, state={})
+        self.assertTrue(result['ok'])
 
     def test_no_email_keeps_pending(self):
         with mock.patch.object(sync_check_engine, 'find_sync_email', return_value=None):

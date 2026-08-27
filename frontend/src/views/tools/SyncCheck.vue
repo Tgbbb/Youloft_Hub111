@@ -84,6 +84,13 @@
             <label class="sc-field__label" for="sc-body">正文关键词</label>
             <input id="sc-body" v-model="form.mail_body_keyword" class="sc-input" type="text" autocomplete="off" />
           </div>
+          <div class="sc-field sc-field--full">
+            <label class="sc-field__label" for="sc-extract">截图提取方式</label>
+            <select id="sc-extract" v-model="form.extract_mode" class="sc-input">
+              <option value="ocr">OCR识别</option>
+              <option value="vision_fallback">视觉模型优先·OCR回退</option>
+            </select>
+          </div>
 
           <footer class="sc-panel__foot">
             <button class="sc-btn sc-btn--primary" type="submit" :disabled="saving">
@@ -214,7 +221,8 @@ const form = ref({
   deadline_time: '18:30',
   mail_subject: '回复：【测试需求】关于常规PUSH的测试需求',
   mail_body_keyword: '已同步至线上',
-  enable_dingtalk_notify: false
+  enable_dingtalk_notify: false,
+  extract_mode: 'vision_fallback'
 })
 
 const saving = ref(false)
@@ -243,7 +251,8 @@ const loadConfig = async () => {
       deadline_time: data.deadline_time,
       mail_subject: data.mail_subject,
       mail_body_keyword: data.mail_body_keyword,
-      enable_dingtalk_notify: data.enable_dingtalk_notify
+      enable_dingtalk_notify: data.enable_dingtalk_notify,
+      extract_mode: data.extract_mode
     }
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '配置加载失败')
@@ -262,7 +271,8 @@ const saveConfig = async () => {
       deadline_time: response.data.deadline_time,
       mail_subject: response.data.mail_subject,
       mail_body_keyword: response.data.mail_body_keyword,
-      enable_dingtalk_notify: response.data.enable_dingtalk_notify
+      enable_dingtalk_notify: response.data.enable_dingtalk_notify,
+      extract_mode: response.data.extract_mode
     }
     configMessage.value = '配置已保存'
     configMessageType.value = 'success'

@@ -88,6 +88,7 @@ def _build_sync_config():
         'deadline_time': cfg_obj.deadline_time,
         'mail_subject': cfg_obj.mail_subject,
         'mail_body_keyword': cfg_obj.mail_body_keyword,
+        'extract_mode': cfg_obj.extract_mode,
     }
 
 
