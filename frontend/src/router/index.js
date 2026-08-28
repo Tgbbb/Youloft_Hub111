@@ -249,6 +249,11 @@ const routes = [
                 path: 'sync-check',
                 name: 'ToolSyncCheck',
                 component: () => import('@/views/tools/SyncCheck.vue')
+            },
+            {
+                path: 'reply-check',
+                name: 'ToolReplyCheck',
+                component: () => import('@/views/tools/ReplyCheck.vue')
             }
         ]
     },

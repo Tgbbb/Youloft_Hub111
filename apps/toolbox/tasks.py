@@ -6,10 +6,11 @@ from datetime import datetime, timedelta
 from celery import shared_task
 from django.utils import timezone
 
-from .models import PushCheckRun, ToolboxConfig, SyncCheckConfig, SyncCheckRun
+from .models import PushCheckRun, ToolboxConfig, SyncCheckConfig, SyncCheckRun, ReplyCheckConfig, ReplyCheckRun
 from .push_check_engine import run_push_check_engine
 from . import sync_check_engine
 from .sync_check_engine import run_sync_check_engine
+from . import reply_check_engine
 
 
 @shared_task(bind=True, max_retries=0)
@@ -208,3 +209,106 @@ def run_sync_check_tick(self):
 def run_sync_check(self, force=False):
     """手动触发一次同步确认检查（force=true 忽略当天已处理标记）。"""
     _execute_sync_check(force=force)
+
+
+def _build_reply_config():
+    """组装配置回复提醒引擎配置（IMAP 复用 ToolboxConfig）。"""
+    rc = ReplyCheckConfig.get_singleton()
+    toolbox = ToolboxConfig.get_singleton()
+    return {
+        'imap': {
+            'host': toolbox.imap_host,
+            'port': toolbox.imap_port,
+            'user': toolbox.imap_user,
+            'password': toolbox.imap_password,
+            'timeout': toolbox.imap_timeout,
+        },
+        'qc_recipient_keywords': rc.qc_recipient_keywords,
+        'body_keyword': rc.body_keyword,
+        'title_keywords': rc.title_keywords,
+        'ad_keyword': rc.ad_keyword,
+        'notify_threshold_minutes': rc.notify_threshold_minutes,
+        'enabled': rc.enabled,
+        'interval_minutes': rc.interval_minutes,
+    }
+
+
+def _execute_reply_check(force=False):
+    """执行一次配置回复检查并持久化当天记录（tick 与手动触发共用）。"""
+    rc = ReplyCheckConfig.get_singleton()
+    today = timezone.localdate()
+    run, _ = ReplyCheckRun.objects.get_or_create(date=today, defaults={})
+    config = _build_reply_config()
+    state = {
+        'unreplied': run.unresolved or [],
+        'actionable': [],
+        'notified_keys': run.notified_keys or [],
+    }
+    old_log = run.log or ''
+    try:
+        result = reply_check_engine.run_reply_check_engine(force=force, config=config, state=state)
+        summary = result.get('summary') or {}
+        run.unreplied_count = int(summary.get('unreplied_count') or 0)
+        run.ad_unreplied_count = int(summary.get('ad_unreplied_count') or 0)
+        run.unresolved = result.get('unreplied') or []
+        run.log = (old_log + '\n' if old_log else '') + result['log']
+        run.checked_at = timezone.now()
+        run.save()
+        _notify_reply_check(run, rc.enable_dingtalk_notify)
+    except Exception as exc:
+        run.log = (old_log + '\n' if old_log else '') + traceback.format_exc()
+        run.checked_at = timezone.now()
+        run.save()
+    ReplyCheckConfig.objects.filter(pk=rc.pk).update(last_check_at=timezone.now())
+
+
+def _notify_reply_check(run, enable):
+    """把当天新出现的未回复线程聚合推送钉钉；每线程每天只提醒一次。"""
+    if not enable:
+        return
+    notified = set(run.notified_keys or [])
+    new_items = [x for x in (run.unresolved or [])
+                 if x.get('actionable') and x.get('key') not in notified]
+    if not new_items:
+        return
+    lines = ['## 配置回复提醒', '']
+    for it in new_items:
+        tag = '广告' if it.get('ad') else '配置'
+        lines.append('- [{}] {}'.format(tag, it.get('subject', '')))
+        if it.get('sender'):
+            lines.append('  - 发件人: {}'.format(it['sender']))
+        if it.get('send_time'):
+            lines.append('  - 发件时间: {}'.format(it['send_time']))
+        lines.append('  - 状态: 未收到回复')
+    lines.append('')
+    lines.append('请到 TestHub → 工具合集 → 配置回复提醒 查看详情。')
+
+    from apps.core.notifications import send_dingtalk_markdown
+    results = send_dingtalk_markdown('配置回复提醒', '\n'.join(lines))
+    ok = sum(1 for r in results if r.get('ok'))
+    fail = len(results) - ok
+    if ok > 0:
+        keys = notified | {x['key'] for x in new_items if x.get('key')}
+        run.notified_keys = sorted(keys)
+        run.save(update_fields=['notified_keys'])
+    note = '钉钉通知: 成功 {} / 失败 {}（新增 {} 条）'.format(ok, fail, len(new_items))
+    run.log = ((run.log + '\n') if run.log else '') + note
+    run.save(update_fields=['log'])
+
+
+@shared_task(bind=True, max_retries=0)
+def run_reply_check_tick(self):
+    """Celery beat 每分钟触发；按 interval_minutes + last_check_at 节流。"""
+    rc = ReplyCheckConfig.get_singleton()
+    if not rc.enabled:
+        return
+    now = timezone.now()
+    if rc.last_check_at and (now - rc.last_check_at).total_seconds() < rc.interval_minutes * 60:
+        return
+    _execute_reply_check(force=False)
+
+
+@shared_task(bind=True, max_retries=0)
+def run_reply_check(self, force=False):
+    """手动触发一次配置回复检查（force=true 立即重查最新邮件）。"""
+    _execute_reply_check(force=force)

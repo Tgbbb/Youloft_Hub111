@@ -140,3 +140,69 @@ class SyncCheckRun(models.Model):
 
     def __str__(self):
         return '同步确认 %s (%s)' % (self.date, self.get_status_display())
+
+
+class ReplyCheckConfig(models.Model):
+    """配置回复提醒工具配置（单例）：筛选未回复配置邮件并钉钉提醒。"""
+
+    enabled = models.BooleanField(default=True, verbose_name='启用自动监听')
+    interval_minutes = models.IntegerField(default=15, verbose_name='检查间隔(分钟)')
+    qc_recipient_keywords = models.CharField(
+        max_length=255, default='品管部,qc@youloft.com', verbose_name='品管部收件人关键字',
+        help_text='逗号分隔，匹配 To/CC 的显示名或地址，任一命中即算收件人有品管部')
+    body_keyword = models.CharField(max_length=100, default='请QC检查', verbose_name='正文关键字')
+    title_keywords = models.CharField(
+        max_length=255, default='配置,广告,测试需求', verbose_name='标题关键字',
+        help_text='逗号分隔，标题命中任一即纳入')
+    ad_keyword = models.CharField(
+        max_length=255, default='广告', verbose_name='广告关键字',
+        help_text='逗号分隔，标题命中任一即视为广告并立即提醒')
+    notify_threshold_minutes = models.IntegerField(default=30, verbose_name='非广告提醒阈值(分钟)')
+    enable_dingtalk_notify = models.BooleanField(
+        default=True, verbose_name='钉钉通知',
+        help_text='未回复配置邮件通过「统一通知配置」中的钉钉机器人推送')
+    last_check_at = models.DateTimeField(null=True, blank=True, verbose_name='上次检查时间')
+    updated_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, verbose_name='最后修改人')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'toolbox_reply_check_config'
+        verbose_name = '配置回复提醒配置'
+        verbose_name_plural = verbose_name
+
+    @classmethod
+    def get_singleton(cls):
+        obj = cls.objects.first()
+        if obj is None:
+            obj = cls.objects.create()
+        return obj
+
+    def __str__(self):
+        return '配置回复提醒配置'
+
+
+class ReplyCheckRun(models.Model):
+    """配置回复提醒按天检查记录。"""
+
+    date = models.DateField(unique=True, verbose_name='日期')
+    unreplied_count = models.IntegerField(default=0, verbose_name='未回复数量')
+    ad_unreplied_count = models.IntegerField(default=0, verbose_name='广告未回复数量')
+    unresolved = models.JSONField(
+        default=list, blank=True, verbose_name='未回复列表',
+        help_text='[{subject,sender,send_time,ad,is_replied,key}]')
+    notified_keys = models.JSONField(
+        default=list, blank=True, verbose_name='已通知主题',
+        help_text='当天已推送钉钉的归一化主题，用于去重')
+    log = models.TextField(blank=True, default='', verbose_name='检查日志')
+    checked_at = models.DateTimeField(null=True, blank=True, verbose_name='最近检查时间')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'toolbox_reply_check_run'
+        verbose_name = '配置回复提醒记录'
+        verbose_name_plural = verbose_name
+        ordering = ['-date']
+
+    def __str__(self):
+        return '配置回复提醒 %s' % self.date

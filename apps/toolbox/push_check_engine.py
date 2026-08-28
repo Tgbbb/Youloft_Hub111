@@ -443,6 +443,11 @@ def build_search_candidates(keyword):
         s = head_clean[:l]
         if len(s) >= 4 and s not in out:
             out.append(s)
+    # 单字 OCR 误识容错：追加开头 2~3 字前缀，避免「身体有恙」搜不到「身体有癌」
+    for l in (3, 2):
+        s = head_clean[:l]
+        if len(s) >= 2 and s not in out:
+            out.append(s)
     if not out:
         out.append(cleaned[:30])
     return out

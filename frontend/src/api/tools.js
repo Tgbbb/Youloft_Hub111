@@ -95,3 +95,49 @@ export function clearSyncCheckRuns() {
     method: 'delete'
   })
 }
+
+// 配置回复提醒工具
+export function getReplyCheckConfig() {
+  return request({
+    url: '/tools/reply-check/config/',
+    method: 'get'
+  })
+}
+
+export function saveReplyCheckConfig(data) {
+  return request({
+    url: '/tools/reply-check/config/',
+    method: 'put',
+    data
+  })
+}
+
+export function triggerReplyCheck(data) {
+  return request({
+    url: '/tools/reply-check/run/',
+    method: 'post',
+    data
+  })
+}
+
+export function getReplyCheckRuns(params) {
+  return request({
+    url: '/tools/reply-check/runs/',
+    method: 'get',
+    params
+  })
+}
+
+export function getReplyCheckToday() {
+  return request({
+    url: '/tools/reply-check/runs/today/',
+    method: 'get'
+  })
+}
+
+export function clearReplyCheckRuns() {
+  return request({
+    url: '/tools/reply-check/runs/',
+    method: 'delete'
+  })
+}

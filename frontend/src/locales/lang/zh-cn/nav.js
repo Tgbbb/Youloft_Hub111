@@ -58,6 +58,7 @@ export default {
     scheduledTaskConfig: '定时任务配置',
     agentConfig: 'Agent 配置',
     pushCheck: '推送对比',
-    syncCheck: '同步确认'
+    syncCheck: '同步确认',
+    replyCheck: '配置回复提醒'
   }
 }

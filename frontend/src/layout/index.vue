@@ -65,6 +65,7 @@
             <template v-else-if="currentModule === 'tools'">
               <el-menu-item index="/tools/push-check"><el-icon><Monitor /></el-icon><span>{{ $t('menu.pushCheck') }}</span></el-menu-item>
               <el-menu-item index="/tools/sync-check"><el-icon><CircleCheck /></el-icon><span>{{ $t('menu.syncCheck') }}</span></el-menu-item>
+              <el-menu-item index="/tools/reply-check"><el-icon><Bell /></el-icon><span>{{ $t('menu.replyCheck') }}</span></el-menu-item>
             </template>
 
             <!-- APP自动化 -->
@@ -254,6 +255,7 @@ const breadcrumbTitle = computed(() => {
     '/api-testing/notification-logs': t('menu.notificationList'),
     '/tools/push-check': t('menu.pushCheck'),
     '/tools/sync-check': t('menu.syncCheck'),
+    '/tools/reply-check': t('menu.replyCheck'),
     '/app-automation/dashboard': 'Dashboard',
     '/app-automation/projects': '项目管理',
     '/app-automation/devices': '设备管理',

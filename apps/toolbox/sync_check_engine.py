@@ -496,19 +496,21 @@ def main(force=False):
 
     log('► 发现邮件: %s (uid=%s)' % (email_data['subject'], email_data['uid']))
     parsed = None
+    extract_source = None
     atts = [a for a in email_data['attachments'] if a['size'] >= 5000]
     if atts:
         att = max(atts, key=lambda a: a['size'])
         if cfg.get('extract_mode') == 'vision_fallback':
             parsed = extract_rows_vision(att['content'])
             if parsed and parsed['rows']:
-                log('视觉模型提取到 %d 条推送记录' % len(parsed['rows']))
+                extract_source = 'vision'
             else:
                 parsed = None
         if parsed is None:
             ocr_text = pce.ocr_image(att['content'])
             if ocr_text:
                 parsed = ocr_extract_sync_rows(ocr_text)
+                extract_source = 'ocr'
     if parsed is None:
         state.update({
             'done': True, 'status': 'fail',
@@ -540,7 +542,7 @@ def main(force=False):
         })
         return
 
-    log('OCR 解析到 %d 条推送记录' % len(rows))
+    log('%s 解析到 %d 条推送记录' % ('视觉模型' if extract_source == 'vision' else 'OCR', len(rows)))
     cmp = compare_with_backend(rows)
     diffs = cmp['diffs']
     matched = cmp.get('matched')

@@ -8,7 +8,10 @@ from rest_framework.views import APIView
 
 from django.utils import timezone
 
-from .models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
+from .models import (
+    ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun,
+    ReplyCheckConfig, ReplyCheckRun,
+)
 from .serializers import (
     ToolboxConfigSerializer,
     PushCheckRunListSerializer,
@@ -16,8 +19,11 @@ from .serializers import (
     SyncCheckConfigSerializer,
     SyncCheckRunListSerializer,
     SyncCheckRunDetailSerializer,
+    ReplyCheckConfigSerializer,
+    ReplyCheckRunListSerializer,
+    ReplyCheckRunDetailSerializer,
 )
-from .tasks import run_push_check, run_sync_check
+from .tasks import run_push_check, run_sync_check, run_reply_check
 
 
 class PushCheckConfigView(APIView):
@@ -168,3 +174,72 @@ class SyncCheckTodayView(APIView):
         run, _ = SyncCheckRun.objects.get_or_create(
             date=timezone.localdate(), defaults={'status': 'pending'})
         return Response(SyncCheckRunDetailSerializer(run).data)
+
+
+class ReplyCheckConfigView(APIView):
+    """配置回复提醒配置：GET 读取，PUT 更新（无敏感字段）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cfg = ReplyCheckConfig.get_singleton()
+        return Response(ReplyCheckConfigSerializer(cfg).data)
+
+    def put(self, request):
+        cfg = ReplyCheckConfig.get_singleton()
+        serializer = ReplyCheckConfigSerializer(cfg, data=request.data or {}, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save(updated_by=request.user)
+        return Response(ReplyCheckConfigSerializer(obj).data)
+
+
+class ReplyCheckRunCreateView(APIView):
+    """手动触发一次配置回复检查；force=true 立即重查最新邮件。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        force_value = (request.data or {}).get('force', False)
+        force = force_value is True or force_value in ('true', 'True', '1', 1)
+        run, _ = ReplyCheckRun.objects.get_or_create(
+            date=timezone.localdate(), defaults={})
+        run_reply_check.delay(force)
+        return Response(ReplyCheckRunDetailSerializer(run).data, status=status.HTTP_201_CREATED)
+
+
+class ReplyCheckRunPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class ReplyCheckRunListView(APIView):
+    """配置回复提醒按天历史（分页）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        queryset = ReplyCheckRun.objects.all()
+        paginator = ReplyCheckRunPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        if page is not None:
+            serializer = ReplyCheckRunListSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        serializer = ReplyCheckRunListSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def delete(self, request):
+        """清空全部配置回复提醒按天历史。"""
+        deleted, _ = ReplyCheckRun.objects.all().delete()
+        return Response({'deleted': deleted})
+
+
+class ReplyCheckTodayView(APIView):
+    """当天配置回复提醒详情（不存在则返回空记录）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        run, _ = ReplyCheckRun.objects.get_or_create(date=timezone.localdate(), defaults={})
+        return Response(ReplyCheckRunDetailSerializer(run).data)

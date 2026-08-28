@@ -308,6 +308,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.toolbox.tasks.run_sync_check_tick',
         'schedule': crontab(minute='*'),
     },
+    'toolbox-reply-check-tick': {
+        'task': 'apps.toolbox.tasks.run_reply_check_tick',
+        'schedule': crontab(minute='*'),
+    },
 }
 
 # Channels Configuration

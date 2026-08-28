@@ -9,6 +9,10 @@ from .views import (
     SyncCheckRunCreateView,
     SyncCheckRunListView,
     SyncCheckTodayView,
+    ReplyCheckConfigView,
+    ReplyCheckRunCreateView,
+    ReplyCheckRunListView,
+    ReplyCheckTodayView,
 )
 
 urlpatterns = [
@@ -20,4 +24,8 @@ urlpatterns = [
     path('sync-check/run/', SyncCheckRunCreateView.as_view(), name='sync-check-run'),
     path('sync-check/runs/', SyncCheckRunListView.as_view(), name='sync-check-runs'),
     path('sync-check/runs/today/', SyncCheckTodayView.as_view(), name='sync-check-today'),
+    path('reply-check/config/', ReplyCheckConfigView.as_view(), name='reply-check-config'),
+    path('reply-check/run/', ReplyCheckRunCreateView.as_view(), name='reply-check-run'),
+    path('reply-check/runs/', ReplyCheckRunListView.as_view(), name='reply-check-runs'),
+    path('reply-check/runs/today/', ReplyCheckTodayView.as_view(), name='reply-check-today'),
 ]

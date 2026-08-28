@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 from rest_framework import serializers
 
-from .models import ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun
+from .models import (
+    ToolboxConfig, PushCheckRun, SyncCheckConfig, SyncCheckRun,
+    ReplyCheckConfig, ReplyCheckRun,
+)
 
 
 def _mask_secret(value):
@@ -70,4 +73,33 @@ class SyncCheckRunDetailSerializer(SyncCheckRunListSerializer):
             'id', 'date', 'status', 'mail_uid', 'mail_subject', 'ocr_text',
             'parsed_fields', 'backend_record', 'diffs', 'log', 'notify_sent_status',
             'checked_at', 'created_at',
+        ]
+
+
+class ReplyCheckConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReplyCheckConfig
+        fields = [
+            'id', 'enabled', 'interval_minutes', 'qc_recipient_keywords',
+            'body_keyword', 'title_keywords', 'ad_keyword',
+            'notify_threshold_minutes', 'enable_dingtalk_notify',
+            'last_check_at', 'updated_by', 'updated_at',
+        ]
+        read_only_fields = ['id', 'last_check_at', 'updated_by', 'updated_at']
+
+
+class ReplyCheckRunListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReplyCheckRun
+        fields = [
+            'id', 'date', 'unreplied_count', 'ad_unreplied_count',
+            'checked_at', 'created_at',
+        ]
+
+
+class ReplyCheckRunDetailSerializer(ReplyCheckRunListSerializer):
+    class Meta(ReplyCheckRunListSerializer.Meta):
+        fields = [
+            'id', 'date', 'unreplied_count', 'ad_unreplied_count',
+            'unresolved', 'notified_keys', 'log', 'checked_at', 'created_at',
         ]

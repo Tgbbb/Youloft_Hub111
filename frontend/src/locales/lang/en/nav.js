@@ -58,6 +58,7 @@ export default {
     scheduledTaskConfig: 'Scheduled Task Configuration',
     difyConfig: 'Dify Configuration',
     pushCheck: 'Push Comparison',
-    syncCheck: 'Sync Confirmation'
+    syncCheck: 'Sync Confirmation',
+    replyCheck: 'Reply Reminder'
   }
 }
