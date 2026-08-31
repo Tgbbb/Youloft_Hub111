@@ -282,6 +282,7 @@ ANOMALY_TYPES = {
     'stable_wait_timeout': {'label': '页面稳定等待超时', 'default_layer': 'unknown'},
     'replan': {'label': '重规划', 'default_layer': 'unknown'},
     'stuck_detected': {'label': '卡死检测', 'default_layer': 'unknown'},
+    'tap_repeat_no_change': {'label': '重复动作无变化', 'default_layer': 'unknown'},
     'locate_retry': {'label': '定位重试', 'default_layer': 'unknown'},
     'adb_error': {'label': 'ADB 错误', 'default_layer': 'execution'},
     'wda_error': {'label': 'WDA 错误', 'default_layer': 'execution'},
@@ -303,7 +304,7 @@ def _infer_anomaly_layer(atype, evidence):
     if evidence.get('error') or evidence.get('first_error'):
         return 'execution'
     if atype in ('tap_retry', 'hash_mismatch_fallback', 'stable_wait_timeout',
-                 'stuck_detected', 'action_skipped'):
+                 'stuck_detected', 'action_skipped', 'tap_repeat_no_change'):
         # 页面类事件：有旁证（环境正常 / 页面指纹比较）才归 app，
         # 单次事件无旁证一律 unknown，报告只列可能原因、不下结论
         return 'app' if evidence else 'unknown'
@@ -319,7 +320,7 @@ SEVERITY_LABEL = {
 # 页面类纠错类型：环境正常时表示靠纠错救回（recovered 级）
 _SEVERITY_RECOVERED_TYPES = {
     'hash_mismatch_fallback', 'replan', 'stuck_detected',
-    'stable_wait_timeout', 'locate_retry',
+    'stable_wait_timeout', 'locate_retry', 'tap_repeat_no_change',
 }
 
 
@@ -1656,17 +1657,26 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         # 动作生效判据：执行前后页面发生变化 或 与录制 after_hash 匹配。
                         # after_hash 在页面分叉/动态内容/加载时序下会失真，若动作已生效
                         # （页面确实变了）仍按通过处理并记警告，避免"已成功却降级重做"。
+                        primary_action = r_actions[-1].get('action', '') if r_actions else ''
+                        is_input = (primary_action == 'input')
                         hash_ok = (not expected_hash) or _is_same_page_by_hash(png, expected_hash)
                         page_changed = not _is_same_page(before_png, png)
-                        if hash_ok or page_changed:
+                        # 输入类动作：整屏 pHash 难以感知文本输入的变化，若仅因"页面未变"
+                        # 就降级 VLM，每个 input 步骤都会白花一次 API。回放已忠实执行录制的
+                        # input（目标动作必播），这里按"已执行"放行并记警告。
+                        effective = hash_ok or page_changed or is_input
+                        if effective:
                             if not hash_ok:
+                                warn_msg = (
+                                    '输入后页面未变且pHash与录制不一致(文本变化对粗粒度pHash不可见)'
+                                    if is_input
+                                    else '动作已生效但执行后pHash与录制不一致(页面分叉/动态内容)'
+                                )
                                 logger.warning(
-                                    f'[Runner] 回放步骤{step_idx+1} 动作已生效但执行后pHash与录制不一致'
-                                    f'(页面分叉/动态内容)，按通过处理')
+                                    f'[Runner] 回放步骤{step_idx+1} {warn_msg}，按通过处理')
                                 step_anomalies.append(_build_anomaly(
                                     'hash_mismatch_fallback',
-                                    f'回放步骤{step_idx+1} 动作已生效但执行后pHash与录制不一致'
-                                    f'(页面分叉/动态内容)，按通过处理',
+                                    f'回放步骤{step_idx+1} {warn_msg}，按通过处理',
                                     evidence={'step': step_idx + 1,
                                               'expected_hash': str(expected_hash),
                                               'current_hash': str(_phash(png))},
@@ -1875,14 +1885,19 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                         last_action_fp = action_fp
                         repeat_count = 0
                     if repeat_count >= 2:
+                        # 同一动作指纹连续重复且页面未变化：多为幂等/已生效但无可见页面变化
+                        # （如发送/点赞/切换按钮）。判定为动作已生效，完成本步并记可恢复异常，不再硬失败。
                         step_anomalies.append(_build_anomaly(
-                            'stuck_detected',
-                            f'连续{repeat_count+1}次重复动作 {_action_fingerprint_desc(action)} 且页面未变化，操作无效',
+                            'tap_repeat_no_change',
+                            f'同一动作连续{repeat_count+1}次且页面未变化，判定动作已生效但无可见页面变化',
                             evidence={'fingerprint': action_fp, 'repeat_count': repeat_count,
                                       'page_unchanged': True},
-                            recovered=False,
+                            recovered=True,
                         ))
-                        raise RuntimeError(f'连续{repeat_count+1}次重复动作 {_action_fingerprint_desc(action)} 且页面未变化，操作无效，页面可能卡死或元素不可点击')
+                        logger.info(f'[Runner] 步骤 {step_idx+1} 重复动作且页面未变化，判定已生效，完成本步')
+                        action['step_status'] = 'done'
+                        screenshot_url = save_screenshot(png, execution_record.id, step_idx+1)
+                        break
 
                     # 1. 按类型执行
                     if t == 'done': screenshot_url = save_screenshot(png, execution_record.id, step_idx+1); break
@@ -1937,23 +1952,29 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                             if ios_dev: ios_dev.execute_action(action)
                             else: adb_execute(device_id, action)
                             _smart_wait(device_id, ios_dev, png, max_wait=2.0, check_interval=0.5)
-                            # 重试后再校验，仍没生效则强制 in_progress 让 VLM 继续
+                            # 重试后再校验：仍没变化时保留模型语义（不再强制 in_progress）
                             after2 = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
                             step_after_png = after2
                             if _is_same_page(png, after2):
-                                logger.info(f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，继续等待VLM判断')
-                                tap_anom['recovered'] = False
+                                # 重试后仍无变化：不再强制 in_progress，保留模型语义判断。
+                                # 模型已 done -> 判定动作已生效，结束本步；模型仍 in_progress -> 继续处理。
+                                will_accept = (action.get('step_status', 'done') != 'in_progress')
+                                logger.info(
+                                    f'[Runner] 步骤 {step_idx+1} 重试后页面仍未变化，'
+                                    + ('判定动作已生效，完成本步' if will_accept else '保留模型判断，继续处理'))
+                                tap_anom['recovered'] = will_accept
                                 step_anomalies.append(_build_anomaly(
                                     'tap_retry',
-                                    f'步骤 {step_idx+1} {t} 重试后页面仍未变化，继续等待VLM判断',
+                                    f'步骤 {step_idx+1} {t} 重试后页面仍未变化'
+                                    + ('，判定动作已生效' if will_accept else '，继续处理'),
                                     evidence={'action': _action_fingerprint_desc(action),
                                               'attempt': 2, 'page_unchanged': True},
-                                    recovered=False, severity='critical'))
-                                action['step_status'] = 'in_progress'
+                                    recovered=will_accept))
                                 last_tap_feedback = (
                                     f"上次 {t} 坐标 ({action.get('x_pct', action.get('x', '?'))},"
-                                    f"{action.get('y_pct', action.get('y', '?'))}) 连续两次点击后页面无变化，"
-                                    f"可能目标被遮挡或坐标偏差，请更换目标或改用 back 动作，不要重复同一坐标")
+                                    f"{action.get('y_pct', action.get('y', '?'))}) 点击后页面几乎无变化，"
+                                    f"但发送/点赞/切换这类按钮点击后页面变化可能很小。若你判断动作已生效，"
+                                    f"请直接返回 done；若确实没点中，可小幅调整坐标（仅一次），不要反复重复同一坐标")
                             else:
                                 last_tap_feedback = ''
                         else:

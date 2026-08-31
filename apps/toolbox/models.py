@@ -150,7 +150,9 @@ class ReplyCheckConfig(models.Model):
     qc_recipient_keywords = models.CharField(
         max_length=255, default='品管部,qc@youloft.com', verbose_name='品管部收件人关键字',
         help_text='逗号分隔，匹配 To/CC 的显示名或地址，任一命中即算收件人有品管部')
-    body_keyword = models.CharField(max_length=100, default='请QC检查', verbose_name='正文关键字')
+    body_keyword = models.CharField(
+        max_length=255, default='请QC检查', verbose_name='正文关键字',
+        help_text='逗号分隔，正文任一命中即纳入')
     title_keywords = models.CharField(
         max_length=255, default='配置,广告,测试需求', verbose_name='标题关键字',
         help_text='逗号分隔，标题命中任一即纳入')

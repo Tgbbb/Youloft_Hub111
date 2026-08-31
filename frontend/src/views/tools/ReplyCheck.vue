@@ -74,6 +74,7 @@
           <div class="sc-field sc-field--full">
             <label class="sc-field__label" for="sc-body">正文关键字</label>
             <input id="sc-body" v-model="form.body_keyword" class="sc-input" type="text" autocomplete="off" placeholder="请QC检查" />
+            <p class="sc-field__note">逗号分隔，正文命中任一即纳入</p>
           </div>
           <div class="sc-field sc-field--full">
             <label class="sc-field__label" for="sc-title">标题关键字</label>

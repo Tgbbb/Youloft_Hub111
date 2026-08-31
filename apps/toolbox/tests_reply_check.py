@@ -64,6 +64,11 @@ class ReplyCheckEngineLogicTests(SimpleTestCase):
         self.assertTrue(reply_check_engine._subject_match('【测试需求】关于常规PUSH', ['测试需求']))
         self.assertFalse(reply_check_engine._subject_match('【日常】通知', ['测试需求']))
 
+    def test_body_match_any_keyword(self):
+        self.assertTrue(reply_check_engine._body_match('请QC检查，已核实', ['请QC检查']))
+        self.assertTrue(reply_check_engine._body_match('请知悉，已核实内容', ['核对', '已核实', '复核']))
+        self.assertFalse(reply_check_engine._body_match('无关内容', ['请QC检查']))
+
     def test_is_verified_text_true(self):
         self.assertTrue(reply_check_engine._is_verified_text('请QC检查，已验证'))
         self.assertTrue(reply_check_engine._is_verified_text('已核实，请知悉'))

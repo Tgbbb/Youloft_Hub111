@@ -1066,6 +1066,34 @@ class NormalStepReplayHashTests(TestCase):
         self.assertEqual(result['steps'][0]['status'], 'passed')
         self.vlm_mock.assert_called()
 
+    def test_input_page_unchanged_hash_mismatch_passes_without_vlm(self):
+        # 输入类动作：整屏 pHash 难以感知文本变化，执行前后同屏 + hash 不符
+        # → 判定为已执行，按通过记警告，不再白白降级 VLM
+        mc, execution, device, model = self._context()
+        mc.replay_data[0]['steps'][0]['actions'] = [
+            {'action': 'input', 'text': '1111', 'x_pct': 50, 'y_pct': 50},
+        ]
+        state = {'i': 0}
+        shots = [self._img_png(41)]  # 执行前后同为该帧 → 页面未变
+
+        def shot(*_args):
+            frame = shots[min(state['i'], len(shots) - 1)]
+            state['i'] += 1
+            return frame
+
+        with mock.patch.object(midscene_runner, 'adb_screenshot', side_effect=shot), \
+             mock.patch.object(midscene_runner, '_is_same_page_by_hash', return_value=False):
+            result = midscene_runner.run_midscene_test(
+                ai_prompt='输入1111',
+                device=device, model_config=model, execution_record=execution,
+                replay_mode=True, replay_index=0,
+            )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.vlm_mock.assert_not_called()
+        types = [a['type'] for a in result['steps'][0]['anomalies']]
+        self.assertEqual(types, ['hash_mismatch_fallback'])
+
 
 class WaitDurationTests(TestCase):
     """wait 时长支持：显式 duration 按时长等待，无 duration 保持默认 3s。"""

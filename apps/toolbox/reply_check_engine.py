@@ -102,6 +102,14 @@ def _subject_match(subject, keywords):
     return any(kw.strip().lower() in subj for kw in keywords if kw.strip())
 
 
+def _body_match(body, keywords):
+    """正文命中任一关键字即匹配（逗号分隔）。"""
+    if not keywords:
+        return False
+    hay = body or ''
+    return any(kw.strip() in hay for kw in keywords if kw.strip())
+
+
 def _is_verified_text(text):
     """正文含验证/关闭标记 → 该邮件是验证/确认回复，而非未回复请求。"""
     lowered = (text or '').lower()
@@ -218,7 +226,7 @@ def run_reply_check_engine(force=False, config=None, state=None):
     _log_lines[:] = []
     imap_cfg = cfg['imap']
     qc_kw = [k for k in (cfg.get('qc_recipient_keywords') or '').split(',') if k.strip()]
-    body_kw = (cfg.get('body_keyword') or '').strip()
+    body_kw_list = [k for k in (cfg.get('body_keyword') or '').split(',') if k.strip()]
     title_kw = [k for k in (cfg.get('title_keywords') or '').split(',') if k.strip()]
     ad_kw_list = [k for k in (cfg.get('ad_keyword') or '').split(',') if k.strip()]
     threshold_min = int(cfg.get('notify_threshold_minutes') or 30)
@@ -228,7 +236,7 @@ def run_reply_check_engine(force=False, config=None, state=None):
     log('配置回复检查...')
     log('筛选规则: 收件人含%s / 正文含%s / 标题含%s' % (
         '或'.join(qc_kw) or '(未设置)',
-        body_kw or '(未设置)',
+        '或'.join(body_kw_list) or '(未设置)',
         '或'.join(title_kw) or '(未设置)'))
 
     records, imap = _fetch_today_records(imap_cfg)
@@ -245,7 +253,7 @@ def run_reply_check_engine(force=False, config=None, state=None):
                 continue
             text, html = pce.get_text_and_html(msg)
             body = (text or '') + re.sub(r'<[^>]+>', '', html or '')
-            if body_kw and body_kw not in body:
+            if not _body_match(body, body_kw_list):
                 continue
             searchable = (rec['subject'] or '') + '\n' + body
             if _has_nontoday_date(searchable, today):
