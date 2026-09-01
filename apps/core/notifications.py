@@ -57,7 +57,11 @@ def send_dingtalk_markdown(title, text, timeout=10):
         try:
             resp = requests.post(
                 url, json=payload,
-                headers={'Content-Type': 'application/json'}, timeout=timeout)
+                headers={'Content-Type': 'application/json'}, timeout=timeout,
+                # verify=False：绕过企业安全软件/代理的 HTTPS 拦截（自签名中间证书）
+                # 导致 requests 校验失败；webhook 已带加签 secret，风险可控。
+                # 若后续想恢复校验，可设置 REQUESTS_CA_BUNDLE/SSL_CERT_FILE 指向企业 CA 后改回 verify=True。
+                verify=False)
             if resp.status_code != 200:
                 item['error'] = 'HTTP {}: {}'.format(resp.status_code, resp.text[:200])
             else:

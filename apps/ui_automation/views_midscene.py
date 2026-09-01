@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 from .models import (
     MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
     MidsceneExecutionRecord, MidsceneAppPackage, MidsceneAppInstallRecord,
-    MidsceneGlobalConfig,
+    MidsceneGlobalConfig, MidsceneSequence, MidsceneSequenceRun,
 )
 from .serializers_midscene import (
     MidsceneProjectSerializer,
@@ -33,6 +33,10 @@ from .serializers_midscene import (
     MidsceneAppPackageSerializer,
     MidsceneAppInstallRecordSerializer,
     MidsceneGlobalConfigSerializer,
+    MidsceneSequenceSerializer,
+    MidsceneSequenceCreateSerializer,
+    MidsceneSequenceRunSerializer,
+    MidsceneSequenceRunDetailSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -1237,3 +1241,158 @@ class MidsceneConfigView(APIView):
         cfg.updated_by = request.user
         cfg.save()
         return Response(self._payload(cfg))
+
+
+class MidsceneSequenceViewSet(viewsets.ModelViewSet):
+    """Midscene 用例编排：有序串联多个用例，单设备一次执行。"""
+    queryset = MidsceneSequence.objects.all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['project', 'folder']
+    search_fields = ['name', 'description']
+    ordering_fields = ['created_at', 'updated_at', 'name']
+
+    def get_serializer_class(self):
+        if self.action in ('create', 'update', 'partial_update'):
+            return MidsceneSequenceCreateSerializer
+        return MidsceneSequenceSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['get'], url_path='match_summary')
+    def sequence_match(self, request, pk=None):
+        """跑链前按执行设备逐项返回将用的录制与匹配等级（只读，不阻塞）。"""
+        sequence = self.get_object()
+        device_id = request.query_params.get('device_id')
+        if not device_id:
+            return Response({'error': '请选择执行设备'}, status=400)
+        try:
+            device = MidsceneDevice.objects.get(id=device_id)
+        except MidsceneDevice.DoesNotExist:
+            return Response({'error': '设备不存在'}, status=404)
+
+        items = list(sequence.items.select_related('case').order_by('order'))
+        if not items:
+            return Response({'error': '编排没有用例'}, status=400)
+        cur = {
+            'platform': device.platform,
+            'model': (device.name or '').strip(),
+            'resolution': _read_device_resolution(device),
+        }
+        rows = []
+        for it in items:
+            existing = it.case.replay_data
+            if isinstance(existing, dict):
+                existing = [existing]
+            has_replay = bool(existing)
+            pick = _pick_best_replay(device, existing) if has_replay else None
+            pick = pick or {
+                'match_level': 'no_replay', 'recommended_index': None,
+                'recommended_name': '', 'has_match': False, 'current_device': cur,
+            }
+            used_index = it.replay_index if it.replay_mode == 'fixed' else (
+                pick.get('recommended_index') if pick.get('recommended_index') is not None
+                else it.replay_index)
+            rows.append({
+                'item_id': it.id, 'order': it.order, 'case_id': it.case_id,
+                'case_name': it.case.name, 'replay_mode': it.replay_mode,
+                'replay_index': it.replay_index, 'used_index': used_index,
+                'match_level': pick.get('match_level', 'no_replay'),
+                'recommended_name': pick.get('recommended_name', ''),
+            })
+        return Response({'device': cur, 'items': rows})
+
+    @action(detail=True, methods=['post'], url_path='execute')
+    def sequence_execute(self, request, pk=None):
+        """执行一条编排（单设备）：锁设备、建父 run、投递编排任务。"""
+        sequence = self.get_object()
+        from .midscene_runner import parse_ai_prompt
+
+        device_id = request.data.get('device_id')
+        if not device_id:
+            return Response({'error': '请选择执行设备'}, status=400)
+        try:
+            device_id = int(device_id)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的设备 ID'}, status=400)
+
+        install_package_id = request.data.get('install_package_id')
+        if install_package_id in (None, '', 0, '0', 'null'):
+            install_package_id = None
+        else:
+            try:
+                install_package_id = int(install_package_id)
+            except (TypeError, ValueError):
+                return Response({'error': '无效的安装包 ID'}, status=400)
+            if not MidsceneAppPackage.objects.filter(id=install_package_id).exists():
+                return Response({'error': '安装包不存在或已被删除'}, status=400)
+
+        items = list(sequence.items.select_related('case').order_by('order'))
+        if not items:
+            return Response({'error': '编排没有用例'}, status=400)
+        total_steps = sum(len(parse_ai_prompt(it.case.ai_prompt)) for it in items)
+
+        run = None
+        with transaction.atomic():
+            try:
+                device = MidsceneDevice.objects.select_for_update().get(id=device_id)
+            except MidsceneDevice.DoesNotExist:
+                return Response({'error': '设备不存在'}, status=404)
+
+            if device.status == 'locked' and device.locked_by != request.user:
+                return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+            if device.status == 'offline':
+                return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+            if install_package_id and device.platform != 'android':
+                return Response({'error': f'设备 {device.name or device.device_id} 是 iOS，暂不支持自动安装'}, status=400)
+
+            busy_run = MidsceneSequenceRun.objects.filter(
+                device=device, status__in=['pending', 'running', 'stopping']).exists()
+            busy_exec = MidsceneExecutionRecord.objects.filter(
+                device=device, status__in=['pending', 'running']).exists()
+            if busy_run or busy_exec:
+                return Response({'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'}, status=409)
+
+            run = MidsceneSequenceRun.objects.create(
+                sequence=sequence, sequence_name=sequence.name, device=device,
+                platform=device.platform, status='pending', total_steps=total_steps,
+                executed_by=request.user,
+            )
+
+        # 事务提交后投递任务
+        from .tasks import execute_midscene_sequence_task
+        task = execute_midscene_sequence_task.delay(run.id, install_package_id=install_package_id)
+        run.task_id = task.id
+        run.save(update_fields=['task_id'])
+        return Response({'run_id': run.id, 'task_id': task.id, 'status': 'pending'})
+
+
+class MidsceneSequenceRunViewSet(viewsets.ReadOnlyModelViewSet, mixins.DestroyModelMixin):
+    """编排执行记录（父 run + 每项子执行）。"""
+    queryset = MidsceneSequenceRun.objects.all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['sequence', 'device', 'status']
+    ordering_fields = ['created_at', 'started_at']
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return MidsceneSequenceRunDetailSerializer
+        return MidsceneSequenceRunSerializer
+
+    @action(detail=True, methods=['post'], url_path='stop')
+    def stop(self, request, pk=None):
+        """停止编排：pending 直接停；running 置 stopping 并同步当前子项。"""
+        run = self.get_object()
+        if run.status not in ('pending', 'running'):
+            return Response({'status': run.status})
+        if run.status == 'pending':
+            run.status = 'stopped'
+            run.finished_at = timezone.now()
+            run.save(update_fields=['status', 'finished_at'])
+            return Response({'status': 'stopped'})
+        run.status = 'stopping'
+        run.save(update_fields=['status'])
+        run.execution_records.filter(status='running').update(status='stopping')
+        return Response({'status': 'stopping'})

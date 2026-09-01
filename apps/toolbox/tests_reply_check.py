@@ -51,6 +51,17 @@ class ReplyCheckEngineLogicTests(SimpleTestCase):
     def test_no_date_kept(self):
         self.assertFalse(reply_check_engine._has_nontoday_date('普通配置', date(2026, 8, 28)))
 
+    def test_date_filter_ignores_decimals(self):
+        self.assertFalse(reply_check_engine._has_nontoday_date('全局限价：0.5元 版本：6.0.0', date(2026, 9, 1)))
+
+    def test_real_non_today_date_still_skipped(self):
+        self.assertTrue(reply_check_engine._has_nontoday_date('标题 8.28 配置', date(2026, 9, 1)))
+
+    def test_strip_script_style_removes_css(self):
+        self.assertEqual(
+            reply_check_engine._strip_script_style('<style>line-height:1.5;</style><p>正文</p>'),
+            '<p>正文</p>')
+
     def test_recipient_match_by_keyword(self):
         m = _msg(To='品管部 <qc@youloft.com>')
         self.assertTrue(reply_check_engine._recipient_match(m, ['品管部']))

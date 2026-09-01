@@ -1261,6 +1261,7 @@ class MidsceneExecutionRecord(models.Model):
         ('passed', '通过'),
         ('failed', '失败'),
         ('stopped', '已停止'),
+        ('skipped', '已跳过'),
         ('error', '异常'),
     ]
     PLATFORM_CHOICES = [
@@ -1275,6 +1276,11 @@ class MidsceneExecutionRecord(models.Model):
     # 设备信息
     device = models.ForeignKey(MidsceneDevice, on_delete=models.SET_NULL, null=True, verbose_name='执行设备')
     platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, blank=True, default='', verbose_name='平台')
+    # 编排执行（可选）：该执行属于某条用例编排运行
+    sequence_run = models.ForeignKey(
+        'MidsceneSequenceRun', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='execution_records', verbose_name='所属编排执行'
+    )
 
     # 执行状态
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='执行状态')
@@ -1326,6 +1332,104 @@ class MidsceneExecutionRecord(models.Model):
         if self.total_steps == 0:
             return 0
         return round((self.passed_steps / self.total_steps) * 100, 2)
+
+
+class MidsceneSequence(models.Model):
+    """Midscene 用例编排：把多个用例按顺序串联，在同一设备上一次跑完。"""
+    name = models.CharField(max_length=200, verbose_name='编排名称')
+    project = models.ForeignKey(MidsceneProject, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='midscene_sequences', verbose_name='所属项目')
+    folder = models.ForeignKey(
+        MidsceneCaseFolder, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='midscene_sequences', verbose_name='所属文件夹',
+        help_text='将编排归入文件夹，便于按功能组织；删除文件夹后编排回到未分组'
+    )
+    description = models.TextField(blank=True, default='', verbose_name='编排描述')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
+                                   related_name='created_midscene_sequences', verbose_name='创建人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_sequences'
+        verbose_name = 'Midscene用例编排'
+        verbose_name_plural = 'Midscene用例编排'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return self.name
+
+
+class MidsceneSequenceItem(models.Model):
+    """编排项：顺序 + 复用策略 + 失败策略 + 回放脚本选择。"""
+    REPLAY_MODE_CHOICES = [
+        ('auto', '按设备自动匹配'),
+        ('fixed', '固定脚本'),
+    ]
+    sequence = models.ForeignKey(MidsceneSequence, on_delete=models.CASCADE,
+                                 related_name='items', verbose_name='所属编排')
+    order = models.IntegerField(default=0, verbose_name='执行顺序')
+    case = models.ForeignKey(MidsceneCase, on_delete=models.CASCADE,
+                             related_name='sequence_items', verbose_name='用例')
+    clear_relaunch = models.BooleanField(default=False, verbose_name='执行前清数据并重启',
+                                         help_text='开启则清数据+重启；关闭则接着上一项状态（可复用登录态）')
+    break_on_fail = models.BooleanField(default=True, verbose_name='失败即中止整条链')
+    replay_mode = models.CharField(max_length=10, choices=REPLAY_MODE_CHOICES, default='auto',
+                                   verbose_name='回放脚本选择')
+    replay_index = models.IntegerField(default=0, verbose_name='固定回放脚本索引',
+                                       help_text='仅 replay_mode=fixed 时生效，0=最新录制')
+
+    class Meta:
+        db_table = 'midscene_sequence_items'
+        verbose_name = 'Midscene编排项'
+        verbose_name_plural = 'Midscene编排项'
+        ordering = ['sequence', 'order']
+
+    def __str__(self):
+        return f'{self.sequence.name} - {self.case.name}'
+
+
+class MidsceneSequenceRun(models.Model):
+    """编排执行记录（父）：一条链一次执行。"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('running', '执行中'),
+        ('stopping', '停止中'),
+        ('passed', '通过'),
+        ('failed', '失败'),
+        ('stopped', '已停止'),
+        ('skipped', '已跳过'),
+        ('error', '异常'),
+    ]
+    sequence = models.ForeignKey(MidsceneSequence, on_delete=models.CASCADE,
+                                 related_name='runs', verbose_name='所属编排')
+    sequence_name = models.CharField(max_length=200, verbose_name='编排名称快照')
+    device = models.ForeignKey(MidsceneDevice, on_delete=models.SET_NULL, null=True, verbose_name='执行设备')
+    platform = models.CharField(max_length=20, choices=MidsceneExecutionRecord.PLATFORM_CHOICES,
+                                blank=True, default='', verbose_name='平台')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='执行状态')
+    progress = models.IntegerField(default=0, verbose_name='进度')
+    total_steps = models.IntegerField(default=0, verbose_name='总步数')
+    passed_steps = models.IntegerField(default=0, verbose_name='通过步数')
+    failed_steps = models.IntegerField(default=0, verbose_name='失败步数')
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name='结束时间')
+    duration = models.FloatField(default=0, verbose_name='执行时长(秒)')
+    task_id = models.CharField(max_length=255, blank=True, default='', verbose_name='Celery任务ID')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    executed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True,
+                                    related_name='midscene_sequence_runs', verbose_name='执行人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'midscene_sequence_runs'
+        verbose_name = 'Midscene编排执行'
+        verbose_name_plural = 'Midscene编排执行'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.sequence_name} - {self.get_status_display()}'
 
 
 class MidsceneAppPackage(models.Model):

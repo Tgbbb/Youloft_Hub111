@@ -110,6 +110,12 @@ def _body_match(body, keywords):
     return any(kw.strip() in hay for kw in keywords if kw.strip())
 
 
+def _strip_script_style(html):
+    """去掉 HTML 中 <style>/<script> 内部内容，避免 CSS/JS 小数被误判为日期。"""
+    return re.sub(r'<(style|script)[^>]*>.*?</\1>', '', html or '',
+                  flags=re.I | re.S)
+
+
 def _is_verified_text(text):
     """正文含验证/关闭标记 → 该邮件是验证/确认回复，而非未回复请求。"""
     lowered = (text or '').lower()
@@ -127,12 +133,20 @@ def _parse_date_specs(text):
     """解析 M.D 单日期与 M.D-M.D 日期范围。"""
     specs = []
     text = text or ''
+
+    def valid(m, d):
+        return 1 <= m <= 12 and 1 <= d <= 31
+
     for m in _RANGE_RE.finditer(text):
-        specs.append(('range', int(m.group(1)), int(m.group(2)),
-                      int(m.group(3)), int(m.group(4))))
+        m1, d1, m2, d2 = (int(m.group(1)), int(m.group(2)),
+                          int(m.group(3)), int(m.group(4)))
+        if valid(m1, d1) and valid(m2, d2):
+            specs.append(('range', m1, d1, m2, d2))
     masked = _RANGE_RE.sub(' ' * 16, text)
     for m in _SINGLE_RE.finditer(masked):
-        specs.append(('single', int(m.group(1)), int(m.group(2))))
+        mo, dy = int(m.group(1)), int(m.group(2))
+        if valid(mo, dy):
+            specs.append(('single', mo, dy))
     return specs
 
 
@@ -252,7 +266,9 @@ def run_reply_check_engine(force=False, config=None, state=None):
             if msg is None:
                 continue
             text, html = pce.get_text_and_html(msg)
-            body = (text or '') + re.sub(r'<[^>]+>', '', html or '')
+            # 去掉 <style>/<script> 内的 CSS/JS，避免把 line-height:1.5、0.5em 等小数误判为日期
+            html_clean = _strip_script_style(html)
+            body = (text or '') + re.sub(r'<[^>]+>', '', html_clean)
             if not _body_match(body, body_kw_list):
                 continue
             searchable = (rec['subject'] or '') + '\n' + body

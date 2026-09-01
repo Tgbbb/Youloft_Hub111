@@ -182,9 +182,12 @@ def _notify_sync_check(run, enable):
     ok = sum(1 for r in results if r.get('ok'))
     fail = len(results) - ok
 
-    run.notify_sent_status = status
-    run.save(update_fields=['notify_sent_status'])
-    note = '钉钉通知: 成功 {} / 失败 {}'.format(ok, fail)
+    if ok > 0:
+        run.notify_sent_status = status
+        run.save(update_fields=['notify_sent_status'])
+    detail = '; '.join('{}:{}'.format(r.get('name'), r.get('error') or 'ok')
+                       for r in results) if results else '无可用机器人'
+    note = '钉钉通知: 成功 {} / 失败 {} [{}]'.format(ok, fail, detail)
     run.log = ((run.log + '\n') if run.log else '') + note
     run.save(update_fields=['log'])
 
@@ -291,7 +294,9 @@ def _notify_reply_check(run, enable):
         keys = notified | {x['key'] for x in new_items if x.get('key')}
         run.notified_keys = sorted(keys)
         run.save(update_fields=['notified_keys'])
-    note = '钉钉通知: 成功 {} / 失败 {}（新增 {} 条）'.format(ok, fail, len(new_items))
+    detail = '; '.join('{}:{}'.format(r.get('name'), r.get('error') or 'ok')
+                       for r in results) if results else '无可用机器人'
+    note = '钉钉通知: 成功 {} / 失败 {}（新增 {} 条）[{}]'.format(ok, fail, len(new_items), detail)
     run.log = ((run.log + '\n') if run.log else '') + note
     run.save(update_fields=['log'])
 

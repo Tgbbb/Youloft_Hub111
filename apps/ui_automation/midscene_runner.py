@@ -1120,7 +1120,7 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
 
 def run_midscene_test(ai_prompt, device, model_config, execution_record, progress_callback=None,
                       record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False,
-                      app_package_override=''):
+                      app_package_override='', skip_launch=False):
     steps = parse_ai_prompt(ai_prompt)
     if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
 
@@ -1183,46 +1183,50 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         logger.info(f'[Runner] 屏幕分辨率: {width}x{height}')
 
         # ---- 启动应用 ----
+        # skip_launch=True（串联复用项）：跳过清数据/重启/等待首屏，保留包名供"打开应用"与 aiAct 使用
+        app_pkg = ''
+        ios_bid = ''
         if platform == 'android':
-            # Android: 执行前指定安装包 → 用例包名 → 项目Android包名
             app_pkg = (app_package_override or
                        (mc.app_package if mc and mc.app_package
                         else (mc.project.default_app_package if mc and mc.project else '')))
-            if app_pkg:
-                # 清除App数据
-                if clear_app_data:
-                    logger.info(f'[Runner] 清除App数据: {app_pkg}')
-                    _adb(device_id, 'shell', 'pm', 'clear', app_pkg, timeout=10)
-                    time.sleep(1)
-                grant_permissions(device_id, app_pkg)
-                _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
-                if not _wait_screen_stable(device_id, None, label='启动画面'):
-                    pre_step_anomalies.append(_build_anomaly(
-                        'stable_wait_timeout',
-                        '启动画面稳定等待超时(15s)，继续执行',
-                        evidence={'phase': 'startup', 'timeout': 15.0},
-                        recovered=True,
-                    ))
         elif platform == 'ios':
-            # iOS: 用例包名 → 项目iOS Bundle ID
             ios_bid = (mc.app_package if mc and mc.app_package
                        else (mc.project.default_ios_bundle_id if mc and mc.project else ''))
-            if ios_bid:
-                ios_dev.bundle_id = ios_bid
-                ios_dev.launch_app()
-                # iOS 17+ 必须激活应用到前台，否则 WDA tap 会被蒙层挡住
-                import requests as _req
-                try:
-                    _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
-                              json={'bundleId': ios_bid}, timeout=5)
-                except Exception: pass
-                if not _wait_screen_stable(None, ios_dev, label='启动画面'):
-                    pre_step_anomalies.append(_build_anomaly(
-                        'stable_wait_timeout',
-                        '启动画面稳定等待超时(15s)，继续执行',
-                        evidence={'phase': 'startup', 'timeout': 15.0},
-                        recovered=True,
-                    ))
+        if not skip_launch:
+            if platform == 'android':
+                if app_pkg:
+                    # 清除App数据
+                    if clear_app_data:
+                        logger.info(f'[Runner] 清除App数据: {app_pkg}')
+                        _adb(device_id, 'shell', 'pm', 'clear', app_pkg, timeout=10)
+                        time.sleep(1)
+                    grant_permissions(device_id, app_pkg)
+                    _adb(device_id, 'shell', 'monkey', '-p', app_pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=10)
+                    if not _wait_screen_stable(device_id, None, label='启动画面'):
+                        pre_step_anomalies.append(_build_anomaly(
+                            'stable_wait_timeout',
+                            '启动画面稳定等待超时(15s)，继续执行',
+                            evidence={'phase': 'startup', 'timeout': 15.0},
+                            recovered=True,
+                        ))
+            elif platform == 'ios':
+                if ios_bid:
+                    ios_dev.bundle_id = ios_bid
+                    ios_dev.launch_app()
+                    # iOS 17+ 必须激活应用到前台，否则 WDA tap 会被蒙层挡住
+                    import requests as _req
+                    try:
+                        _req.post(f'http://{host}:{port}/session/{ios_dev.session_id}/wda/apps/activate',
+                                  json={'bundleId': ios_bid}, timeout=5)
+                    except Exception: pass
+                    if not _wait_screen_stable(None, ios_dev, label='启动画面'):
+                        pre_step_anomalies.append(_build_anomaly(
+                            'stable_wait_timeout',
+                            '启动画面稳定等待超时(15s)，继续执行',
+                            evidence={'phase': 'startup', 'timeout': 15.0},
+                            recovered=True,
+                        ))
 
         # 启动的包名（Android app_pkg / iOS ios_bid），供"打开应用"快捷分支与 aiAct 使用
         app_package = app_pkg if platform == 'android' else (ios_bid if platform == 'ios' else '')

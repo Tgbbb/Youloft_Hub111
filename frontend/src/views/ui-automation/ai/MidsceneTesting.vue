@@ -173,6 +173,9 @@
               <el-button v-if="replayList.length > 0" size="small" type="danger" text @click="deleteReplayEntry" class="ms-btn--text">
                 <el-icon><Delete /></el-icon>
               </el-button>
+              <el-button size="small" text @click="openSequenceDrawer" class="ms-btn--text">
+                <el-icon><DocumentAdd /></el-icon>&nbsp;编排
+              </el-button>
               <el-button
                 type="primary" @click="doExecute" :loading="executing" :disabled="!canExecute"
                 :icon="VideoPlay" class="ms-btn--exec"
@@ -326,6 +329,126 @@
         <div v-else class="ms-dual__wait">NO EXECUTION DATA...</div>
       </section>
     </main>
+
+    <!-- ====== 用例编排抽屉 ====== -->
+    <el-drawer v-model="showSequenceDrawer" title="用例编排" size="46%" :destroy-on-close="false">
+      <div class="ms-seq">
+        <div class="ms-seq__toolbar">
+          <el-select v-model="seqDeviceId" placeholder="选择执行设备" clearable size="small" style="width:220px" class="ms-select">
+            <el-option v-for="d in seqDevices" :key="d.id"
+              :label="`${d.name || d.device_id} (${d.platform})`" :value="d.id" />
+          </el-select>
+          <el-select v-model="seqListFilterProjectId" placeholder="筛选项目" clearable size="small" style="width:150px" class="ms-select">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+          <el-button size="small" @click="newSequence" :icon="Plus">新建编排</el-button>
+        </div>
+
+        <!-- 列表模式 -->
+        <template v-if="seqEditMode === 'list'">
+          <div v-if="sequencesLoading" class="ms-seq__empty">加载中...</div>
+          <div v-else-if="sequences.length === 0" class="ms-seq__empty">暂无编排，点击「新建编排」</div>
+          <div v-else-if="filteredSequences.length === 0" class="ms-seq__empty">该项目下暂无编排</div>
+          <div v-else class="ms-seq__list">
+            <div v-for="seq in filteredSequences" :key="seq.id" class="ms-seq__card">
+              <div class="ms-seq__card-main">
+                <div class="ms-seq__name">{{ seq.name }} <span class="ms-seq__count">{{ (seq.items || []).length }} 项</span></div>
+                <div class="ms-seq__desc">{{ seq.description || '—' }}</div>
+                <div v-if="seq.project_name || seq.folder_name" class="ms-seq__meta">
+                  <span v-if="seq.project_name">{{ seq.project_name }}</span>
+                  <span v-if="seq.folder_name"> · {{ seq.folder_name }}</span>
+                </div>
+                <div class="ms-seq__items">
+                  <span v-for="it in (seq.items || [])" :key="it.id" class="ms-seq__chip">{{ it.case_name }}</span>
+                </div>
+              </div>
+              <div class="ms-seq__card-ops">
+                <el-button size="small" :disabled="!seqDeviceId || !(seq.items || []).length"
+                  @click="openSeqRunDialog(seq)" :icon="VideoPlay">执行</el-button>
+                <el-button size="small" text @click="editSequence(seq)">编辑</el-button>
+                <el-button size="small" type="danger" text @click="deleteSequence(seq)">删除</el-button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 编辑模式 -->
+        <template v-else>
+          <div class="ms-seq__form">
+            <el-input v-model="seqForm.name" placeholder="编排名称" class="ms-input" />
+            <el-input v-model="seqForm.description" placeholder="编排描述（可选）" class="ms-input" />
+            <div class="ms-seq__fields">
+              <el-select v-model="seqForm.project_id" placeholder="所属项目" clearable size="small" class="ms-select" style="flex:1">
+                <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+              <el-select v-model="seqForm.folder_id" placeholder="所属文件夹" clearable size="small" class="ms-select" style="flex:1">
+                <el-option v-for="f in seqFolderOptions" :key="f.id" :label="f.name" :value="f.id" />
+              </el-select>
+            </div>
+            <div class="ms-seq__items-edit">
+              <div v-for="(it, i) in seqForm.items" :key="i" class="ms-seq__item">
+                <span class="ms-seq__item-no">{{ String(i + 1).padStart(2, '0') }}</span>
+                <el-select v-model="it.case_id" placeholder="选择用例（按项目/文件夹过滤）" filterable size="small" class="ms-select" style="flex:1">
+                  <el-option v-for="c in seqAvailableCases" :key="c.id" :label="c.name" :value="c.id" />
+                </el-select>
+                <span class="ms-seq__item-defaults">
+                  <el-checkbox v-model="it.break_on_fail" size="small">失败即停</el-checkbox>
+                  <el-select v-model="it.replay_mode" size="small" style="width:110px">
+                    <el-option label="自动匹配" value="auto" />
+                    <el-option label="固定脚本" value="fixed" />
+                  </el-select>
+                  <el-input-number v-if="it.replay_mode === 'fixed'" v-model="it.replay_index" :min="0" size="small" />
+                </span>
+                <span class="ms-seq__item-ops">
+                  <el-button size="small" text :disabled="i === 0" @click="moveSeqItem(i, -1)">↑</el-button>
+                  <el-button size="small" text :disabled="i === seqForm.items.length - 1" @click="moveSeqItem(i, 1)">↓</el-button>
+                  <el-button size="small" text type="danger" @click="removeSeqItem(i)">✕</el-button>
+                </span>
+              </div>
+            </div>
+            <div class="ms-seq__form-ops">
+              <el-button size="small" @click="addSeqItem">＋ 添加用例</el-button>
+              <el-button size="small" @click="seqEditMode = 'list'">取消</el-button>
+              <el-button type="primary" size="small" :loading="seqSaving" @click="saveSequence">保存</el-button>
+            </div>
+            <div class="ms-seq__hint">首项默认清数据+重启，后续项复用状态（登录态可延续）；每项可单独改。</div>
+          </div>
+        </template>
+
+        <!-- 执行面板 -->
+        <div v-if="seqRun" class="ms-seq__run">
+          <div class="ms-seq__run-head">
+            <span>编排执行 #{{ seqRun.id }}</span>
+            <span class="ms-seq__run-status">{{ seqStatusLabel(seqRun.status) }}</span>
+            <el-button v-if="['running', 'pending', 'stopping'].includes(seqRun.status)"
+              size="small" type="danger" text @click="stopSeqRun">停止</el-button>
+          </div>
+          <div class="ms-seq__run-progress"><el-progress :percentage="seqRun.progress || 0" /></div>
+          <div class="ms-seq__run-items">
+            <div v-for="ex in seqExecutions" :key="ex.id" class="ms-seq__run-item">
+              <span class="ms-seq__run-item-name">{{ ex.case_name }}</span>
+              <span class="ms-seq__run-item-status" :class="'ms-seq__run-item-status--' + ex.status">{{ seqStatusLabel(ex.status) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 编排执行确认 -->
+    <el-dialog v-model="seqRunDialog" title="编排回放匹配确认" width="560px">
+      <div class="ms-seq__match">
+        <div v-for="row in seqMatchRows" :key="row.item_id" class="ms-seq__match-row">
+          <span class="ms-seq__match-name">{{ row.order + 1 }}. {{ row.case_name }}</span>
+          <span class="ms-seq__match-level" :class="'ms-seq__match-level--' + row.match_level">{{ row.match_level }}</span>
+          <span class="ms-seq__match-replay">{{ row.recommended_name || ('录制#' + (row.used_index ?? row.replay_index)) }}</span>
+        </div>
+        <div class="ms-seq__match-hint">无匹配/分辨率不符的项将降级 VLM；确认后开始执行。</div>
+      </div>
+      <template #footer>
+        <el-button @click="seqRunDialog = false">取消</el-button>
+        <el-button type="primary" :loading="seqRunning" @click="confirmSeqRun(seqRunTarget)">开始执行</el-button>
+      </template>
+    </el-dialog>
 
     <!-- ====== Dialogs (unchanged) ====== -->
     <el-dialog v-model="showAiGen" title="AI 生成详细步骤" width="500px">
@@ -1114,8 +1237,183 @@ const activeExecCriticalCount = computed(() =>
   (activeExec.value?.steps_detail || []).reduce(
     (n, s) => n + ((s.anomalies || []).filter(a => a.severity === 'critical').length), 0)
 )
+
+// ---- 用例编排 ----
+const showSequenceDrawer = ref(false)
+const sequences = ref([])
+const sequencesLoading = ref(false)
+const seqEditMode = ref('list') // 'list' | 'edit'
+const seqListFilterProjectId = ref(null)
+const seqForm = reactive({ id: null, name: '', description: '', items: [], project_id: null, folder_id: null })
+const seqSaving = ref(false)
+const seqDeviceId = ref(null)
+const seqRunDeviceDialog = ref(false)
+const seqMatchRows = ref([])
+const seqRunDialog = ref(false)
+const seqRunTarget = ref(null)
+const seqRun = ref(null)
+const seqRunning = ref(false)
+const seqRunTimer = ref(null)
+const seqExecutions = ref([])
+
+const seqDevices = computed(() => devices.value.filter(d => d.status !== 'offline'))
+const filteredSequences = computed(() => {
+  if (!seqListFilterProjectId.value) return sequences.value
+  return sequences.value.filter(s => s.project === seqListFilterProjectId.value)
+})
+const seqFolderOptions = computed(() => {
+  if (!seqForm.project_id) return folders.value
+  return folders.value.filter(f => !f.project || f.project === seqForm.project_id)
+})
+const seqAvailableCases = computed(() => {
+  let list = cases.value
+  if (seqForm.project_id) list = list.filter(c => c.project === seqForm.project_id)
+  if (seqForm.folder_id) list = list.filter(c => c.folder === seqForm.folder_id)
+  return list
+})
+
+const loadSequences = async () => {
+  sequencesLoading.value = true
+  try {
+    const { data } = await api.get('/ui-automation/midscene/sequences/')
+    sequences.value = data.results || data || []
+  } catch (e) {
+    ElMessage.error('加载编排失败')
+  } finally {
+    sequencesLoading.value = false
+  }
+}
+const openSequenceDrawer = () => {
+  showSequenceDrawer.value = true
+  seqEditMode.value = 'list'
+  loadSequences()
+}
+const newSequence = () => {
+  seqEditMode.value = 'edit'
+  Object.assign(seqForm, { id: null, name: '', description: '', items: [], project_id: null, folder_id: null })
+  addSeqItem()
+}
+const editSequence = (seq) => {
+  seqEditMode.value = 'edit'
+  Object.assign(seqForm, {
+    id: seq.id, name: seq.name, description: seq.description || '',
+    project_id: seq.project || null, folder_id: seq.folder || null,
+    items: (seq.items || []).map(it => ({
+      case_id: it.case, clear_relaunch: it.clear_relaunch,
+      break_on_fail: it.break_on_fail, replay_mode: it.replay_mode, replay_index: it.replay_index,
+    })),
+  })
+  if (!seqForm.items.length) addSeqItem()
+}
+const addSeqItem = () => {
+  seqForm.items.push({
+    case_id: null, clear_relaunch: seqForm.items.length === 0,
+    break_on_fail: true, replay_mode: 'auto', replay_index: 0,
+  })
+}
+const removeSeqItem = (i) => { seqForm.items.splice(i, 1) }
+const moveSeqItem = (i, dir) => {
+  const j = i + dir
+  if (j < 0 || j >= seqForm.items.length) return
+  const t = seqForm.items[i]; seqForm.items[i] = seqForm.items[j]; seqForm.items[j] = t
+}
+const saveSequence = async () => {
+  if (!seqForm.name || !seqForm.name.trim()) { ElMessage.warning('请输入编排名称'); return }
+  const items = seqForm.items.filter(it => it.case_id)
+  if (!items.length) { ElMessage.warning('请至少添加一个用例'); return }
+  const payload = {
+    name: seqForm.name, description: seqForm.description || '',
+    project_id: seqForm.project_id || null, folder_id: seqForm.folder_id || null,
+    items: items.map((it, i) => ({
+      case_id: it.case_id, clear_relaunch: i === 0 ? true : it.clear_relaunch,
+      break_on_fail: it.break_on_fail, replay_mode: it.replay_mode, replay_index: it.replay_index,
+    })),
+  }
+  seqSaving.value = true
+  try {
+    if (seqForm.id) {
+      await api.put(`/ui-automation/midscene/sequences/${seqForm.id}/`, payload)
+    } else {
+      await api.post('/ui-automation/midscene/sequences/', payload)
+    }
+    ElMessage.success('已保存')
+    seqEditMode.value = 'list'
+    await loadSequences()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '保存失败')
+  } finally {
+    seqSaving.value = false
+  }
+}
+const deleteSequence = async (seq) => {
+  try { await ElMessageBox.confirm(`确定删除编排「${seq.name}」？`, '确认', { type: 'warning' }) } catch (e) { return }
+  try {
+    await api.delete(`/ui-automation/midscene/sequences/${seq.id}/`)
+    ElMessage.success('已删除')
+    await loadSequences()
+  } catch (e) { ElMessage.error('删除失败') }
+}
+const openSeqRunDialog = async (seq) => {
+  seqRunTarget.value = seq
+  if (!seqDeviceId.value) { ElMessage.warning('请先选择设备'); return }
+  if (!seq.items || !seq.items.length) { ElMessage.warning('该编排没有用例'); return }
+  try {
+    const { data } = await api.get(`/ui-automation/midscene/sequences/${seq.id}/match_summary/`, {
+      params: { device_id: seqDeviceId.value },
+    })
+    seqMatchRows.value = data.items || []
+    seqRunDialog.value = true
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '匹配检查失败')
+  }
+}
+const confirmSeqRun = async (seq) => {
+  seq = seq || seqRunTarget.value
+  try {
+    const { data } = await api.post(`/ui-automation/midscene/sequences/${seq.id}/execute/`, {
+      device_id: seqDeviceId.value,
+    })
+    seqRunDialog.value = false
+    seqRunning.value = true
+    seqRun.value = { id: data.run_id, status: 'pending', executions: [] }
+    startSeqPolling(data.run_id)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '发起执行失败')
+  }
+}
+const startSeqPolling = (runId) => {
+  stopSeqPolling()
+  const tick = async () => {
+    try {
+      const { data } = await api.get(`/ui-automation/midscene/sequence-runs/${runId}/`)
+      seqRun.value = data
+      seqExecutions.value = data.executions || []
+      if (data.status === 'running' || data.status === 'pending' || data.status === 'stopping') return
+      stopSeqPolling()
+      seqRunning.value = false
+      await loadSequences()
+      ElMessage[data.status === 'passed' ? 'success' : 'warning'](`编排执行结束: ${data.status}`)
+    } catch (e) {
+      stopSeqPolling()
+      seqRunning.value = false
+    }
+  }
+  tick()
+  seqRunTimer.value = setInterval(tick, 2000)
+}
+const stopSeqPolling = () => {
+  if (seqRunTimer.value) { clearInterval(seqRunTimer.value); seqRunTimer.value = null }
+}
+const stopSeqRun = async () => {
+  if (!seqRun.value?.id) return
+  try { await api.post(`/ui-automation/midscene/sequence-runs/${seqRun.value.id}/stop/`) } catch (e) {}
+}
+const seqStatusLabel = (s) => ({
+  pending: '等待中', running: '执行中', stopping: '停止中', passed: '通过',
+  failed: '失败', stopped: '已停止', skipped: '已跳过', error: '异常',
+})[s] || s
 onMounted(() => { loadCases(); loadFolders(); loadProjects(); loadDevices(); loadVisionModels(); loadInstallPackages(); loadMidsceneConfig() })
-onUnmounted(() => stopPolling())
+onUnmounted(() => { stopPolling(); stopSeqPolling() })
 </script>
 
 <style scoped lang="scss">
@@ -1464,6 +1762,241 @@ onUnmounted(() => stopPolling())
 /* ============================================
    Button color overrides (unscoped — must pierce Element Plus)
    ============================================ */
+</style>
+
+<style scoped lang="scss">
+.ms-seq {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  &__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  &__empty {
+    padding: 32px;
+    text-align: center;
+    color: #909399;
+    font-size: 13px;
+  }
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  &__card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--ms-line, #e2e4ea);
+    border-radius: 8px;
+
+    &-main {
+      flex: 1;
+      min-width: 0;
+    }
+
+    &-ops {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  &__count {
+    margin-left: 8px;
+    color: var(--ms-muted, #909399);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  &__desc {
+    margin-top: 2px;
+    color: var(--ms-muted, #909399);
+    font-size: 12px;
+  }
+
+  &__meta {
+    margin-top: 2px;
+    color: var(--ms-muted, #909399);
+    font-size: 12px;
+  }
+
+  &__fields {
+    display: flex;
+    gap: 10px;
+  }
+
+  &__items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  &__chip {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--ms-tint, #f4f5f7);
+    font-size: 12px;
+    color: #555;
+  }
+
+  &__form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  &__items-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--ms-line, #e2e4ea);
+    border-radius: 6px;
+
+    &-no {
+      font-variant-numeric: tabular-nums;
+      color: var(--ms-muted, #909399);
+      font-size: 12px;
+      width: 22px;
+    }
+
+    &-defaults {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    &-ops {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+  }
+
+  &__form-ops {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__hint {
+    color: var(--ms-muted, #909399);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  &__run {
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid var(--ms-line, #e2e4ea);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    &-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    &-status {
+      color: var(--ms-muted, #909399);
+      font-weight: 400;
+    }
+
+    &-items {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    &-item {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    &-item-status {
+      font-variant-numeric: tabular-nums;
+      color: var(--ms-muted, #909399);
+    }
+
+    &-item-status--passed { color: #67c23a; }
+    &-item-status--failed, &-item-status--error { color: #f56c6c; }
+    &-item-status--skipped { color: #b1b3b8; }
+  }
+
+  &__match {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    &-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    &-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    &-level {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      background: var(--ms-tint, #f4f5f7);
+      color: #666;
+    }
+
+    &-level--exact { background: #f0f9eb; color: #67c23a; }
+    &-level--ok, &-level--unknown { background: #ecf5ff; color: #409eff; }
+    &-level--resolution_mismatch, &-level--no_match, &-level--no_replay { background: #fef0f0; color: #f56c6c; }
+
+    &-replay {
+      color: var(--ms-muted, #909399);
+      font-size: 12px;
+    }
+
+    &-hint {
+      margin-top: 6px;
+      color: var(--ms-muted, #909399);
+      font-size: 12px;
+    }
+  }
+}
 </style>
 
 <style lang="scss">

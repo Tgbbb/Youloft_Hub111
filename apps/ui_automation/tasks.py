@@ -93,6 +93,27 @@ def _send_progress_update(execution_id, status, progress, message=''):
         logger.debug(f'WebSocket 推送跳过: {e}')
 
 
+def _send_progress_update_run(run_id, status, progress, message=''):
+    """推送编排运行进度到前端（组名 midscene_sequence_run_{id}）。"""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f'midscene_sequence_run_{run_id}',
+                {
+                    'type': 'execution_update',
+                    'run_id': run_id,
+                    'status': status,
+                    'progress': progress,
+                    'message': message,
+                }
+            )
+    except Exception as e:
+        logger.debug(f'WebSocket 推送(编排)跳过: {e}')
+
+
 @shared_task(bind=True, max_retries=0)
 def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=False,
                           replay_index=0, clear_app_data=False, install_package_id=None):
@@ -264,6 +285,252 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
                 logger.error(f'解锁设备失败: {e}')
 
     return execution.status if execution else 'error'
+
+
+def _resolve_replay_index(device, item):
+    """编排项回放索引：fixed 用 item.replay_index；auto 按执行设备挑最匹配录制，无匹配回退最新。"""
+    if item.replay_mode == 'fixed':
+        return item.replay_index
+    existing = item.case.replay_data
+    if isinstance(existing, dict):
+        existing = [existing]
+    if existing:
+        try:
+            # 延迟导入避免与 views 循环依赖
+            from .views_midscene import _pick_best_replay
+            pick = _pick_best_replay(device, existing)
+            if pick and pick.get('recommended_index') is not None:
+                return pick['recommended_index']
+        except Exception as e:
+            logger.warning(f'[Task] 编排项回放匹配失败({e})，回退最新录制')
+    return item.replay_index
+
+
+@shared_task(bind=True, max_retries=0)
+def execute_midscene_sequence_task(self, run_id, install_package_id=None):
+    """顺序执行一条用例编排：每项复用 run_midscene_test，串行推进并复用设备状态。"""
+    from .models import (MidsceneSequenceRun, MidsceneExecutionRecord, MidsceneAppPackage)
+    from .midscene_runner import run_midscene_test, parse_ai_prompt
+
+    run = None
+    device = None
+    try:
+        run = MidsceneSequenceRun.objects.select_related('sequence', 'device').get(id=run_id)
+        sequence = run.sequence
+        device = run.device
+        if not device:
+            raise ValueError('没有选择执行设备')
+        items = list(sequence.items.select_related('case').order_by('order'))
+        if not items:
+            raise ValueError('编排没有用例')
+
+        if run.status in ('stopped', 'stopping'):
+            if run.status == 'stopping':
+                run.status = 'stopped'
+                run.finished_at = timezone.now()
+                run.save(update_fields=['status', 'finished_at'])
+            logger.info(f'[Task] 编排运行 {run_id} 已在启动前被停止，跳过')
+            return 'stopped'
+
+        device.lock(run.executed_by)
+        run.status = 'running'
+        run.started_at = timezone.now()
+        run.save(update_fields=['status', 'started_at'])
+        _send_progress_update_run(run.id, 'running', 5, '开始执行...')
+
+        # 链级安装包：仅首个 fresh 项生效
+        app_package_override = ''
+        if install_package_id:
+            pkg = MidsceneAppPackage.objects.filter(id=install_package_id).first()
+            if not pkg:
+                raise ValueError('安装包不存在或已被删除')
+            if device.platform != 'android':
+                raise ValueError('iOS 设备暂不支持自动安装')
+            _send_progress_update_run(run.id, 'running', 5,
+                                      f'安装 {pkg.name or pkg.package_name}...')
+            ok, log, err = run_apk_install(pkg, device, {'overwrite': True})
+            if not ok:
+                raise ValueError(f'安装包安装失败: {err}')
+            app_package_override = pkg.package_name or ''
+
+        n_items = len(items)
+        done_items = 0
+        run_total_steps = run.total_steps or sum(
+            len(parse_ai_prompt(it.case.ai_prompt)) for it in items)
+        any_failed = False
+
+        def _update_run_progress():
+            run.refresh_from_db()
+            run.progress = int(done_items / n_items * 100) if n_items else 100
+            run.save(update_fields=['progress'])
+
+        for idx, it in enumerate(items):
+            run.refresh_from_db()
+            if run.status in ('stopping', 'stopped'):
+                if run.status == 'stopping':
+                    run.status = 'stopped'
+                    run.finished_at = timezone.now()
+                    run.save(update_fields=['status', 'finished_at'])
+                logger.info(f'[Task] 编排在项 {idx + 1} 前停止')
+                return 'stopped'
+
+            case = it.case
+            child = None
+            try:
+                child = MidsceneExecutionRecord.objects.create(
+                    midscene_case=case, case_name=case.name, device=device,
+                    platform=device.platform, status='running', auto_plan=False,
+                    total_steps=len(parse_ai_prompt(case.ai_prompt)),
+                    executed_by=run.executed_by, sequence_run=run,
+                    started_at=timezone.now(),
+                )
+                replay_index = _resolve_replay_index(device, it)
+                model_config = case.ai_model_config
+                if not model_config or not model_config.api_key:
+                    raise ValueError('未配置 AI 模型或 API Key')
+                clear_app_data = (it.clear_relaunch or (idx == 0 and bool(app_package_override)))
+                skip_launch = not it.clear_relaunch
+
+                def on_progress(step, total_s, data):
+                    msg_type = data.get('type', '')
+                    if msg_type == 'step_start':
+                        child.refresh_from_db()
+                        child.progress = data.get('progress', 0)
+                        child.save(update_fields=['progress'])
+                        _send_progress_update(child.id, 'running', data.get('progress', 0),
+                                              f"步骤 {step}/{total_s}: {data.get('instruction', '')}")
+                    elif msg_type == 'step_done':
+                        child.refresh_from_db()
+                        child.progress = data.get('progress', 0)
+                        child.steps_detail = child.steps_detail or []
+                        child.steps_detail.append({
+                            'step': step,
+                            'instruction': data.get('instruction', ''),
+                            'status': data.get('status', 'failed'),
+                            'screenshot': data.get('screenshot', ''),
+                            'aiReasoning': data.get('aiReasoning', []),
+                            'error': data.get('error', ''),
+                            'action': data.get('action', ''),
+                            'anomalies': data.get('anomalies', []),
+                            'query_data': data.get('query_data', ''),
+                            'assert_passed': data.get('assert_passed'),
+                            'complete_message': data.get('complete_message', ''),
+                        })
+                        child.passed_steps = sum(
+                            1 for s in child.steps_detail if s['status'] == 'passed')
+                        child.failed_steps = sum(
+                            1 for s in child.steps_detail if s['status'] == 'failed')
+                        child.save()
+                        _send_progress_update(child.id, 'running', data.get('progress', 0),
+                                              f"步骤 {step}/{total_s}: {data.get('instruction', '')}")
+
+                result = run_midscene_test(
+                    ai_prompt=case.ai_prompt, device=device, model_config=model_config,
+                    execution_record=child, progress_callback=on_progress,
+                    record_mode=False, replay_mode=True, replay_index=replay_index,
+                    clear_app_data=clear_app_data, app_package_override=app_package_override,
+                    skip_launch=skip_launch,
+                )
+            except Exception as e:
+                logger.error(f'[Task] 编排项 {idx + 1} 执行失败: {e}', exc_info=True)
+                if child:
+                    child.refresh_from_db()
+                    child.status = 'error'
+                    child.error_message = str(e)
+                    child.finished_at = timezone.now()
+                    if child.started_at:
+                        child.duration = (child.finished_at - child.started_at).total_seconds()
+                    child.save()
+                result = {'status': 'error', 'totalSteps': 0, 'passedSteps': 0,
+                          'failedSteps': 0, 'steps': []}
+
+            child.refresh_from_db()
+            child.finished_at = timezone.now()
+            if child.started_at:
+                child.duration = (child.finished_at - child.started_at).total_seconds()
+            child.save(update_fields=['status', 'finished_at', 'duration'])
+            done_items += 1
+            _update_run_progress()
+
+            status = child.status
+            # 停止：无论如何都中止，剩余项标 skipped
+            if status == 'stopped':
+                for j in range(idx + 1, n_items):
+                    it2 = items[j]
+                    MidsceneExecutionRecord.objects.create(
+                        midscene_case=it2.case, case_name=it2.case.name, device=device,
+                        platform=device.platform, status='skipped', auto_plan=False,
+                        total_steps=len(parse_ai_prompt(it2.case.ai_prompt)),
+                        executed_by=run.executed_by, sequence_run=run,
+                        started_at=timezone.now(), finished_at=timezone.now(),
+                    )
+                run.refresh_from_db()
+                run.status = 'stopped'
+                run.finished_at = timezone.now()
+                run.save(update_fields=['status', 'finished_at'])
+                break
+            if status != 'passed':
+                any_failed = True
+                # break_on_fail 且非停止：中止并把剩余项标 skipped
+                if it.break_on_fail:
+                    for j in range(idx + 1, n_items):
+                        it2 = items[j]
+                        MidsceneExecutionRecord.objects.create(
+                            midscene_case=it2.case, case_name=it2.case.name, device=device,
+                            platform=device.platform, status='skipped', auto_plan=False,
+                            total_steps=len(parse_ai_prompt(it2.case.ai_prompt)),
+                            executed_by=run.executed_by, sequence_run=run,
+                            started_at=timezone.now(), finished_at=timezone.now(),
+                        )
+                    run.refresh_from_db()
+                    run.status = 'failed'
+                    run.finished_at = timezone.now()
+                    run.save(update_fields=['status', 'finished_at'])
+                    break
+                # break_on_fail=False：继续下一项
+        else:
+            run.refresh_from_db()
+            run.status = 'passed' if not any_failed else 'failed'
+            run.finished_at = timezone.now()
+            run.save(update_fields=['status', 'finished_at'])
+
+        run.refresh_from_db()
+        childs = MidsceneExecutionRecord.objects.filter(sequence_run=run)
+        run.total_steps = sum(c.total_steps for c in childs if c.status != 'skipped')
+        run.passed_steps = sum(c.passed_steps for c in childs if c.status != 'skipped')
+        run.failed_steps = sum(c.failed_steps for c in childs if c.status != 'skipped')
+        if run.started_at and run.finished_at:
+            run.duration = (run.finished_at - run.started_at).total_seconds()
+        run.progress = 100 if run.status in ('passed', 'failed', 'stopped', 'error') else run.progress
+        run.save()
+
+        if run.status == 'passed':
+            _send_progress_update_run(run.id, 'passed', 100,
+                                      f"编排完成: {run.passed_steps}/{run.total_steps} 通过")
+        else:
+            _send_progress_update_run(run.id, run.status, run.progress or 0, '编排执行结束')
+
+    except Exception as e:
+        logger.error(f'Midscene 编排执行失败: {e}', exc_info=True)
+        if run:
+            run.refresh_from_db()
+            run.status = 'error'
+            run.error_message = str(e)
+            run.finished_at = timezone.now()
+            if run.started_at:
+                run.duration = (run.finished_at - run.started_at).total_seconds()
+            run.save()
+            _send_progress_update_run(run.id, 'error', run.progress or 0, f'编排异常: {e}')
+
+    finally:
+        if device:
+            try:
+                device.refresh_from_db()
+                device.unlock()
+            except Exception as e:
+                logger.error(f'[Task] 解锁设备失败: {e}')
+
+    return run.status if run else 'error'
 
 
 @shared_task(bind=True, max_retries=0)

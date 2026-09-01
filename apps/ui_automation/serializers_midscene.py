@@ -7,7 +7,7 @@ from apps.projects.serializer_mixins import MainProjectSerializerMixin
 from .models import (
     MidsceneProject, MidsceneDevice, MidsceneCase, MidsceneCaseFolder,
     MidsceneExecutionRecord, MidsceneAppPackage, MidsceneAppInstallRecord,
-    MidsceneGlobalConfig,
+    MidsceneGlobalConfig, MidsceneSequence, MidsceneSequenceItem, MidsceneSequenceRun,
 )
 
 
@@ -199,7 +199,7 @@ class MidsceneExecutionRecordSerializer(serializers.ModelSerializer):
             'total_steps', 'passed_steps', 'failed_steps',
             'steps_detail', 'error_message',
             'executed_by', 'executed_by_name',
-            'created_at', 'updated_at',
+            'sequence_run', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -305,3 +305,158 @@ class MidsceneGlobalConfigSerializer(serializers.ModelSerializer):
 
     def get_use_deep_locate_display(self, obj):
         return obj.get_use_deep_locate_display() if obj.use_deep_locate else '不覆盖'
+
+
+class MidsceneSequenceItemSerializer(serializers.ModelSerializer):
+    """编排项（读）。"""
+    case_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneSequenceItem
+        fields = ['id', 'order', 'case', 'case_name', 'clear_relaunch', 'break_on_fail',
+                  'replay_mode', 'replay_index']
+
+    def get_case_name(self, obj):
+        return obj.case.name if obj.case else ''
+
+
+class MidsceneSequenceItemWriteSerializer(serializers.Serializer):
+    """编排项（写）：新增/更新订阅。"""
+    case_id = serializers.IntegerField()
+    clear_relaunch = serializers.BooleanField(required=False, default=False)
+    break_on_fail = serializers.BooleanField(required=False, default=True)
+    replay_mode = serializers.ChoiceField(choices=['auto', 'fixed'], required=False, default='auto')
+    replay_index = serializers.IntegerField(required=False, default=0)
+
+    def validate_case_id(self, value):
+        if not MidsceneCase.objects.filter(id=value).exists():
+            raise serializers.ValidationError('用例不存在')
+        return value
+
+
+class MidsceneSequenceSerializer(serializers.ModelSerializer):
+    project_name = serializers.SerializerMethodField()
+    folder_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    item_count = serializers.SerializerMethodField()
+    items = MidsceneSequenceItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = MidsceneSequence
+        fields = ['id', 'name', 'project', 'project_name', 'folder', 'folder_name', 'description',
+                  'created_by', 'created_by_name', 'item_count', 'items',
+                  'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+
+    def get_project_name(self, obj):
+        return obj.project.name if obj.project else None
+
+    def get_folder_name(self, obj):
+        return obj.folder.name if obj.folder else None
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else None
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+
+class MidsceneSequenceCreateSerializer(serializers.ModelSerializer):
+    """创建/更新编排：items 可写，整体重建顺序。"""
+    items = MidsceneSequenceItemWriteSerializer(many=True, required=False)
+    project_id = serializers.IntegerField(required=False, allow_null=True)
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
+
+    class Meta:
+        model = MidsceneSequence
+        fields = ['id', 'name', 'project_id', 'folder_id', 'description', 'items']
+
+    def validate(self, attrs):
+        items = attrs.get('items')
+        if items is not None and not items:
+            raise serializers.ValidationError({'items': '编排至少需要 1 个用例'})
+        project_id = attrs.get('project_id') or self.initial_data.get('project_id')
+        folder_id = attrs.get('folder_id') or self.initial_data.get('folder_id')
+        if folder_id:
+            try:
+                folder = MidsceneCaseFolder.objects.get(id=folder_id)
+            except MidsceneCaseFolder.DoesNotExist:
+                raise serializers.ValidationError({'folder_id': '文件夹不存在'})
+            if project_id and folder.project_id and folder.project_id != int(project_id):
+                raise serializers.ValidationError({'folder_id': '文件夹不属于当前项目'})
+        return attrs
+
+    def _rebuild_items(self, sequence, items):
+        sequence.items.all().delete()
+        for i, it in enumerate(items or []):
+            MidsceneSequenceItem.objects.create(
+                sequence=sequence, order=i,
+                case_id=it['case_id'],
+                clear_relaunch=it.get('clear_relaunch', False),
+                break_on_fail=it.get('break_on_fail', True),
+                replay_mode=it.get('replay_mode', 'auto'),
+                replay_index=it.get('replay_index', 0),
+            )
+
+    def create(self, validated_data):
+        items = validated_data.pop('items', None)
+        project_id = validated_data.pop('project_id', None)
+        folder_id = validated_data.pop('folder_id', None)
+        validated_data['project_id'] = project_id
+        validated_data['folder_id'] = folder_id
+        sequence = super().create(validated_data)
+        self._rebuild_items(sequence, items or [])
+        return sequence
+
+    def update(self, instance, validated_data):
+        items = validated_data.pop('items', None)
+        project_id = validated_data.pop('project_id', None)
+        folder_id = validated_data.pop('folder_id', None)
+        if project_id is not None:
+            validated_data['project_id'] = project_id
+        if folder_id is not None:
+            validated_data['folder_id'] = folder_id
+        sequence = super().update(instance, validated_data)
+        if items is not None:
+            self._rebuild_items(sequence, items)
+        return sequence
+
+
+class MidsceneSequenceRunSerializer(serializers.ModelSerializer):
+    sequence_name = serializers.SerializerMethodField()
+    device_name = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    executed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MidsceneSequenceRun
+        fields = ['id', 'sequence', 'sequence_name', 'device', 'device_name', 'platform',
+                  'status', 'status_display', 'progress', 'total_steps', 'passed_steps',
+                  'failed_steps', 'started_at', 'finished_at', 'duration', 'task_id',
+                  'error_message', 'executed_by', 'executed_by_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_sequence_name(self, obj):
+        return obj.sequence_name
+
+    def get_device_name(self, obj):
+        return obj.device.name or obj.device.device_id if obj.device else None
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+    def get_executed_by_name(self, obj):
+        return obj.executed_by.username if obj.executed_by else None
+
+
+class MidsceneSequenceRunDetailSerializer(MidsceneSequenceRunSerializer):
+    """编排运行详情：附带每项子执行记录。"""
+    executions = serializers.SerializerMethodField()
+
+    class Meta(MidsceneSequenceRunSerializer.Meta):
+        fields = MidsceneSequenceRunSerializer.Meta.fields + ['executions']
+
+    def get_executions(self, obj):
+        # 子执行按创建顺序（即编排项顺序）展示，而非模型默认的 -created_at
+        qs = obj.execution_records.all().order_by('created_at')
+        return MidsceneExecutionRecordSerializer(qs, many=True).data
