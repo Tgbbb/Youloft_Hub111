@@ -56,6 +56,8 @@ export default {
     uiEnvConfig: 'UI Environment Configuration',
     aiModeConfig: 'AI Mode Configuration',
     scheduledTaskConfig: 'Scheduled Task Configuration',
+    agentConfig: 'Agent Config',
+    knowledgeBase: 'Knowledge Base',
     difyConfig: 'Dify Configuration',
     pushCheck: 'Push Comparison',
     syncCheck: 'Sync Confirmation'

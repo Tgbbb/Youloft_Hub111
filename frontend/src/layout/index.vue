@@ -105,6 +105,7 @@
               <el-menu-item index="/configuration/ai-mode"><el-icon><MagicStick /></el-icon><span>{{ $t('menu.aiModeConfig') }}</span></el-menu-item>
               <el-menu-item index="/configuration/scheduled-task"><el-icon><Timer /></el-icon><span>{{ $t('menu.scheduledTaskConfig') }}</span></el-menu-item>
               <el-menu-item index="/configuration/agent"><el-icon><ChatDotRound /></el-icon><span>{{ $t('menu.agentConfig') }}</span></el-menu-item>
+              <el-menu-item index="/configuration/knowledge-base"><el-icon><Reading /></el-icon><span>{{ $t('menu.knowledgeBase') }}</span></el-menu-item>
             </template>
           </el-menu>
         </nav>
@@ -183,7 +184,7 @@ import {
   Monitor, Folder, Document, Flag, Check, Collection, VideoPlay,
   DataAnalysis, ChatDotRound, DocumentCopy, Link, MagicStick,
   Odometer, Timer, Setting, AlarmClock, Bell, Aim, Edit, Cpu, ArrowDown, Cellphone, Connection, FolderOpened,
-  Box, CircleCheck
+  Box, CircleCheck, Reading
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -277,7 +278,8 @@ const breadcrumbTitle = computed(() => {
     '/configuration/ui-env': t('menu.uiEnvConfig'),
     '/configuration/ai-mode': t('menu.aiModeConfig'),
     '/configuration/scheduled-task': t('menu.scheduledTaskConfig'),
-    '/configuration/agent': t('menu.agentConfig'),    '/profile': t('nav.profile')
+    '/configuration/agent': t('menu.agentConfig'),
+    '/configuration/knowledge-base': '知识库管理',    '/profile': t('nav.profile')
   }
   return routeMap[route.path] || route.meta.title || ''
 })

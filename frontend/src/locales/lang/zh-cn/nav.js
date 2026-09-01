@@ -56,7 +56,8 @@ export default {
     uiEnvConfig: 'UI环境配置',
     aiModeConfig: 'AI智能模式配置',
     scheduledTaskConfig: '定时任务配置',
-    agentConfig: 'Agent 配置',
+    agentConfig: '智能体配置',
+    knowledgeBase: '知识库管理',
     pushCheck: '推送对比',
     syncCheck: '同步确认'
   }

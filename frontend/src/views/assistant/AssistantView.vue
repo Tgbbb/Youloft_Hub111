@@ -56,19 +56,19 @@
         <div class="welcome-content">
           <div class="logo-area">
             <div class="logo-wedge"></div>
-            <h1>TestHub <span class="logo-label">AGENT</span></h1>
+            <h1>TestHub <span class="logo-label">智能助手</span></h1>
             <p>{{ $t('assistant.subtitle') }}</p>
             <div class="welcome-project-select">
               <span class="proj-dot"></span>
               <el-select
-                v-model="selectedProjectId"
-                :placeholder="$t('assistant.selectProject')"
+                v-model="selectedKbId"
+                :placeholder="$t('assistant.selectKnowledgeBase')"
                 size="default"
                 class="welcome-select"
                 popper-class="ag-dropdown"
-                @change="onProjectChange"
+                @change="onKbChange"
               >
-                <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
+                <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
               </el-select>
             </div>
           </div>
@@ -209,9 +209,9 @@
         <div class="chat-header">
           <div class="chat-header-left">
             <span class="chat-time" v-if="currentSession">{{ formatDate(currentSession.updated_at) }}</span>
-            <el-select v-model="selectedProjectId" :placeholder="$t('assistant.selectProject')"
-                       size="small" class="header-project-select" popper-class="ag-dropdown" @change="onProjectChange">
-              <el-option v-for="p in apiProjects" :key="p.id" :label="p.name" :value="p.id" />
+            <el-select v-model="selectedKbId" :placeholder="$t('assistant.selectKnowledgeBase')"
+                       size="small" class="header-project-select" popper-class="ag-dropdown" @change="onKbChange">
+              <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
             </el-select>
             <el-button @click="showFilePanel = true; loadFiles()" size="small" :icon="Folder" class="ag-ibtn ag-ibtn--sm"
                        style="margin-left: auto;" />
@@ -402,9 +402,9 @@ const downloadUrl = (url) => {
   return `${baseURL}/assistant/chat/download_file/?id=${url}&token=${token}`
 }
 
-const apiProjects = ref([])
-const selectedProjectId = ref(null)
-const selectedProject = computed(() => apiProjects.value.find(p => p.id === selectedProjectId.value))
+const knowledgeBases = ref([])
+const selectedKbId = ref(null)
+const selectedKb = computed(() => knowledgeBases.value.find(p => p.id === selectedKbId.value))
 
 const toolLabels = {
   get_project_overview: '正在查看项目概况...',
@@ -455,20 +455,18 @@ const isNewChatMode = computed(() =>
   !currentSession.value || (!currentSession.value.id && messages.value.length === 0 && chatItems.value.length === 0)
 )
 
-const loadProjects = async () => {
+const loadKnowledgeBases = async () => {
   try {
-    const response = await api.get('/projects/')
-    apiProjects.value = response.data.results || response.data || []
-    if (apiProjects.value.length > 0 && !selectedProjectId.value) selectedProjectId.value = apiProjects.value[0].id
-  } catch (error) { console.error('Load projects failed:', error) }
+    const response = await api.get('/assistant/knowledge-bases/')
+    knowledgeBases.value = response.data.results || response.data || []
+    if (knowledgeBases.value.length > 0 && !selectedKbId.value) selectedKbId.value = knowledgeBases.value[0].id
+  } catch (error) { console.error('Load knowledge bases failed:', error) }
 }
 
-const onProjectChange = (val) => {
-  selectedProjectId.value = val
-  // 同步更新会话的 project_id
-  if (currentSession.value?.id) {
-    api.patch(`/assistant/sessions/${currentSession.value.id}/`, { project_id: val }).catch(() => {})
-  }
+const onKbChange = (val) => {
+  selectedKbId.value = val
+  // 同步到当前会话的"最近一次选中的 KB"，下次发送消息时携带
+  currentSession.value = { ...(currentSession.value || {}), last_kb_id: val }
 }
 
 const formatDate = (dateString) => {
@@ -513,7 +511,7 @@ const switchToSession = async (session) => {
   try {
     currentSession.value = { ...session }
     // 恢复会话关联的项目
-    selectedProjectId.value = session.project_id || apiProjects.value[0]?.id || null
+    selectedKbId.value = knowledgeBases.value[0]?.id || null
     const response = await api.get(`/assistant/sessions/${session.id}/messages/`)
     messages.value = response.data
     chatItems.value = (response.data || []).map(msg => ({ type: 'message', role: msg.role, content: msg.content, created_at: msg.created_at }))
@@ -566,15 +564,18 @@ const sendMessage = async () => {
     if (!sessionId) {
       const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`
       const title = text.length > 10 ? text.substring(0, 10) + '...' : text
-      const sessionRes = await api.post('/assistant/sessions/', { session_id: newSessionId, title, project_id: selectedProjectId.value })
+      const sessionRes = await api.post('/assistant/sessions/', { session_id: newSessionId, title })
       currentSession.value = sessionRes.data; sessionId = sessionRes.data.session_id
       historySessions.value.unshift(currentSession.value)
     }
 
     const token = userStore.accessToken; const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
+    // 将用户当前选中的 KB 一同发送，后端会强制只用该 KB 检索
+    const requestBody = { session_id: sessionId, message: text }
+    if (selectedKbId.value) requestBody.kb_id = selectedKbId.value
     const response = await fetch(`${baseURL}/assistant/chat/send_message_stream/`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ session_id: sessionId, message: text, project_id: selectedProjectId.value }),
+      body: JSON.stringify(requestBody),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const reader = response.body.getReader(); const decoder = new TextDecoder()
@@ -662,7 +663,7 @@ const doImportSkill = async () => {
 }
 
 onMounted(async () => {
-  await loadHistory(); await loadProjects(); await loadSkills(); await loadMCPServers()
+  await loadHistory(); await loadKnowledgeBases(); await loadSkills(); await loadMCPServers()
   if (historySessions.value.length > 0) await switchToSession(historySessions.value[0])
   else startNewChat()
 })

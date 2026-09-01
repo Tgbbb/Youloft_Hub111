@@ -198,3 +198,247 @@ class AgentFile(models.Model):
 
     def __str__(self):
         return f'{self.get_source_display()}: {self.file_name}'
+
+
+# ============================================================
+# 知识库 RAG 模块（自建嵌入知识库，替代 Dify 依赖）
+# ============================================================
+
+class KnowledgeBase(models.Model):
+    """知识库 — 自建 RAG 知识库根表
+
+    一份 KnowledgeBase 可包含多个 KnowledgeDocument，文档被切分后
+    存储为 KnowledgeChunk（含 Embedding 向量）。Agent 通过 search_knowledge_base
+    工具检索相关 chunk 并拼装到上下文。
+    """
+    name = models.CharField(max_length=200, verbose_name='知识库名称')
+    description = models.TextField(blank=True, verbose_name='描述')
+    embedding_model = models.CharField(
+        max_length=100,
+        default='deepseek-embedding',
+        verbose_name='Embedding模型'
+    )
+    embedding_dim = models.IntegerField(default=1024, verbose_name='向量维度')
+    chunk_size = models.IntegerField(default=500, verbose_name='分块大小(字符)')
+    chunk_overlap = models.IntegerField(default=50, verbose_name='分块重叠(字符)')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='knowledge_bases_created',
+        verbose_name='创建人'
+    )
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'knowledge_bases'
+        verbose_name = '知识库'
+        verbose_name_plural = '知识库'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return self.name
+
+
+class KnowledgeDocument(models.Model):
+    """知识库文档 — 上传并被切块处理的文档"""
+    STATUS_CHOICES = [
+        ('pending', '待处理'),
+        ('parsing', '解析中'),
+        ('embedding', '向量化中'),
+        ('done', '完成'),
+        ('failed', '失败'),
+    ]
+    FILE_TYPE_CHOICES = [
+        ('xmind', 'XMind'),
+        ('pdf', 'PDF'),
+        ('docx', 'Word'),
+        ('md', 'Markdown'),
+        ('txt', 'TXT'),
+    ]
+
+    knowledge_base = models.ForeignKey(
+        KnowledgeBase,
+        on_delete=models.CASCADE,
+        related_name='documents',
+        verbose_name='所属知识库'
+    )
+    file_name = models.CharField(max_length=500, verbose_name='文件名')
+    file_type = models.CharField(max_length=20, choices=FILE_TYPE_CHOICES)
+    file_size = models.IntegerField(default=0, verbose_name='文件大小(字节)')
+    file_path = models.CharField(max_length=1000, verbose_name='存储路径')
+    total_chunks = models.IntegerField(default=0, verbose_name='分块数')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        verbose_name='处理状态'
+    )
+    error_message = models.TextField(blank=True, verbose_name='错误信息')
+    uploaded_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='uploaded_kb_documents',
+        verbose_name='上传人'
+    )
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='上传时间')
+    processed_at = models.DateTimeField(null=True, blank=True, verbose_name='处理完成时间')
+
+    class Meta:
+        db_table = 'knowledge_documents'
+        verbose_name = '知识库文档'
+        verbose_name_plural = '知识库文档'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.file_name
+
+
+class KnowledgeChunk(models.Model):
+    """知识库文档分块 — 含 Embedding 向量 + BM25 tokens
+
+    Embedding 以 pickle 序列化后的 bytes 存入 BinaryField（MySQL BLOB）。
+    知识库规模 < 100MB 时此方案性能足够。
+
+    BM25 关键词检索：
+    - bm25_tokens: jieba 分词预存结果，避免每次检索重新分词
+    - 索引缓存到 media/retrieval_cache/bm25_kb{id}.pkl
+    """
+    knowledge_base = models.ForeignKey(
+        KnowledgeBase,
+        on_delete=models.CASCADE,
+        related_name='chunks',
+        verbose_name='所属知识库'
+    )
+    document = models.ForeignKey(
+        KnowledgeDocument,
+        on_delete=models.CASCADE,
+        related_name='chunks',
+        verbose_name='所属文档'
+    )
+    chunk_index = models.IntegerField(verbose_name='分块序号')
+    content = models.TextField(verbose_name='文本内容')
+    content_length = models.IntegerField(default=0, verbose_name='字符数')
+    embedding = models.BinaryField(verbose_name='Embedding向量(pickle)')
+    chunk_metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name='元数据',
+        help_text='如 {"page": 1, "section": "签到模块"}'
+    )
+    # === Hybrid Retrieval 字段（Phase 1） ===
+    bm25_tokens = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='BM25分词结果',
+        help_text='jieba 分词后的 token 列表，用于 BM25 索引'
+    )
+    # === 软删除 + 版本管理字段（Phase 2） ===
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name='是否启用',
+        help_text='False 表示软删除（被新版本替代）'
+    )
+    version = models.IntegerField(
+        default=1,
+        verbose_name='版本号',
+        help_text='同 path 下递增；1 为原始版本'
+    )
+    superseded_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='supersedes',
+        verbose_name='被哪个新版本替代',
+        help_text='指向替代本 chunk 的新版本 chunk（用于版本链）'
+    )
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'knowledge_chunks'
+        verbose_name = '知识库分块'
+        verbose_name_plural = '知识库分块'
+        ordering = ['knowledge_base', 'document', 'chunk_index']
+        indexes = [
+            models.Index(fields=['knowledge_base', 'document']),
+            models.Index(fields=['knowledge_base', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.document.file_name}#{self.chunk_index} (v{self.version})"
+
+
+class KnowledgeUpdateLog(models.Model):
+    """知识库变更日志 — 记录所有写入/删除/更新操作
+
+    用于:
+    1. 审计：谁在什么时间更新了什么内容
+    2. 回滚：可基于此 log 撤销错误更新
+    3. UI 展示：知识库管理页"变更日志"标签
+    """
+    ACTION_CHOICES = [
+        ('created', '新增'),
+        ('updated', '更新'),
+        ('new_version', '新增版本'),
+        ('deleted', '软删除'),
+        ('restored', '恢复'),
+    ]
+
+    knowledge_base = models.ForeignKey(
+        KnowledgeBase,
+        on_delete=models.CASCADE,
+        related_name='update_logs',
+        verbose_name='所属知识库'
+    )
+    chunk = models.ForeignKey(
+        KnowledgeChunk,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='update_logs',
+        verbose_name='关联分块',
+        help_text='新版本的 chunk_id（删除时为被删的 chunk）'
+    )
+    superseded_chunk = models.ForeignKey(
+        KnowledgeChunk,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='superseded_logs',
+        verbose_name='被替代的分块',
+        help_text='被新版本替代的旧 chunk_id（仅 new_version 时有值）'
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES, verbose_name='操作类型')
+    summary = models.TextField(verbose_name='摘要', help_text='变更内容的一句话描述')
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='kb_update_logs',
+        verbose_name='操作用户'
+    )
+    session_id = models.CharField(
+        max_length=200,
+        blank=True,
+        verbose_name='触发的会话ID',
+        help_text='从哪个智能助手会话触发的（如果是 AI 更新）'
+    )
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='变更时间')
+
+    class Meta:
+        db_table = 'knowledge_update_logs'
+        verbose_name = '知识库变更日志'
+        verbose_name_plural = '知识库变更日志'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['knowledge_base', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"[{self.get_action_display()}] {self.knowledge_base.name} - {self.summary[:30]}"

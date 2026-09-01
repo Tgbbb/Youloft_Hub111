@@ -352,6 +352,11 @@ const routes = [
                         path: 'agent',
                         name: 'AgentConfig',
                         component: () => import('@/views/configuration/AgentConfig.vue')
+                    },
+                    {
+                        path: 'knowledge-base',
+                        name: 'KnowledgeBase',
+                        component: () => import('@/views/configuration/KnowledgeBase.vue')
                     }
                 ]
             }

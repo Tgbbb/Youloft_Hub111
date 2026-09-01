@@ -13,4 +13,5 @@ class TestHubContext:
     user_id: int = 0
     project_id: Optional[int] = None
     session_id: str = ""
+    kb_id: Optional[int] = None  # 当前选中的知识库 ID（用于限制 RAG 检索范围）
     extra: dict = field(default_factory=dict)

@@ -78,6 +78,16 @@ TOOL_GROUPS: Dict[str, List[str]] = {
     "browser": [
         "agent_browser",
     ],
+    "knowledge": [
+        "list_knowledge_bases",
+        "get_knowledge_base_detail",
+        "search_knowledge_base",
+        # 知识库写入工具（受 System Prompt 中"硬性条件"约束，
+        # AI 不会在未确认时自动调用，但仍需注册到工具列表供 LLM 可见）
+        "add_or_update_knowledge",
+        "delete_knowledge",
+        "list_recent_kb_updates",
+    ],
 }
 
 
@@ -1935,4 +1945,335 @@ def simple_doc_parser(
         "size": os.path.getsize(fp),
         "content": text[:3000],
         "truncated": len(text) > 3000,
+    }
+
+
+# ---------------------------------------------------------------
+# 知识库 RAG 工具（v2 - 基于 Embedding 向量检索）
+# ---------------------------------------------------------------
+
+
+@assistant_tool("list_knowledge_bases", permission="none")
+def list_knowledge_bases(ctx: RunContextWrapper[TestHubContext]) -> Dict:
+    """列出所有可用的知识库（含启用状态、文档数、分块数）。
+
+    当用户询问业务规则、模块说明、APP 功能等内容，但你不确定答案时，
+    先调用本工具查看有哪些知识库，再调用 search_knowledge_base 检索具体内容。
+    """
+    from apps.assistant.models import KnowledgeBase
+
+    kbs = KnowledgeBase.objects.all().values(
+        "id", "name", "description", "is_active",
+        "embedding_model", "created_at", "updated_at",
+    )
+    items = []
+    for kb in kbs:
+        doc_count = KnowledgeBase.objects.get(id=kb["id"]).documents.count()
+        chunk_count = KnowledgeBase.objects.get(id=kb["id"]).chunks.count()
+        items.append({**kb, "document_count": doc_count, "chunk_count": chunk_count})
+
+    return {
+        "success": True,
+        "total": len(items),
+        "active_count": sum(1 for x in items if x["is_active"]),
+        "items": items,
+    }
+
+
+@assistant_tool("get_knowledge_base_detail", permission="none")
+def get_knowledge_base_detail(
+    ctx: RunContextWrapper[TestHubContext], knowledge_base_id: int
+) -> Dict:
+    """查看指定知识库的详细信息：包含哪些文档、各文档处理状态。
+
+    Args:
+        knowledge_base_id: 知识库ID（可从 list_knowledge_bases 获取）。
+    """
+    from apps.assistant.models import KnowledgeBase
+
+    try:
+        kb = KnowledgeBase.objects.get(id=knowledge_base_id)
+    except KnowledgeBase.DoesNotExist:
+        return {"success": False, "error": f"知识库 {knowledge_base_id} 不存在"}
+
+    documents = list(
+        kb.documents.values(
+            "id", "file_name", "file_type", "file_size",
+            "status", "total_chunks", "error_message",
+            "created_at", "processed_at",
+        )
+    )
+
+    return {
+        "success": True,
+        "id": kb.id,
+        "name": kb.name,
+        "description": kb.description,
+        "embedding_model": kb.embedding_model,
+        "chunk_size": kb.chunk_size,
+        "is_active": kb.is_active,
+        "total_chunks": kb.chunks.count(),
+        "total_documents": len(documents),
+        "documents": documents,
+    }
+
+
+@assistant_tool("search_knowledge_base", permission="none")
+def search_knowledge_base(
+    ctx: RunContextWrapper[TestHubContext],
+    question: str,
+    knowledge_base_id: int = 0,
+    top_k: int = 5,
+) -> Dict:
+    """在知识库中检索与问题最相关的片段。
+
+    当用户询问业务规则、功能说明、模块逻辑等需要参考文档的内容时，调用本工具。
+    检索结果会返回 Top-K 相关片段的文本，你再基于这些片段回答用户。
+
+    Args:
+        question: 用户的原始问题（用于 Embedding 检索）。
+        knowledge_base_id: 知识库ID。⚠️ 此参数**仅作为提示**，实际检索范围由前端用户选中的知识库决定：
+                        - 如果用户已选中知识库（ctx.kb_id 存在），**强制只检索该知识库**，
+                          你传入的 knowledge_base_id 会被忽略
+                        - 仅当用户未选择任何知识库时，才使用你传入的 knowledge_base_id
+                        - 如果两者都未提供，则使用第一个启用的 KB
+        top_k: 返回片段数量，默认 5。
+    """
+    from apps.assistant.models import KnowledgeBase
+    from apps.assistant.services.rag import RAGService
+
+    if not question or not question.strip():
+        return {"success": False, "error": "question 不能为空"}
+
+    # 优先级：ctx.kb_id（用户前端选择的）> 显式参数 > 第一个启用的 KB
+    # 重要：如果用户已在前端选中知识库，则强制仅检索该知识库，忽略 LLM 传入的 knowledge_base_id
+    ctx_kb_id = getattr(ctx.context, "kb_id", None) or 0
+    if ctx_kb_id:
+        knowledge_base_id = ctx_kb_id
+    elif not knowledge_base_id:
+        knowledge_base_id = 0
+
+    if knowledge_base_id:
+        try:
+            kb = KnowledgeBase.objects.get(id=knowledge_base_id)
+        except KnowledgeBase.DoesNotExist:
+            return {
+                "success": False,
+                "error": f"知识库 {knowledge_base_id} 不存在",
+            }
+    else:
+        kb = KnowledgeBase.objects.filter(is_active=True).first()
+        if not kb:
+            return {
+                "success": False,
+                "error": "未找到启用的知识库，请先在配置中心 → 知识库管理 创建并启用",
+            }
+
+    if not kb.is_active:
+        return {
+            "success": False,
+            "error": f"知识库「{kb.name}」已禁用，请在配置中心启用后重试",
+        }
+
+    try:
+        rag = RAGService(kb.id)
+        retrieved = rag.search(question, top_k=top_k)
+    except Exception as e:
+        logger.error(f"知识库检索失败: {e}", exc_info=True)
+        return {"success": False, "error": f"检索失败: {e}"}
+
+    if not retrieved:
+        return {
+            "success": True,
+            "knowledge_base": kb.name,
+            "found": 0,
+            "message": "知识库中未找到与该问题相关的内容（可能低于相关度阈值）",
+            "context_text": "",
+            "chunks": [],
+        }
+
+    context_text = rag.format_for_prompt(retrieved)
+    return {
+        "success": True,
+        "knowledge_base": kb.name,
+        "found": len(retrieved),
+        "context_text": context_text,
+        "chunks": [
+            {
+                "chunk_id": r["chunk_id"],
+                "content_preview": r["content"][:200],
+                "score": round(r["score"], 4),
+                "metadata": r["metadata"],
+            }
+            for r in retrieved
+        ],
+    }
+
+
+# ============================================================
+# 知识库管理工具（Phase 2 - KB 自动更新）
+# ============================================================
+# 触发规则（由 agent.py System Prompt 约束）：
+#   1. 用户必须明确说"更新到知识库"/"新增到知识库"/"这条入知识库"
+#   2. AI 已向用户展示"将写入的内容预览"
+#   3. 用户回复了"确认"/"好的"/"OK"等肯定词
+#   满足全部 3 条才能调用本组工具
+# 范围约束：仅限当前选中的 KB（ctx.kb_id 强制）
+
+
+@assistant_tool("add_or_update_knowledge", permission="session")
+def add_or_update_knowledge(
+    ctx: RunContextWrapper,
+    text: str,
+    section_hint: str = "",
+) -> Dict:
+    """在当前选中的知识库中新增或更新一条知识。
+
+    **触发条件**（必须全部满足才能调用）：
+    1. 用户明确说"更新到知识库" / "新增到知识库" / "这条入知识库"
+    2. AI 已经向用户展示了"将写入的内容预览"
+    3. 用户回复了"确认" / "好的" / "OK" / "同意" 等肯定词
+
+    **执行逻辑**（自动判断）：
+    - 与现有 chunk 相似度 ≥ 0.92：in-place 更新原内容
+    - 0.75-0.92：创建新版本，旧版软删除
+    - < 0.75：直接创建新 chunk
+
+    **范围**：仅限当前前端选中的知识库（强制，AI 不可改 KB）。
+
+    Args:
+        text: 要写入的知识内容（用户提供的功能描述/规则等）
+        section_hint: 章节路径提示，如 "心动日常 > 分享码"（可选）
+
+    Returns:
+        {
+            'success': True,
+            'action': 'created' | 'updated' | 'new_version',
+            'chunk_id': 新建/更新后的 chunk id,
+            'summary': '已创建 chunk #123' 等人类可读描述
+        }
+    """
+    from apps.assistant.services.kb_manager import KBManagementService
+
+    # 强制使用用户选中的 KB
+    kb_id = getattr(ctx.context, "kb_id", None) or 0
+    if not kb_id:
+        return {
+            "success": False,
+            "error": "用户未选中知识库，无法写入。请先在前端选择知识库。",
+        }
+
+    try:
+        kb_mgr = KBManagementService(kb_id)
+        result = kb_mgr.add_or_update(
+            text=text,
+            section_hint=section_hint,
+            user=ctx.context.user,
+            session_id=ctx.context.session_id or "",
+        )
+    except Exception as e:
+        logger.error(f"add_or_update_knowledge 失败: {e}", exc_info=True)
+        return {"success": False, "error": f"操作失败: {e}"}
+
+    return {
+        "success": True,
+        "action": result.action,
+        "chunk_id": result.chunk_id,
+        "superseded_chunk_id": result.superseded_chunk_id,
+        "similarity": round(result.similarity, 3),
+        "summary": result.summary,
+        "kb_id": kb_id,
+    }
+
+
+@assistant_tool("delete_knowledge", permission="session")
+def delete_knowledge(
+    ctx: RunContextWrapper,
+    keyword: str,
+) -> Dict:
+    """根据关键词软删除当前选中知识库中的某条知识（仅标记 is_active=False，可恢复）。
+
+    **触发条件**（同 add_or_update_knowledge）：
+    1. 用户明确说"删除知识库中的 XXX"
+    2. AI 已展示"将删除的内容预览"
+    3. 用户确认
+
+    **范围**：仅限当前前端选中的知识库。
+
+    Args:
+        keyword: 用于定位要删除 chunk 的关键词
+
+    Returns:
+        {
+            'success': True,
+            'message': '已软删除 chunk #123',
+            'deleted_chunks': [{chunk_id, content_preview, similarity}]
+        }
+    """
+    from apps.assistant.services.kb_manager import KBManagementService
+
+    kb_id = getattr(ctx.context, "kb_id", None) or 0
+    if not kb_id:
+        return {
+            "success": False,
+            "error": "用户未选中知识库，无法删除。",
+        }
+
+    try:
+        kb_mgr = KBManagementService(kb_id)
+        result = kb_mgr.delete(
+            keyword=keyword,
+            user=ctx.context.user,
+            session_id=ctx.context.session_id or "",
+        )
+    except Exception as e:
+        logger.error(f"delete_knowledge 失败: {e}", exc_info=True)
+        return {"success": False, "error": f"操作失败: {e}"}
+
+    return result
+
+
+@assistant_tool("list_recent_kb_updates", permission="none")
+def list_recent_kb_updates(
+    ctx: RunContextWrapper,
+    days: int = 7,
+    limit: int = 20,
+) -> Dict:
+    """查看当前选中知识库的最近变更日志（新增/更新/版本/删除记录）。
+
+    任何时候都可以调用，无需用户确认。用于在回答中展示"知识库已更新"等
+    信息，或在用户问"最近知识库改了什么"时使用。
+
+    Args:
+        days: 查询最近 N 天，默认 7
+        limit: 最多返回 N 条，默认 20
+
+    Returns:
+        {
+            'success': True,
+            'count': N,
+            'logs': [{log_id, action, action_display, summary, chunk_id, user, created_at}, ...]
+        }
+    """
+    from apps.assistant.services.kb_manager import KBManagementService
+
+    kb_id = getattr(ctx.context, "kb_id", None) or 0
+    if not kb_id:
+        return {
+            "success": False,
+            "error": "用户未选中知识库。",
+        }
+
+    try:
+        kb_mgr = KBManagementService(kb_id)
+        logs = kb_mgr.list_recent_updates(days=days, limit=limit)
+    except Exception as e:
+        logger.error(f"list_recent_kb_updates 失败: {e}", exc_info=True)
+        return {"success": False, "error": f"查询失败: {e}"}
+
+    return {
+        "success": True,
+        "kb_id": kb_id,
+        "count": len(logs),
+        "logs": logs,
     }

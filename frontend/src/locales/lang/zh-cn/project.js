@@ -144,8 +144,8 @@ export default {
     dataFactoryDesc: '灵活的测试数据构造与管理',
     aiIntelligentMode: 'AI 智能模式',
     aiIntelligentModeDesc: '基于自然语言的智能化测试执行',
-    aiEvaluator: 'Agent',
-    aiEvaluatorDesc: '对话式 AI 协作者，支持接口测试生成、用例管理、测试执行',
+    aiEvaluator: '智能助手',
+    aiEvaluatorDesc: '基于知识库的 AI 测试问答，支持接口测试生成、用例管理、测试执行',
     configCenter: '配置中心',
     configCenterDesc: '系统环境、AI模型及通知配置',
 

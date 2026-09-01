@@ -5,6 +5,7 @@ TestHub Agent — 对话式 AI 协作者 ViewSet
 """
 import json
 import os
+import time
 import uuid
 import logging
 from django.conf import settings
@@ -77,6 +78,7 @@ class ChatViewSet(viewsets.ViewSet):
         session_id = request.data.get('session_id')
         message = request.data.get('message')
         project_id = request.data.get('project_id')
+        kb_id = request.data.get('kb_id')
 
         if not session_id or not message:
             return Response(
@@ -181,6 +183,7 @@ class ChatViewSet(viewsets.ViewSet):
         session_id = request.data.get('session_id')
         message = request.data.get('message')
         project_id = request.data.get('project_id')
+        kb_id = request.data.get('kb_id')
 
         if not session_id or not message:
             return Response(
@@ -228,6 +231,7 @@ class ChatViewSet(viewsets.ViewSet):
                 agent = TestHubAgent(
                     user=request.user,
                     project_id=project_id,
+                    kb_id=kb_id,
                 )
 
                 for event in agent.chat(message, history):
@@ -409,10 +413,12 @@ class ChatViewSet(viewsets.ViewSet):
         """
         message = request.data.get('message', '你好，请介绍一下你自己')
         project_id = request.data.get('project_id')
+        kb_id = request.data.get('kb_id')
 
         agent = TestHubAgent(
             user=request.user,
             project_id=project_id,
+            kb_id=kb_id,
         )
 
         results = {

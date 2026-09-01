@@ -18,6 +18,10 @@ export default {
   inputPlaceholder: 'Enter your question, press Enter to send...',
   chatInputPlaceholder: 'Enter message...',
 
+  // Knowledge Base
+  selectKnowledgeBase: 'Select Knowledge Base',
+  noKnowledgeBase: 'No Knowledge Base Selected',
+
   // Suggestions
   suggestions: {
     apiTest: 'API Test Cases',

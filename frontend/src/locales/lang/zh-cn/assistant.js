@@ -13,14 +13,14 @@ export default {
   loggedOut: '已退出登录',
 
   // 欢迎页
-  title: 'TestHub Agent',
-  subtitle: '我是您的智能测试协作者，可以帮您管理接口测试、创建测试用例、执行测试...',
+  title: 'TestHub 智能助手',
+  subtitle: '我是您的智能测试助手，可基于知识库回答业务问题、生成测试用例、执行测试任务…',
   inputPlaceholder: '输入您的问题，按回车发送...',
   chatInputPlaceholder: '输入消息...',
 
-  // 项目选择
-  selectProject: '选择项目',
-  noProject: '未选择项目',
+  // 知识库选择
+  selectKnowledgeBase: '选择知识库',
+  noKnowledgeBase: '未选择知识库',
 
   // 建议提示
   suggestions: {

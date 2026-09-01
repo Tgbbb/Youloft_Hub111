@@ -80,3 +80,78 @@ export function deleteSkill(name) {
     data: { name },
   })
 }
+
+// 知识库管理
+export function listKnowledgeBases(params) {
+  return request({ url: '/assistant/knowledge-bases/', method: 'get', params })
+}
+
+export function createKnowledgeBase(data) {
+  return request({ url: '/assistant/knowledge-bases/', method: 'post', data })
+}
+
+export function updateKnowledgeBase(id, data) {
+  return request({ url: `/assistant/knowledge-bases/${id}/`, method: 'put', data })
+}
+
+export function partialUpdateKnowledgeBase(id, data) {
+  return request({ url: `/assistant/knowledge-bases/${id}/`, method: 'patch', data })
+}
+
+export function deleteKnowledgeBase(id) {
+  return request({ url: `/assistant/knowledge-bases/${id}/`, method: 'delete' })
+}
+
+export function getActiveKnowledgeBase() {
+  return request({ url: '/assistant/knowledge-bases/active/', method: 'get' })
+}
+
+export function getKnowledgeBaseDocuments(kbId) {
+  return request({ url: `/assistant/knowledge-bases/${kbId}/documents/`, method: 'get' })
+}
+
+export function uploadKnowledgeDocument(kbId, formData, onUploadProgress) {
+  return request({
+    url: `/assistant/knowledge-bases/${kbId}/upload/`,
+    method: 'post',
+    data: formData,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
+    onUploadProgress,
+  })
+}
+
+export function deleteKnowledgeDocument(kbId, docId) {
+  return request({
+    url: `/assistant/knowledge-bases/${kbId}/documents/${docId}/`,
+    method: 'delete',
+  })
+}
+
+export function getKnowledgeBaseChunks(kbId, params) {
+  return request({
+    url: `/assistant/knowledge-bases/${kbId}/chunks/`,
+    method: 'get',
+    params,
+  })
+}
+
+// 知识库变更日志（AI 自动新增/更新/版本/软删除记录）
+export function getKnowledgeUpdateLogs(kbId, params) {
+  return request({
+    url: `/assistant/knowledge-bases/${kbId}/update-logs/`,
+    method: 'get',
+    params,
+  })
+}
+
+// 知识库导出（Markdown）。返回 blob 用于下载。
+export function exportKnowledgeBaseMarkdown(kbId, params) {
+  return request({
+    url: `/assistant/knowledge-bases/${kbId}/export/`,
+    method: 'get',
+    params,
+    responseType: 'blob',
+    timeout: 120000,
+  })
+}

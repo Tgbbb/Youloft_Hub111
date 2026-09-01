@@ -144,8 +144,8 @@ export default {
     dataFactoryDesc: 'Flexible test data construction and management',
     aiIntelligentMode: 'AI Intelligent Mode',
     aiIntelligentModeDesc: 'Natural language-based intelligent test execution',
-    aiEvaluator: 'Agent',
-    aiEvaluatorDesc: 'Conversational AI co-pilot for API testing, test case management, and test execution',
+    aiEvaluator: 'AI Assistant',
+    aiEvaluatorDesc: 'Knowledge-base powered AI test Q&A, supports API test generation, case management, and test execution',
     configCenter: 'Configuration Center',
     configCenterDesc: 'System environment, AI model and notification configuration',
 

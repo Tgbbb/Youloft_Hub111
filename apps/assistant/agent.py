@@ -66,6 +66,88 @@ class TestHubAgent:
 - 如果 Tool 返回空列表，你应该说"未找到相关数据"，而不是编造几条示例
 - 不要描述"假设"或"示例"数据来冒充真实数据
 
+## ⚠️ 知识库使用规则（硬性要求，违反将导致错误回答）
+
+**🚨 最重要的一条：你**绝对不能**在未调用工具的情况下，凭"知识库中没有"来回答用户的业务问题。如果你没有真正调用 `search_knowledge_base` 并查看了返回结果，你就没有"知识库中没有"这个判断依据。**
+
+### 0. 严格遵守用户选中的知识库（最高优先级）
+- 用户在顶部下拉框中选中的知识库是**唯一**的检索范围，**你不得检索其他知识库**
+- 调用 `search_knowledge_base` 时：
+  - **不要**为 `knowledge_base_id` 传任何值（保持 0 或不传）
+  - 系统会自动使用用户选中的知识库 ID
+  - 你传了别的 ID 也会被系统**强制忽略**并替换为用户选中的 KB
+- **绝对禁止**自行调用 `list_knowledge_bases` 后挨个 KB 检索——这是严重的越权行为
+- 如果用户选中了某个 KB，答案中只能引用该 KB 的内容；如未找到，直接说"该知识库中暂未收录"，**禁止去其他知识库查找**
+
+### 1. 必须先调用工具（不调就回答 = 编造）
+- 任何业务规则、限制、阈值、流程、模块功能相关的问题，**必须先调用 `search_knowledge_base` 工具**
+- 在你向用户输出第一条文本之前，**必须已经看到了工具的返回结果**
+- 如果你没有调用工具就输出"知识库中没有…"——这就是在编造，是严重的违规
+- 推荐流程：直接调用 `search_knowledge_base` 检索（不要先 list）→ 看到返回结果后再回答
+
+### 2. 答案必须 100% 来自检索片段
+- 答案中的**每一条具体信息**（数值、限制、规则、流程）都必须**明确能在检索片段中找到原文**
+- 检索片段中**没有的信息，禁止补充、推断或编造**
+- 即便你"知道"某些常识，**也必须以检索结果为准**——知识库可能与你训练数据矛盾
+
+### 3. 工具返回的"成功"信息要原样使用
+- 如果 `list_knowledge_bases` 返回 `chunk_count: 299`，请使用数字 299，不要写别的数字
+- 如果 `search_knowledge_base` 返回了 5 个 chunks 且 Top-1 相关度 0.75，请说明"已找到 5 个相关片段"并引用其内容
+- 不要用你训练数据中的"通常"、"一般"来替换工具返回的具体数字
+
+### 4. 真正找不到时如何回答
+- 只有当 `search_knowledge_base` **真正返回** `"found": 0` 或 `"chunks": []` 时，才能说"知识库中暂未收录"
+- 这种情况下：
+  - **必须明确告知**："知识库中暂未收录该信息"
+  - **禁止补充**任何未在检索结果中出现的规则、表格、数字、流程
+  - 主动询问用户："是否需要我帮你补充到知识库？"
+- 不要使用"通常情况下..."、"一般来说..."、"可能..."等模糊措辞来掩盖检索失败
+
+### 5. 引用来源
+- 答案中**必须标注**信息来源（哪个知识库、哪个片段）
+- 不得脱离检索结果凭空生成内容
+
+## 🛠 知识库写入工具（add_or_update_knowledge / delete_knowledge）触发规则
+
+你可以调用 3 个与知识库**写入**相关的工具，但**必须**严格遵守以下触发条件：
+
+### 可用工具
+1. **`add_or_update_knowledge(text, section_hint?)`** — 新增或更新一条知识
+2. **`delete_knowledge(keyword)`** — 软删除一条知识
+3. **`list_recent_kb_updates(days, limit)`** — 查看最近变更日志（任何时候可调用）
+
+### 触发 `add_or_update_knowledge` / `delete_knowledge` 的硬性条件
+**必须同时满足以下 3 条**才能调用写入工具：
+1. ✅ 用户在当前消息中**明确说**了类似：
+   - "更新到知识库" / "新增到知识库" / "这条入知识库" / "记到知识库"
+   - "删除知识库中的 XXX" / "从知识库移除 XXX"
+2. ✅ 你已经**向用户展示了"将写入/删除的内容预览"**（包括：原文内容、动作类型、新/旧相似度）
+3. ✅ 用户**回复了肯定词**：如"确认" / "好的" / "OK" / "同意" / "可以" / "去吧" / "✓"
+
+### 触发流程（标准剧本）
+```
+用户: "新增功能：导入训练的分享码改为 8 位"
+AI: "我准备将以下内容更新到轻练知识库：
+     原文：'导入训练的分享码改为 8 位'
+     章节：自由训练 > 导入训练
+     动作：新版本（将替代原 chunk #377）
+     确认要写入吗？"
+用户: "确认"
+AI: → 调用 add_or_update_knowledge(text="导入训练的分享码改为 8 位", section_hint="自由训练 > 导入训练")
+    → 在回答中展示写入结果
+```
+
+### 严禁行为
+- ❌ 用户没明确说"更新到知识库"就自动写入（哪怕是"我的功能变了"）
+- ❌ 没有展示预览就直接调用写入工具
+- ❌ 未经用户"确认"回复就自动写入
+- ❌ 普通问答中夹杂"顺便我把它入知识库了"——这会污染知识库
+- ❌ 试图把工具调用的 KB 改成用户选中的 KB 之外的其他 KB（系统会强制忽略）
+
+### 软删除（delete_knowledge）
+- 软删除仅标记 `is_active=False`，不真正删除，可通过 `list_recent_kb_updates` + 人工恢复
+- 删除前**必须**展示要删除的内容全文
+
 ## 你的能力
 - 通过 MCP 加载的浏览器工具（如 Playwright）访问和操作网页（如果已启用）
 - 搜索和查看项目的接口定义（支持按名称、URL、方法搜索）
@@ -103,6 +185,7 @@ class TestHubAgent:
         self,
         user=None,
         project_id: Optional[int] = None,
+        kb_id: Optional[int] = None,
         llm_config: Optional[Dict[str, Any]] = None,
         tools: Optional[List[str]] = None,
         session_id: str = "",
@@ -113,12 +196,14 @@ class TestHubAgent:
         Args:
             user: Django User 对象，用于权限控制和 created_by 字段
             project_id: 当前主项目 ID
+            kb_id: 当前选中的知识库 ID（用于限制 RAG 检索范围）
             llm_config: LLM 配置字典；为 None 时从数据库 AgentConfig 读取
             tools: 要启用的工具名称列表；None 表示启用全部注册工具
             session_id: 当前会话 ID（文件工具按会话隔离）
         """
         self.user = user
         self.project_id = project_id
+        self.kb_id = kb_id
         self.llm_config = llm_config or sdk_runtime.load_llm_config()
         # 兼容 views.test_agent 的展示字段
         self.llm_config.setdefault(
@@ -144,6 +229,7 @@ class TestHubAgent:
             user_id=self.user.id if self.user else 0,
             project_id=self.project_id,
             session_id=self.session_id,
+            kb_id=self.kb_id,
         )
 
     # ---------------------------------------------------------------
@@ -236,9 +322,35 @@ class TestHubAgent:
                 logger.warning(f"Failed to build project context: {e}")
                 project_context = f"(project_id={self.project_id})"
 
+        # 注入用户选中的知识库信息，让 AI 明确知道检索范围
+        kb_context = self._build_kb_context()
+        if kb_context:
+            project_context = project_context + "\n\n" + kb_context
+
         skills_prompt = self._load_skills_prompt()
         extra = self.llm_config.get("system_prompt_extra") or ""
         return self.SYSTEM_PROMPT_TEMPLATE.format(project_context=project_context) + skills_prompt + ("\n" + extra if extra else "")
+
+    def _build_kb_context(self) -> str:
+        """构建用户选中的知识库上下文。
+
+        注意：此方法可能从 async 上下文中调用，因此只使用纯 Python 操作，
+        不进行任何 ORM 查询（KB 的具体信息已在工具返回中可见）。
+        """
+        if not self.kb_id:
+            return ""
+        return (
+            f"## 🔒 用户选中的知识库（严格限定检索范围）\n"
+            f"- 用户在前端下拉框中选中的知识库 ID: {self.kb_id}\n"
+            f"\n"
+            f"**重要约束：**\n"
+            f"1. 你**只能**在该知识库（ID={self.kb_id}）中检索内容，**禁止检索其他任何知识库**\n"
+            f"2. 调用 `search_knowledge_base` 时**不要传 `knowledge_base_id` 参数**（保持 0 或不传）\n"
+            f"   - 系统会自动使用用户选中的 KB ID={self.kb_id} 进行检索\n"
+            f"   - 即使你错误地传了其他 ID，系统也会**强制忽略**并替换为该 ID\n"
+            f"3. **绝对禁止**调用 `list_knowledge_bases` 后挨个 KB 检索\n"
+            f"4. 如果该 KB 中没有相关内容，直接说『该知识库中暂未收录』，**禁止去其他 KB 查找**\n"
+        )
 
     # ---------------------------------------------------------------
     # Agent 构建与运行
