@@ -106,6 +106,8 @@ export default {
     fetchListFailed: '获取测试用例列表失败',
     fetchDetailFailed: '获取用例详情失败',
     deleteConfirm: '确定要删除这个测试用例吗？',
+    noCaseToRun: '当前筛选无用例可执行',
+    batchRunFinished: '本批用例执行完成',
     deleteSuccess: '测试用例删除成功',
     deleteFailed: '测试用例删除失败',
     selectFirst: '请先选择要删除的测试用例',

@@ -385,6 +385,8 @@ export default {
             // 优先级匹配，避免误判
             if (cleanHeader === '优先级' || cleanHeader === 'priority' || cleanHeader === 'priority（优先级）' || cleanHeader === '优先级（priority）') {
               testCase.priority = value
+            } else if (cleanHeader.includes('场景类型') || cleanHeader === 'scenetype' || cleanHeader === 'scene_type') {
+              testCase.scene_type = value
             } else if (cleanHeader === '用例id' || cleanHeader === '编号' || cleanHeader === 'id' || cleanHeader.includes('用例id')) {
               testCase.caseId = value
             } else if (cleanHeader === '测试目标' || cleanHeader === '测试场景' || cleanHeader === '场景' || cleanHeader === '标题' || cleanHeader.includes('测试目标')) {
@@ -527,6 +529,7 @@ export default {
           steps: testCase.steps || '',
           expected_result: testCase.expected || '',
           priority: this.mapPriority(testCase.priority),
+          scene_type: this.sceneTypeToValue(testCase.scene_type),
           test_type: 'functional',
           status: 'draft'
         }))
@@ -715,7 +718,8 @@ export default {
         this.$t('taskDetail.tablePrecondition'),
         this.$t('taskDetail.tableSteps'),
         this.$t('taskDetail.tableExpected'),
-        this.$t('taskDetail.tablePriority')
+        this.$t('taskDetail.tablePriority'),
+        '场景类型'
       ]
       let result = headers.join(' | ') + '\n'
       result += '|'.repeat(headers.length) + '\n'
@@ -728,7 +732,8 @@ export default {
           testCase.precondition || '',
           testCase.steps || '',
           testCase.expected || '',
-          testCase.priority || 'P2'
+          testCase.priority || 'P2',
+          testCase.scene_type || ''
         ]
         result += row.join(' | ') + '\n'
       })
@@ -772,6 +777,7 @@ export default {
           steps: testCase.steps || '',
           expected_result: testCase.expected || '',
           priority: this.mapPriority(testCase.priority),
+          scene_type: this.sceneTypeToValue(testCase.scene_type),
           test_type: 'functional',
           status: 'draft',
           project: this.task?.project,
@@ -854,6 +860,18 @@ export default {
       return priorityMap[priority] || 'medium'
     },
 
+    sceneTypeToValue(sceneType) {
+      const sceneMap = {
+        '主流程': 'main_flow',
+        '异常': 'exception',
+        '边界': 'boundary',
+        '权限': 'permission',
+        '风险': 'risk'
+      }
+      if (!sceneType) return ''
+      return sceneMap[sceneType] || sceneType
+    },
+
     // 将英文优先级转换为本地化显示
     priorityToChinese(priority) {
       const priorityMap = {
@@ -888,7 +906,8 @@ export default {
           this.$t('taskDetail.tablePrecondition'),
           this.$t('taskDetail.tableSteps'),
           this.$t('taskDetail.tableExpected'),
-          this.$t('taskDetail.tablePriority')
+          this.$t('taskDetail.tablePriority'),
+          '场景类型'
         ])
 
         // 添加数据行
@@ -899,7 +918,8 @@ export default {
             this.formatTextForList(testCase.precondition || ''),
             this.formatTextForList(testCase.steps || ''),
             this.formatTextForList(testCase.expected || ''),
-            testCase.priority || 'P2'
+            testCase.priority || 'P2',
+            testCase.scene_type || ''
           ])
         })
 

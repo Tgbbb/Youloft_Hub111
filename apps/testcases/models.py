@@ -12,6 +12,14 @@ class TestCase(models.Model):
         ('high', '高'),
         ('critical', '紧急'),
     ]
+
+    SCENE_TYPE_CHOICES = [
+        ('main_flow', '主流程'),
+        ('exception', '异常'),
+        ('boundary', '边界'),
+        ('permission', '权限'),
+        ('risk', '风险'),
+    ]
     
     STATUS_CHOICES = [
         ('draft', '草稿'),
@@ -40,6 +48,10 @@ class TestCase(models.Model):
     steps = models.TextField(blank=True, max_length=1000, verbose_name='操作步骤')
     expected_result = models.TextField(verbose_name='预期结果')
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='medium', verbose_name='优先级')
+    scene_type = models.CharField(
+        max_length=20, choices=SCENE_TYPE_CHOICES, blank=True, default='',
+        verbose_name='场景类型', help_text='主流程/异常/边界/权限/风险，用于筛选与排序'
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', verbose_name='状态')
     execution_status = models.CharField(
         max_length=10, null=True, blank=True,

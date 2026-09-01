@@ -1503,7 +1503,7 @@ class PromptConfigViewSet(viewsets.ModelViewSet):
 3. 输出原则：详细、独立、可执行
 
 # 用例设计规范
-1. **独立性**：每条用例只验证一个具体的测试点，严禁合并多个场景。
+1. **颗粒度**：用例颗粒度按功能复杂度决定，避免过度细化——简单功能以主流程 1-2 条 + 关键异常/边界覆盖即可；同一输入框的多个子校验等不必要的细分项合并进所属场景用例；仅确实独立且重要的验证点单独成条，不为凑数拆分。
 2. **完整性**：
    - 包含用例ID（[模块]_[序号]）
    - 清晰的测试目标
@@ -1515,6 +1515,13 @@ class PromptConfigViewSet(viewsets.ModelViewSet):
    - ⚠️ 异常流程（输入错误、权限不足、网络异常）
    - 🔄 边界值（最大/最小值、空值、特殊字符）
    - 🔒 业务约束（状态机流转、数据依赖）
+4. **场景类型（场景类型列必填）**：
+   - 主流程：核心正向流程（新增/编辑/删除完整路径、列表默认展示、核心入口）
+   - 异常：必填校验、输入错误、权限不足、网络异常、兼容性
+   - 边界：超长/上限/空值/特殊字符/重复
+   - 权限：角色、无权限、越权
+   - 风险：性能、并发、安全、极端场景
+   - 主流程类用例优先级固定为 P0
 
 # 输出格式
 请严格按照以下Markdown表格格式输出，不要包含任何开场白或结束语：
@@ -1526,9 +1533,9 @@ class PromptConfigViewSet(viewsets.ModelViewSet):
 4. 所有用例必须一次性完整输出，不能中断
 
 ```markdown
-| 用例ID | 测试目标 | 前置条件 | 操作步骤 | 预期结果 | 优先级 | 测试类型 | 关联需求 |
-|--------|--------|--------|--------|--------|--------|--------|--------|
-| LOGIN_001 | 验证手机号格式校验 | 在登录页 | 1. 输入10位手机号<br>2. 点击获取验证码 | 提示"手机号格式不正确"，发送按钮不可点 | P1 | 功能验证 | 登录模块 |
+| 用例ID | 测试目标 | 前置条件 | 操作步骤 | 预期结果 | 优先级 | 场景类型 | 测试类型 | 关联需求 |
+|--------|--------|--------|--------|--------|--------|--------|--------|--------|
+| LOGIN_001 | 验证手机号格式校验 | 在登录页 | 1. 输入10位手机号<br>2. 点击获取验证码 | 提示"手机号格式不正确"，发送按钮不可点 | P1 | 异常 | 功能验证 | 登录模块 |
 ```"""
 
             try:
@@ -4261,6 +4268,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         steps=test_case.get('steps', ''),
                         expected_result=test_case.get('expected', ''),
                         priority=self._map_priority(test_case.get('priority', '中')),
+                        scene_type=self._normalize_scene_type(test_case.get('scene_type', '')),
                         test_type='functional',
                         status='draft'
                     )
@@ -4360,6 +4368,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         steps=case_data.get('steps', ''),
                         expected_result=case_data.get('expected_result', ''),
                         priority=case_data.get('priority', 'medium'),
+                        scene_type=self._normalize_scene_type(case_data.get('scene_type', '')),
                         test_type=case_data.get('test_type', 'functional'),
                         status=case_data.get('status', 'draft')
                     )
@@ -4661,6 +4670,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
 
                 if any(keyword in header for keyword in ['编号', 'id', '序号', '用例id']):
                     test_case['caseId'] = value
+                elif any(keyword in header for keyword in ['场景类型', 'scenetype', 'scene_type']):
+                    test_case['scene_type'] = value
                 elif any(keyword in header for keyword in ['场景', '标题', '名称', 'title', 'scenario', '测试目标']):
                     test_case['scenario'] = value
                 elif any(keyword in header for keyword in ['前置', '前提', 'precondition']):
@@ -4776,8 +4787,8 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
         if has_steps:
             # 包含测试步骤的表格格式
             content_lines.append(
-                "| 用例ID | 测试目标 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 测试类型 | 关联需求 |")
-            content_lines.append("|--------|--------|--------|--------|--------|--------|--------|--------|")
+                "| 用例ID | 测试目标 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 场景类型 | 测试类型 | 关联需求 |")
+            content_lines.append("|--------|--------|--------|--------|--------|--------|--------|--------|--------|")
 
             for test_case in test_cases:
                 case_id = test_case.get('caseId', '')
@@ -4786,6 +4797,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 steps = test_case.get('steps', '参考测试目标执行相应操作')
                 expected = test_case.get('expected', '')
                 priority = test_case.get('priority', 'P2')
+                scene_type = test_case.get('scene_type', '')
 
                 # 保持原有格式，将换行符转换为<br>
                 precondition = precondition.replace('\n', '<br>')
@@ -4793,11 +4805,11 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 expected = expected.replace('\n', '<br>')
 
                 content_lines.append(
-                    f"| {case_id} | {scenario} | {precondition} | {steps} | {expected} | {priority} | 功能验证 | 需求1 |")
+                    f"| {case_id} | {scenario} | {precondition} | {steps} | {expected} | {priority} | {scene_type} | 功能验证 | 需求1 |")
         else:
             # 原始格式（没有测试步骤列）
-            content_lines.append("| 用例ID | 测试目标 | 前置条件 | 预期结果 | 优先级 | 测试类型 | 关联需求 |")
-            content_lines.append("|--------|--------|--------|--------|--------|--------|--------|")
+            content_lines.append("| 用例ID | 测试目标 | 前置条件 | 预期结果 | 优先级 | 场景类型 | 测试类型 | 关联需求 |")
+            content_lines.append("|--------|--------|--------|--------|--------|--------|--------|--------|")
 
             for test_case in test_cases:
                 case_id = test_case.get('caseId', '')
@@ -4805,13 +4817,14 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 precondition = test_case.get('precondition', '')
                 expected = test_case.get('expected', '')
                 priority = test_case.get('priority', 'P2')
+                scene_type = test_case.get('scene_type', '')
 
                 # 保持原有格式，将换行符转换为<br>
                 precondition = precondition.replace('\n', '<br>')
                 expected = expected.replace('\n', '<br>')
 
                 content_lines.append(
-                    f"| {case_id} | {scenario} | {precondition} | {expected} | {priority} | 功能验证 | 需求1 |")
+                    f"| {case_id} | {scenario} | {precondition} | {expected} | {priority} | {scene_type} | 功能验证 | 需求1 |")
 
         content_lines.append("```")
         return "\n".join(content_lines)
@@ -4862,6 +4875,18 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             'P3': 'low'
         }
         return priority_map.get(priority_str, 'medium')
+
+    def _normalize_scene_type(self, scene_type_str):
+        """把生成端场景类型（中文/英文）归一化为 TestCase.scene_type 的 value。"""
+        if not scene_type_str:
+            return ''
+        from apps.testcases.models import TestCase as TCase
+        s = str(scene_type_str).strip()
+        valid_values = {k for k, _ in TCase.SCENE_TYPE_CHOICES}
+        if s in valid_values:
+            return s
+        label_to_value = {v: k for k, v in TCase.SCENE_TYPE_CHOICES}
+        return label_to_value.get(s, '')
 
     @action(detail=False, methods=['get'])
     def statistics(self, request):

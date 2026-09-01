@@ -103,6 +103,8 @@ export default {
     fetchListFailed: 'Failed to fetch test case list',
     fetchDetailFailed: 'Failed to fetch test case details',
     deleteConfirm: 'Are you sure to delete this test case?',
+    noCaseToRun: 'No cases to run for current filter',
+    batchRunFinished: 'This batch finished',
     deleteSuccess: 'Test case deleted successfully',
     deleteFailed: 'Failed to delete test case',
     selectFirst: 'Please select test cases to delete first',

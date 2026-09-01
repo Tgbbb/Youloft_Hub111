@@ -20,6 +20,7 @@
             :disabled="isDeleting">
             {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
           </button>
+          <button class="ag-btn ag-btn--ok" @click="startContinuousExecution">▶ 连续执行</button>
           <button class="ag-btn ag-btn--ghost" @click="exportToExcel">{{ $t('testcase.exportExcel') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="downloadImportTemplate">{{ $t('testcase.downloadImportTemplate') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="openImportDialog">{{ $t('testcase.importCases') }}</button>
@@ -93,6 +94,22 @@
             <el-option :label="$t('testcase.critical')" value="critical" />
           </el-select>
         </div>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">SCENE</span>
+          <el-select
+            v-model="sceneTypeFilter"
+            :placeholder="'场景类型'"
+            clearable
+            popper-class="ag-dropdown"
+            @change="handleFilter"
+            class="ag-select-el ag-select-el--sm">
+            <el-option label="主流程" value="main_flow" />
+            <el-option label="异常" value="exception" />
+            <el-option label="边界" value="boundary" />
+            <el-option label="权限" value="permission" />
+            <el-option label="风险" value="risk" />
+          </el-select>
+        </div>
         <div class="ag-filter__field ag-filter__field--search">
           <span class="ag-filter__label">SEARCH</span>
           <el-input v-model="searchText" :placeholder="$t('testcase.searchPlaceholder')" clearable @input="handleSearch" class="ag-search">
@@ -128,6 +145,7 @@
               <th class="ag-th ag-th--idx">#</th>
               <th class="ag-th ag-th--title">{{ $t('testcase.caseTitle') }}</th>
               <th class="ag-th ag-th--pri">{{ $t('testcase.priority') }}</th>
+              <th class="ag-th ag-th--scene">场景类型</th>
               <th class="ag-th ag-th--mod">{{ $t('testcase.moduleName') }}</th>
               <th class="ag-th ag-th--exec">执行状态</th>
               <th class="ag-th ag-th--author">{{ $t('testcase.author') }}</th>
@@ -146,6 +164,10 @@
               </td>
               <td class="ag-td ag-td--pri">
                 <span class="ag-badge" :class="'ag-badge--' + row.priority">{{ getPriorityText(row.priority) }}</span>
+              </td>
+              <td class="ag-td ag-td--scene">
+                <span v-if="row.scene_type" class="ag-tag">{{ getSceneTypeText(row.scene_type) }}</span>
+                <span v-else class="ag-muted">—</span>
               </td>
               <td class="ag-td ag-td--mod">
                 <span v-if="row.function_module" class="ag-tag">{{ row.function_module.name }}</span>
@@ -223,6 +245,26 @@
       </div>
     </div>
   </div>
+  <div v-if="executionMode" class="exec-runner">
+    <div class="exec-runner__head">
+      <span class="exec-runner__title">连续执行</span>
+      <span class="exec-runner__progress">第 {{ execIndex + 1 }} / {{ execQueue.length }} 条</span>
+      <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="exitContinuousExecution">退出</button>
+    </div>
+    <div v-if="execCurrent" class="exec-runner__body">
+      <h3 class="exec-runner__case-title">{{ execCurrent.title }}</h3>
+      <div class="exec-runner__meta">
+        <span class="ag-badge" :class="'ag-badge--' + execCurrent.priority">{{ getPriorityText(execCurrent.priority) }}</span>
+        <span v-if="execCurrent.scene_type" class="ag-tag">{{ getSceneTypeText(execCurrent.scene_type) }}</span>
+        <span v-if="execCurrent.function_module" class="ag-tag">{{ execCurrent.function_module.name }}</span>
+      </div>
+      <div class="exec-runner__actions">
+        <button class="ag-btn ag-btn--pass" :disabled="execLoading" @click="execMark('passed')">✓ 通过</button>
+        <button class="ag-btn ag-btn--fail" :disabled="execLoading" @click="execMark('failed')">✗ 不通过</button>
+      </div>
+    </div>
+    <div v-else class="exec-runner__loading">{{ execLoading ? '加载中…' : '暂无用例' }}</div>
+  </div>
 </template>
 
 <script setup>
@@ -249,10 +291,16 @@ const projectFilter = ref('')
 const priorityFilter = ref('')
 const versionFilter = ref('')
 const moduleFilter = ref('')
+const sceneTypeFilter = ref('')
 const filterModules = ref([])
 const versions = ref([])
 const selectedTestCases = ref([])
 const isDeleting = ref(false)
+const executionMode = ref(false)
+const execQueue = ref([])
+const execIndex = ref(0)
+const execCurrent = ref(null)
+const execLoading = ref(false)
 const importDialogVisible = ref(false)
 const isCreatingImport = ref(false)
 const selectedImportFile = ref(null)
@@ -276,6 +324,9 @@ const activeFilters = computed(() => {
   if (priorityFilter.value) {
     f.push({ key: 'priority', label: '优先级: ' + getPriorityText(priorityFilter.value) })
   }
+  if (sceneTypeFilter.value) {
+    f.push({ key: 'scene_type', label: '场景类型: ' + getSceneTypeText(sceneTypeFilter.value) })
+  }
   if (searchText.value) {
     f.push({ key: 'search', label: '搜索: ' + searchText.value })
   }
@@ -288,6 +339,7 @@ const removeFilter = (key) => {
     case 'version': versionFilter.value = ''; handleVersionFilterChange(); break
     case 'module': moduleFilter.value = ''; handleFilter(); break
     case 'priority': priorityFilter.value = ''; handleFilter(); break
+    case 'scene_type': sceneTypeFilter.value = ''; handleFilter(); break
     case 'search': searchText.value = ''; handleSearch(); break
   }
 }
@@ -297,6 +349,7 @@ const clearAllFilters = () => {
   versionFilter.value = ''
   moduleFilter.value = ''
   priorityFilter.value = ''
+  sceneTypeFilter.value = ''
   searchText.value = ''
   filterModules.value = []
   currentPage.value = 1
@@ -330,6 +383,7 @@ const fetchTestCases = async () => {
     if (searchText.value) params.search = searchText.value
     if (projectFilter.value) params.project = projectFilter.value
     if (priorityFilter.value) params.priority = priorityFilter.value
+    if (sceneTypeFilter.value) params.scene_type = sceneTypeFilter.value
     if (versionFilter.value) params.versions = versionFilter.value
     if (moduleFilter.value) params.function_module = moduleFilter.value
     const response = await api.get('/testcases/', { params })
@@ -411,6 +465,75 @@ const executeCase = async (tc, status) => {
   }
 }
 
+const startContinuousExecution = async () => {
+  if (executionMode.value) return
+  const params = { page: 1, page_size: 10000 }
+  if (searchText.value) params.search = searchText.value
+  if (projectFilter.value) params.project = projectFilter.value
+  if (priorityFilter.value) params.priority = priorityFilter.value
+  if (sceneTypeFilter.value) params.scene_type = sceneTypeFilter.value
+  if (versionFilter.value) params.versions = versionFilter.value
+  if (moduleFilter.value) params.function_module = moduleFilter.value
+  loading.value = true
+  try {
+    const resp = await api.get('/testcases/', { params })
+    const all = resp.data.results || []
+    if (!all.length) { ElMessage.warning(t('testcase.noCaseToRun') || '当前筛选无用例可执行'); return }
+    // 按 场景类型 → 优先级 排序，主流程在前
+    execQueue.value = all.slice().sort(sortByScenePriority)
+    executionMode.value = true
+    execIndex.value = 0
+    await loadExecCurrent()
+  } finally {
+    loading.value = false
+  }
+}
+
+const loadExecCurrent = async () => {
+  const item = execQueue.value[execIndex.value]
+  if (!item) return
+  execLoading.value = true
+  try {
+    const { data } = await api.get(`/testcases/${item.id}/`)
+    execCurrent.value = data
+  } catch (error) {
+    ElMessage.error(t('testcase.fetchDetailFailed'))
+  } finally {
+    execLoading.value = false
+  }
+}
+
+const execMark = async (status) => {
+  if (!execCurrent.value || execLoading.value) return
+  execLoading.value = true
+  try {
+    await api.patch(`/testcases/${execCurrent.value.id}/execute/`, { execution_status: status })
+    execCurrent.value.execution_status = status
+    const idx = execQueue.value.findIndex(x => x.id === execCurrent.value.id)
+    if (idx >= 0) execQueue.value[idx].execution_status = status
+    ElMessage.success(status === 'passed' ? '已标记通过' : '已标记不通过')
+    execIndex.value += 1
+    if (execIndex.value >= execQueue.value.length) {
+      ElMessage.success(t('testcase.batchRunFinished') || '本批用例执行完成')
+      exitContinuousExecution()
+    } else {
+      await loadExecCurrent()
+    }
+  } catch (error) {
+    ElMessage.error('操作失败')
+  } finally {
+    execLoading.value = false
+  }
+}
+
+const exitContinuousExecution = () => {
+  executionMode.value = false
+  execQueue.value = []
+  execIndex.value = 0
+  execCurrent.value = null
+  fetchTestCases()
+}
+
 const deleteTestCase = async (tc) => {
   try {
     await ElMessageBox.confirm(t('testcase.deleteConfirm'), t('common.warning'), { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' })
@@ -439,6 +562,14 @@ const batchDeleteTestCases = async () => {
 }
 
 const getPriorityText = (p) => ({ low: t('testcase.low'), medium: t('testcase.medium'), high: t('testcase.high'), critical: t('testcase.critical') }[p] || p)
+const getSceneTypeText = (s) => ({ main_flow: '主流程', exception: '异常', boundary: '边界', permission: '权限', risk: '风险' }[s] || s)
+const SCENE_TYPE_ORDER = { main_flow: 0, exception: 1, boundary: 2, permission: 3, risk: 4 }
+const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 }
+const sortByScenePriority = (a, b) => {
+  const d = (SCENE_TYPE_ORDER[a.scene_type] ?? 99) - (SCENE_TYPE_ORDER[b.scene_type] ?? 99)
+  if (d !== 0) return d
+  return (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99)
+}
 const getTypeText = (type) => ({ functional: t('testcase.functional'), integration: t('testcase.integration'), api: t('testcase.api'), ui: t('testcase.ui'), performance: t('testcase.performance'), security: t('testcase.security') }[type] || '-')
 const formatDate = (d) => dayjs(d).format('YYYY-MM-DD HH:mm')
 const convertBrToNewline = (t) => t ? t.replace(/<br\s*\/?>/gi, '\n') : ''
@@ -985,4 +1116,21 @@ input[type="checkbox"] {
 }
 .ag-dropdown .el-select-dropdown__item:hover { background: #f4f5f3; color: #191919; }
 .ag-dropdown .el-select-dropdown__item.is-selected { color: #191919; font-weight: 700; }
+
+/* 连续执行面板 */
+.exec-runner {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(560px, 92vw); box-sizing: border-box; z-index: 3000;
+  background: #fff; border: 1px solid #e4e4de; border-top: 3px solid #191919;
+  box-shadow: 0 20px 60px rgba(0,0,0,.22); padding: 20px;
+  &__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  &__title { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #191919; }
+  &__progress { font-size: 12px; color: #888; font-family: "Space Grotesk", system-ui, sans-serif; }
+  &__body { display: flex; flex-direction: column; gap: 16px; }
+  &__case-title { margin: 0; font-size: 17px; line-height: 1.5; word-break: break-word; color: #191919; }
+  &__meta { display: flex; gap: 8px; flex-wrap: wrap; }
+  &__actions { display: flex; gap: 10px; }
+  &__actions .ag-btn { flex: 1; }
+  &__loading { color: #999; padding: 20px; text-align: center; font-size: 13px; }
+}
 </style>

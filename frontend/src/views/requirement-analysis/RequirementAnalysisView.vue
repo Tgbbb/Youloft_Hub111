@@ -538,7 +538,7 @@ export default {
 
   mounted() {
     // 加载已保存的墨刀 Cookie
-    const savedCookie = sessionStorage.getItem('modao_cookie')
+    const savedCookie = localStorage.getItem('modao_cookie')
     if (savedCookie) this.modaoToken = savedCookie
     this.loadModaoHistoryList()
     this.progressText = this.$t('requirementAnalysis.preparing')
@@ -1050,7 +1050,7 @@ export default {
       this._importDetail = { stage: 'prepare', message: '任务已提交，等待执行', current: 0, total: 1, canvases: [] }
       try {
         if (this.modaoToken) {
-          sessionStorage.setItem('modao_cookie', this.modaoToken)
+          localStorage.setItem('modao_cookie', this.modaoToken)
         }
         // 提交异步任务
         const { data } = await api.post('/requirement-analysis/testcase-generation/import-from-modao/', {
@@ -1099,9 +1099,7 @@ export default {
               this.isImportingModao = false
               const msg = r.error_message || '未知错误'
               if (msg.includes('Cookie已失效')) {
-                sessionStorage.removeItem('modao_cookie')
-                this.modaoToken = ''
-                ElMessage.warning(msg)
+                ElMessage.warning(msg + '，请重新获取 Cookie 后覆盖')
               } else {
                 ElMessage.error('导入失败: ' + msg)
               }
@@ -1119,8 +1117,7 @@ export default {
         this.isImportingModao = false
         const msg = e.response?.data?.error || e.message || ''
         if (msg.includes('401') || msg.includes('403') || msg.includes('登录') || msg.includes('auth')) {
-          sessionStorage.removeItem('modao_cookie')
-          ElMessage.warning('Cookie 已失效，请重新获取')
+          ElMessage.warning('Cookie 已失效，请重新获取后覆盖')
         } else {
           ElMessage.error('导入失败: ' + msg)
         }

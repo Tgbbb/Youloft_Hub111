@@ -68,7 +68,7 @@ class TestCaseListSerializer(serializers.ModelSerializer):
         model = TestCase
         fields = [
             'id', 'title', 'description', 'preconditions', 'steps', 'expected_result',
-            'priority', 'test_type',
+            'priority', 'scene_type', 'test_type',
             'author', 'assignee', 'project', 'versions', 'function_module', 'execution_status', 'tags', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -105,7 +105,7 @@ class TestCaseCreateSerializer(serializers.ModelSerializer):
         model = TestCase
         fields = [
             'title', 'description', 'preconditions', 'steps', 'expected_result',
-            'priority', 'test_type', 'tags', 'project_id', 'version_ids', 'function_module_id'
+            'priority', 'scene_type', 'test_type', 'tags', 'project_id', 'version_ids', 'function_module_id'
         ]
 
     def create(self, validated_data):
@@ -141,7 +141,7 @@ class TestCaseUpdateSerializer(serializers.ModelSerializer):
         model = TestCase
         fields = [
             'title', 'description', 'preconditions', 'steps', 'expected_result',
-            'priority', 'test_type', 'tags', 'project_id', 'version_ids', 'function_module_id'
+            'priority', 'scene_type', 'test_type', 'tags', 'project_id', 'version_ids', 'function_module_id'
         ]
 
     def update(self, instance, validated_data):
