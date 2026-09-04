@@ -404,6 +404,11 @@ class ExecuteWithInstallPackageTests(TestCase):
             package_name='com.example.test', version_name='1.0.0', version_code='1',
             file='midscene/packages/202608/test.apk', created_by=self.owner,
         )
+        self.pkg_ios = MidsceneAppPackage.objects.create(
+            name='iOS测试包', platform='ios',
+            package_name='com.example.ios', version_name='1.0.0', version_code='1',
+            file='midscene/packages/202608/app.ipa', created_by=self.owner,
+        )
         self.client = APIClient()
         self.client.force_authenticate(self.owner)
         self.delay_patcher = mock.patch(
@@ -423,7 +428,8 @@ class ExecuteWithInstallPackageTests(TestCase):
         self.delay.assert_called_once()
         self.assertEqual(self.delay.call_args.kwargs['install_package_id'], self.pkg.id)
 
-    def test_execute_ios_device_with_package_failed(self):
+    def test_execute_platform_mismatch_package_failed(self):
+        # android 包 + ios 设备：包平台与设备平台不一致，该设备带 error 不创建
         resp = self.client.post(
             f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
             {'devices': [self.device_ios.id], 'install_package_id': self.pkg.id},
@@ -432,8 +438,20 @@ class ExecuteWithInstallPackageTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(resp.data['executions'], [])
         self.assertEqual(len(resp.data['failed']), 1)
-        self.assertIn('iOS', resp.data['failed'][0]['error'])
+        self.assertIn('不匹配', resp.data['failed'][0]['error'])
         self.delay.assert_not_called()
+
+    def test_execute_ios_package_on_ios_device_success(self):
+        resp = self.client.post(
+            f'/api/ui-automation/midscene/cases/{self.case.id}/execute/',
+            {'devices': [self.device_ios.id], 'install_package_id': self.pkg_ios.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(len(resp.data['executions']), 1)
+        self.assertEqual(resp.data['failed'], [])
+        self.delay.assert_called_once()
+        self.assertEqual(self.delay.call_args.kwargs['install_package_id'], self.pkg_ios.id)
 
     def test_execute_install_package_not_found(self):
         resp = self.client.post(

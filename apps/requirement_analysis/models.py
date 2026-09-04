@@ -5,6 +5,7 @@ from apps.users.models import User
 from apps.projects.models import Project
 import json
 import os
+import re
 import httpx
 import asyncio
 from typing import Dict, Any, List, AsyncIterator
@@ -151,6 +152,39 @@ _MODAO_ACTIVE_CID_JS = '''() => {
     if (!active) return null;
     const li = active.closest('li');
     return li ? (li.getAttribute('data-cid') || null) : null;
+}'''
+
+# 提取每个画布所属文件夹/分组完整路径（按左侧树层级），供前端按文件夹整组选择。
+# 画布 data-interactive-target-type=6；文件夹节点的 target-type 为空（非页面）。
+# 沿祖先链收集所有"非页面"文件夹名，从外层到内层拼成 '/'-分隔的路径（如 首页板块/首页）。
+# 父页面(target-type=6)是画布不算文件夹，其子页面会继续向上归入真正的文件夹；未分组则 folder 为空。
+_MODAO_CANVAS_FOLDERS_JS = '''() => {
+    const rows = [];
+    const ttOf = (li) => {
+        const n = li.querySelector('[data-interactive-target-type]');
+        return n ? n.getAttribute('data-interactive-target-type') : '';
+    };
+    const nameOf = (li) => {
+        const n = li.querySelector('.editable-span');
+        return n ? n.innerText.trim() : '';
+    };
+    for (const li of document.querySelectorAll('li.rn-content-item')) {
+        if (ttOf(li) !== '6') continue;
+        const cid = li.getAttribute('data-cid');
+        if (!cid) continue;
+        const path = [];
+        let cur = li.parentElement;
+        while (cur) {
+            const g = cur.closest('li.rn-content-item');
+            if (!g) break;
+            const tt = ttOf(g);
+            const nm = nameOf(g);
+            if (tt !== '6' && nm) path.unshift(nm);
+            cur = g.parentElement;
+        }
+        rows.push({ cid, folder: path.join('/') });
+    }
+    return rows;
 }'''
 
 # 提取当前画布内可见文本（DOM innerText，不受截图压缩影响）。
@@ -444,6 +478,7 @@ class AIModelConfig(models.Model):
         ('clarifier', '需求澄清专家'),
         ('reviser', '用例改进专家'),
         ('extractor', '需求文档提取专家'),
+        ('smoke_generate', '冒烟流程生成专家'),
         ('browser_use_text', 'Browser Use - 文本模式'),
         ('app_automation_vision', 'APP自动化-VLM视觉模型'),
     ]
@@ -495,6 +530,7 @@ class PromptConfig(models.Model):
         ('clarifier', '需求澄清提示词'),
         ('reviser', '用例改进提示词'),
         ('extractor', '需求文档提取提示词'),
+        ('smoke_generate', '冒烟流程生成提示词'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='配置名称')
@@ -722,6 +758,11 @@ class TestCaseGenerationTask(models.Model):
         verbose_name='页面图片Base64数据',
         help_text='PDF各页面渲染后的Base64图片数据 [{"page": 1, "data": "...", "media_type": "image/jpeg"}]'
     )
+    modao_canvas_snapshot = models.JSONField(
+        null=True, blank=True,
+        verbose_name='墨刀画布快照',
+        help_text='从墨刀生成用例时记录用到的画布 [{name, screenshot_url, texts, folder, width, height}]，用于冒烟用例生成，不被完成清理'
+    )
     saved_at = models.DateTimeField(null=True, blank=True, verbose_name='保存到记录时间')
 
     class Meta:
@@ -732,6 +773,71 @@ class TestCaseGenerationTask(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.get_status_display()}"
+
+
+SMOKE_GENERATE_DEFAULT_PROMPT = """你是资深测试工程师，专写“冒烟测试用例”。你的产出只有一条：一条连贯、可执行、正向主流程的冒烟用例，覆盖给定需求/模块/画布中的关键页面与核心操作。
+
+输入说明（墨刀原型 + 截图 + 画布文本）：
+本次输入来自墨刀原型图，包含画布截图、每张画布对应的提取文本（正文文字 + 产品批注）与澄清问答。以截图可见内容为准；截图字小/模糊/长规则文字块可结合提取文本核对，两者冲突以截图为准。画布正文文字混有界面文案与需求规则，请区分：界面文案用于「预期结果」引用，需求规则用于决定步骤顺序；产品批注通常包含需求规则。
+
+写作要求：
+1. 只输出一条用例标题：`{应用/模板名}{版本号}冒烟用例`（版本号从需求/画布标题里能识别到的 `v数字.数字.数字` 提取，没有就省略）。
+2. 不要输出前置条件块、不要写「前置条件：…」、不要为步骤或模块单独起标题/小标题。
+3. 步骤从 1 开始连续编号，每一步=一个可执行的单个操作（点击/输入/滑动/进入设置/返回App/等待等），按真实操作顺序串联，保证上一步做完下一步能直接接着做；不要跳序、不要把多个操作并成一步、不要用“然后”等模糊词。
+4. 预期：每步一条、与步骤一一对应（第N步→第N条预期），写清页面跳转/弹窗/状态/展示内容等可验证结果，不要空。
+5. 只覆盖正向主流程（入口→核心功能→完成/返回/上报），不铺开异常/边界/权限的逆用例；系统/设备级配置步骤（进设置开权限→返回App）仅保留跑通所必需的。步骤聚焦「一口气跑通主流程」所必需，不要穷尽每个功能点，避免步骤过长；入口与结尾省略不必要细节。
+6. 若覆盖多个模块，按“入口→核心功能→返回/汇总”的自然路径串联，模块间尽量连续，不要硬拼；没有明确先后的取最能一口气跑通主流程的顺序。
+7. 输出格式（严格）：
+   第一行：`用例标题：xxx`
+   然后输出表格，表头 `|编号|步骤|预期|`，分隔线 `|---|---|---|`，之后逐行输出步骤。
+   不要输出任何其它说明文字。"""
+
+
+class SmokeCase(models.Model):
+    """冒烟测试用例记录"""
+    STATUS_CHOICES = [
+        ('generating', '生成中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+    ]
+    SOURCE_TYPE_CHOICES = [
+        ('modao', '墨刀导入'),
+        ('task', '生成任务'),
+        ('manual', '手动'),
+    ]
+    title = models.CharField(max_length=300, verbose_name='用例标题')
+    module_names = models.JSONField(default=list, blank=True, verbose_name='模块列表')
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default='modao', verbose_name='来源类型')
+    source_ref = models.CharField(max_length=100, blank=True, default='', verbose_name='来源引用')
+    modules_snapshot = models.JSONField(
+        default=list, blank=True,
+        verbose_name='模块画布快照',
+        help_text='[{name, canvases:[{name, screenshot_url, texts, folder, width, height}]}]，供重新生成'
+    )
+    steps = models.JSONField(
+        default=list, blank=True,
+        verbose_name='步骤',
+        help_text='[{no, step, expected}]'
+    )
+    preconditions = models.CharField(max_length=500, blank=True, default='', verbose_name='前置条件')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='generating', verbose_name='状态')
+    progress = models.IntegerField(default=0, verbose_name='进度(0-100)')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='smoke_cases', verbose_name='关联项目')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='smoke_cases', verbose_name='创建者')
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    merged_from_ids = models.JSONField(default=list, blank=True, verbose_name='合并来源记录id')
+
+    class Meta:
+        db_table = 'smoke_cases'
+        verbose_name = '冒烟测试用例'
+        verbose_name_plural = '冒烟测试用例'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.title
 
 
 def _resolve_screenshot_url_to_data(img):
@@ -866,10 +972,12 @@ def _canvas_text_block(img, fallback_index=None):
     texts = img.get('texts') or []
     if not texts:
         return None
-    label = f'画布{img.get("page") or fallback_index or "?"}'
+    page_num = img.get('page') or fallback_index or '?'
     name = (img.get('name') or '').strip()
     if name:
-        label += f'《{name}》'
+        label = f'《{name}》(画布{page_num})'
+    else:
+        label = f'画布{page_num}'
 
     def _fmt_list(items):
         return '\n'.join(f'- {t}' for t in items)
@@ -1685,7 +1793,9 @@ class AIModelService:
             f"{kb_block}"
             f"【文档文本内容】\n{requirement_text}\n\n"
             f"⚠️ 最后提醒：只对上述需求文档和截图中实际出现的内容提问；"
-            f"背景知识仅供理解术语，不作为提问来源。"
+            f"背景知识仅供理解术语，不作为提问来源。\n"
+            f"引用画布时请优先使用画布名称（如《安卓同步说明》），不要用画布序号；"
+            f"仅在画布无名称时才用『画布N』。"
         )
         content_blocks.append({"type": "text", "text": text_content})
 
@@ -2019,7 +2129,8 @@ class AIModelService:
                     "1. 用例引用的页面、按钮、输入框、文案、跳转是否真实存在于对应截图；不存在的记为问题。\n"
                     "2. 截图中有明显主流程/入口但用例未覆盖的，记为覆盖率问题。\n"
                     "3. DOM 提取文本分画布正文与产品批注两组，正文未按语义分类，"
-                    "仅作辅助核对；批注同样可能包含需求规则。文字与截图冲突时以截图为准。"
+                    "仅作辅助核对；批注同样可能包含需求规则。文字与截图冲突时以截图为准。\n"
+                    "4. 核对结果引用画布时请使用画布名称（如《安卓同步说明》），不要用画布序号。"
                 )
             })
             messages = [
@@ -2096,37 +2207,21 @@ class AIModelService:
             f"【原始测试用例】\n{original_test_cases}\n\n"
             f"【评审意见】\n{review_feedback}\n\n"
             f"【改进要求】\n"
-            f"1. 严格根据评审意见指出的问题进行修改\n"
-            f"2. 补充缺失的测试场景\n"
-            f"3. 修正不合理的预期结果\n"
-            f"4. 删除冗余的测试用例\n"
-            f"5. 保持测试用例的格式规范\n"
-            f"6. **加粗标记规则（必须严格执行）**：\n"
-            f"   **6.1 新增测试用例**：对整个新增的测试用例进行加粗\n"
-            f"   - 示例：**TC-004 测试用例标题**\\n**测试步骤：**\\n**1. 步骤内容**\\n**预期结果：**\\n**2. 预期内容**\n"
-            f"   - 注意：新增用例的编号、标题、步骤、预期结果等所有内容都要加粗\n"
-            f"   **6.2 修改现有用例**：只对被修改的具体部分进行加粗\n"
-            f"   - 修改标题：**TC-001 修改后的新标题**（其他内容保持原样）\n"
-            f"   - 修改步骤：1. 原步骤\\n2. **修改后的步骤内容**（只有步骤2加粗）\n"
-            f"   - 修改预期结果：预期结果：**修改后的预期内容**（只有预期内容加粗）\n"
-            f"   - 新增步骤：1. 原步骤\\n**2. 新增的步骤内容**（新增的步骤整体加粗）\n"
-            f"   **6.3 注意事项**：\n"
-            f"   - 未修改的部分不要加粗\n"
-            f"   - 原始测试用例中已经存在的用例，如果没有改动就不要加粗\n"
-            f"   - 只有根据评审意见新增或修改的部分才需要加粗\n"
-            f"7. **⚠️ 输出顺序要求（必须严格执行）**：\n"
-            f"   - **必须按用例编号从小到大的顺序输出**（如：001, 002, 003...或LOGIN_001, LOGIN_002, LOGIN_003...）\n"
-            f"   - **绝对不能跳号、重复或乱序输出**\n"
-            f"   - **编号必须连续，中间不能有遗漏**\n"
-            f"   - **所有用例必须一次性完整输出，不能中断**\n"
-            f"8. **必须输出完整**：请确保输出所有改进后的测试用例，不要因为篇幅原因省略任何用例，"
-            f"即使是第30条、第40条甚至更多的用例，也必须完整输出。\n"
-            f"9. **测试用例编号规则**：新增的测试用例必须按照原有编号规则继续编号（例如原最后一个用例是TC-003，新增的第一个用例应该是TC-004），"
-            f"绝不能使用'新增'、'用例1'等作为编号，必须是正式的测试用例编号。\n"
-            rf"10. **⚠️ 特殊字符处理（关键）**：\n"
-            rf"   - **表格分隔符 '|' 必须保留**，不要在表格结构上做任何替换。\n"
-            rf"   - 如果单元格内容中包含管道符，请使用反斜杠转义 '\\|'。\n\n"
-            f"请直接输出改进后的完整测试用例，不要包含任何说明性文字。"
+            f"1. 严格根据评审意见指出的问题进行修改，评审未提及的用例保持原样。\n"
+            f"2. 补充评审指出的缺失场景。\n"
+            f"3. 修正不合理或模糊的预期结果，改为具体、可验证的描述。\n"
+            f"4. 删除评审指出的冗余或重复用例。\n"
+            f"5. 补充不足的前置条件。\n"
+            f"6. 保持与原始用例相同的表格结构和列顺序，完整保留'场景类型'列（主流程/异常/边界/权限/风险）。\n"
+            f"7. 新增用例也必须标注场景类型；主流程类用例优先级为 P0。\n\n"
+            f"【输出格式要求】\n"
+            f"- 只输出一张用 '|' 分隔的 Markdown 表格，分隔行用 |---|---|，列结构、列顺序与原始用例一致。\n"
+            f"- 字符 '|' 仅作为表格列分隔符，请勿替换为 '&#124;' 或其它字符。\n"
+            f"- 若某个单元格内容本身包含竖线，请用反斜杠转义为 '\\|'。\n"
+            f"- 表格单元格内只放纯文本，不要使用加粗/斜体/下划线等 Markdown 装饰。\n"
+            f"- 用例编号保持唯一，按编号从小到大顺序输出；删除用例后允许编号空缺，无需手动重排（系统会自动统一编号）。\n"
+            f"- 不要新增与评审意见无关的用例。\n"
+            f"- 请一次性输出改进后的完整用例表格，只输出表格本身，不要输出表格之外的说明文字。"
         )
 
         messages = [
@@ -2245,7 +2340,8 @@ class AIModelService:
                 "· 严格按 System Prompt 指定的 Markdown 表格格式输出："
                 "第一行必须是表头 |用例ID|测试目标|前置条件|操作步骤|预期结果|优先级|场景类型|...|，"
                 "第二行必须是分隔线 |---|---|---|，"
-                "然后再逐行输出用例数据，不可跳过表头直接输出数据"
+                "然后再逐行输出用例数据，不可跳过表头直接输出数据\n"
+                "· 引用画布/页面时使用画布名称（如《安卓同步说明》），不要用画布序号；仅画布无名称时才用『画布N』。"
             )
         })
 
@@ -2279,9 +2375,10 @@ class AIModelService:
             )
 
         # 构建多模态消息：screenshot_url 引用在此临时解析为 base64（不落库）
+        image_items = task.page_images_base64 or task.modao_canvas_snapshot or []
         page_images = []
         missing = 0
-        for img in (task.page_images_base64 or []):
+        for img in image_items:
             resolved = _resolve_screenshot_url_to_data(img)
             if resolved:
                 page_images.append(resolved)
@@ -2292,7 +2389,7 @@ class AIModelService:
         if missing:
             logger.warning(
                 f"[generate_test_cases_multimodal] {missing} 张截图缺失，已跳过"
-                f"（共 {len(task.page_images_base64 or [])} 张）"
+                f"（共 {len(image_items)} 张）"
             )
         messages = AIModelService.build_multimodal_messages(
             task.requirement_text,
@@ -2498,6 +2595,116 @@ class AIModelService:
         return test_cases_content
 
     @staticmethod
+    async def generate_smoke_case(canvases, requirement_text, clarification_answers, config, prompt, default_title=''):
+        """生成一条连贯正向流程冒烟用例。
+
+        canvases: [{name, screenshot_url, texts, folder, width, height}]
+        requirement_text: 需求/模块文本
+        clarification_answers: [{question, answer}]
+        config/prompt: 模型配置与提示词（smoke_generate，缺省回退 writer+内置默认）
+        returns: {title, preconditions, steps:[{no, step, expected}]}
+        """
+        if not config:
+            raise ValueError('未找到可用的冒烟生成模型配置')
+        if not config.supports_vision:
+            raise ValueError(
+                f'模型 {config.model_name} 不支持多模态视觉，无法生成冒烟用例，'
+                f'请在模型配置勾选「支持多模态」后重试')
+
+        page_images = []
+        missing = 0
+        for i, c in enumerate(canvases or []):
+            if not isinstance(c, dict):
+                continue
+            resolved = _resolve_screenshot_url_to_data(c)
+            if resolved:
+                resolved.setdefault('name', c.get('name') or '')
+                resolved.setdefault('texts', c.get('texts') or [])
+                if not resolved.get('page'):
+                    resolved['page'] = i + 1
+                page_images.append(resolved)
+            else:
+                missing += 1
+        if not page_images:
+            raise ValueError('没有可用的画布截图，无法生成冒烟用例')
+        if missing:
+            logger.warning(f"[generate_smoke_case] {missing} 张截图缺失，已跳过")
+
+        content_blocks = []
+        header = f"请为以下需求生成一条冒烟测试用例，严格按 System 提示词格式输出。\n\n【需求文本】\n{requirement_text or ''}"
+        if clarification_answers:
+            has = [a for a in clarification_answers if (a.get('answer') or '').strip()]
+            logger.info(
+                f"[generate_smoke_case] 澄清回答 {len(clarification_answers)} 条（有内容 {len(has)} 条）")
+            lines = []
+            for a in clarification_answers:
+                q = a.get('question', '') or ''
+                ans = a.get('answer', '') or ''
+                if ans.strip():
+                    lines.append(f"Q: {q}\nA: {ans}")
+            if lines:
+                header += "\n\n【需求澄清确认】\n" + "\n\n".join(lines)
+        content_blocks.append({"type": "text", "text": header})
+        for img in page_images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"},
+            })
+            canvas_text_block = _canvas_text_block(img)
+            if canvas_text_block:
+                content_blocks.append(canvas_text_block)
+        content_blocks.append({
+            "type": "text",
+            "text": (
+                "\n\n请优先按截图实际可点击顺序串联成一条可执行的正向流程，"
+                "只输出 `用例标题：xxx` + 三列表格 `|编号|步骤|预期|`。"
+            )
+        })
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": content_blocks},
+        ]
+        response = await AIModelService.call_openai_compatible_api(config, messages)
+        content = response.get('choices', [{}])[0].get('message', {}).get('content', '') or ''
+        return AIModelService._parse_smoke_case(content, default_title)
+
+    @staticmethod
+    def _parse_smoke_case(content, default_title=''):
+        """解析模型返回的冒烟用例 markdown（用例标题 + |编号|步骤|预期| 表格）。"""
+        text = (content or '').strip()
+        title = ''
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith('用例标题：'):
+                title = s[len('用例标题：'):].strip()
+                break
+        if not title:
+            title = default_title or '冒烟测试用例'
+
+        steps = []
+        in_table = False
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                if in_table:
+                    break
+                continue
+            if s.startswith('|') and ('编号' in s or '步骤' in s):
+                in_table = True
+                continue
+            if in_table and s.startswith('|') and s.count('|') >= 3:
+                cells = [c.strip() for c in s.strip('|').split('|')]
+                # 分隔线跳过
+                if cells and all((not c) or set(c) <= {'-', ' '} for c in cells):
+                    continue
+                if len(cells) >= 3:
+                    steps.append({
+                        'no': cells[0],
+                        'step': cells[1],
+                        'expected': cells[2],
+                    })
+        return {'title': title, 'preconditions': '', 'steps': steps}
+
     def renumber_test_cases(test_cases_content: str) -> str:
         """
         重新编号测试用例，使其编号连续
@@ -2535,7 +2742,7 @@ class AIModelService:
         first_data_index = -1
         for i in range(separator_index + 1, len(lines)):
             line = lines[i]
-            if line.strip().startswith('|') and line.count('|') == column_count:
+            if line.strip().startswith('|') and len(line.split('|')) >= 2:
                 first_data_index = i
                 break
 
@@ -2553,16 +2760,15 @@ class AIModelService:
         # 获取第一列的编号（例如：IMMSG001）
         first_id = parts[1].strip()
 
-        # 提取编号格式前缀（例如：IMMSG）
-        id_match = re.match(r'^([A-Z]+)(\d+)$', first_id)
+        # 提取编号格式前缀与分隔符（例如：IMMSG001 / ABOUT_001 / TC-001）
+        id_match = re.match(r'^([A-Za-z0-9]+)([-_])?(\d+)$', first_id)
         if not id_match:
             logger.warning(f"无法识别编号格式: {first_id}")
             return test_cases_content
 
-        prefix = id_match.group(1)  # 例如：IMMSG
-        total_cases = 0
-
-        # 重新编号所有数据行
+        # 按前缀分组，组内连续编号，保留各模块前缀与分隔符（SCENE_002 会归入 SCENE 组内连续编号）
+        import collections
+        counters = collections.OrderedDict()
         result_lines = lines[:first_data_index]
         i = first_data_index
 
@@ -2571,35 +2777,35 @@ class AIModelService:
 
             # 检查是否是数据行
             if not line.strip().startswith('|'):
-                # 不是表格行，添加并继续
                 result_lines.append(line)
                 i += 1
                 continue
 
-            # 检查列数是否正确
-            if line.count('|') != column_count:
-                # 列数不对，可能是空行或其他内容
-                result_lines.append(line)
-                i += 1
-                continue
-
-            # 这是一个数据行，重新编号
-            total_cases += 1
-            new_id = f"{prefix}{total_cases:03d}"  # 格式：IMMSG001
-
-            # 替换第一列的编号，保持原有格式
             parts = line.split('|')
-            if len(parts) >= 2:
-                # 保持第一列（空）和第二列（编号）之间的空格
-                # 只替换编号部分
-                parts[1] = f" {new_id} "
-                new_line = '|'.join(parts)
-                result_lines.append(new_line)
+            if len(parts) < 2:
+                result_lines.append(line)
+                i += 1
+                continue
 
+            raw_id = parts[1].strip()
+            m = re.match(r'^([A-Za-z0-9]+)([-_])?(\d+)', raw_id)
+            if not m:
+                # 无法识别的编号原样保留
+                result_lines.append(line)
+                i += 1
+                continue
+
+            pf = m.group(1)
+            sp = m.group(2) or ''
+            counters[pf] = counters.get(pf, 0) + 1
+            new_id = f"{pf}{sp}{counters[pf]:03d}"
+            parts[1] = f" {new_id} "
+            result_lines.append('|'.join(parts))
             i += 1
 
         renumbered_content = '\n'.join(result_lines)
-        logger.info(f"重新编号完成: 共{total_cases}条测试用例，编号范围: {prefix}001-{prefix}{total_cases:03d}")
+        logger.info(
+            f"重新编号完成: 共{sum(counters.values())}条，分组编号 {dict(counters)}")
 
         return renumbered_content
 
@@ -2732,6 +2938,19 @@ class AIModelService:
             if canvas_count == 0:
                 await browser.close()
                 raise Exception('Cookie已失效或页面无权限：未找到画布，请检查Cookie是否正确（F12→Network→请求头→Cookie整行复制）')
+
+            # 提取每个画布所属文件夹/分组名（按左侧树层级），供前端按文件夹整组勾选。
+            # 失败则降级为未分组，不影响导入。
+            canvas_folders = {}
+            try:
+                await page.evaluate(_MODAO_EXPAND_ALL_JS)
+                await page.wait_for_timeout(300)
+                for row in (await page.evaluate(_MODAO_CANVAS_FOLDERS_JS) or []):
+                    if row.get('cid'):
+                        canvas_folders[row['cid']] = row.get('folder') or ''
+                logger.info(f'[Modao] 已提取文件夹分组: {len(canvas_folders)} 个画布')
+            except Exception as e:
+                logger.warning(f'[Modao] 文件夹提取失败，降级为未分组: {e}')
 
             async def _locate_canvas_item(cid):
                 for it in await page.query_selector_all('li.rn-content-item'):
@@ -3057,6 +3276,7 @@ class AIModelService:
                         'width': w,
                         'height': h,
                         'texts': canvas_texts,
+                        'folder': canvas_folders.get(cid, ''),
                     })
                     logger.info(f'[Modao] 画布 {i+1}/{canvas_count}: {name} ({w}×{h}) → {screenshot_url}')
                     report(f'{name} 截图完成 ({w}×{h})', current=i + 1, total=canvas_count, stage='canvas',

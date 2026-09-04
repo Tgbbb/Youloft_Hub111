@@ -12,9 +12,9 @@
         <span v-else class="ag-zone__code">{{ testcase?.id || '' }}</span>
       </header>
       <div class="ag-head">
+        <button class="ag-btn ag-head__back" @click="goBackToList">← {{ $t('common.back') }}</button>
         <h1 class="ag-head__title">{{ $t('testcase.detail') }}</h1>
         <div class="ag-head__actions">
-          <button class="ag-btn ag-btn--ghost" @click="goBackToList">← {{ $t('common.back') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="copyTestCase">{{ $t('testcase.copyCase') }}</button>
           <button class="ag-btn ag-btn--danger" :disabled="deleting" @click="deleteTestCase">✕ {{ $t('common.delete') }}</button>
           <button class="ag-btn ag-btn--ok" @click="editTestCase">{{ $t('common.edit') }}</button>
@@ -90,6 +90,13 @@
               <div class="ag-meta__row">
                 <label>{{ $t('testcase.priority') }}</label>
                 <span><span class="ag-badge" :class="'ag-badge--' + testcase.priority">{{ getPriorityText(testcase.priority) }}</span></span>
+              </div>
+              <div class="ag-meta__row">
+                <label>场景类型</label>
+                <span>
+                  <span v-if="testcase.scene_type" class="ag-tag">{{ getSceneTypeText(testcase.scene_type) }}</span>
+                  <span v-else class="ag-muted">—</span>
+                </span>
               </div>
               <div class="ag-meta__row">
                 <label>{{ $t('testcase.testType') }}</label>
@@ -279,6 +286,11 @@ const getPriorityText = (priority) => {
   return textMap[priority] || priority
 }
 
+const getSceneTypeText = (sceneType) => {
+  const textMap = { main_flow: '主流程', exception: '异常', boundary: '边界', permission: '权限', risk: '风险' }
+  return textMap[sceneType] || sceneType || '—'
+}
+
 const getTypeText = (type) => {
   const textMap = { functional: t('testcase.functional'), integration: t('testcase.integration'), api: t('testcase.api'), ui: t('testcase.ui'), performance: t('testcase.performance'), security: t('testcase.security') }
   return textMap[type] || '-'
@@ -357,6 +369,10 @@ watch(() => route.params.id, () => { fetchTestCase() })
 .ag-head {
   display: flex; justify-content: space-between; align-items: flex-end; gap: 20px;
   padding: 16px 20px 20px;
+  &__back {
+    flex-shrink: 0; align-self: flex-start; margin-right: 6px; margin-bottom: 4px;
+    background: #eef0ed; border-color: #b7bab7; color: #222;
+  }
   &__title {
     margin: 0; font-size: 24px; font-weight: 900; color: var(--ark-ink); line-height: 1.3;
     &::before {
@@ -518,10 +534,10 @@ watch(() => route.params.id, () => { fetchTestCase() })
   display: inline-block; padding: 3px 10px; font-size: 10px;
   font-family: "Space Grotesk", system-ui, sans-serif;
   text-transform: uppercase; letter-spacing: .1em; font-weight: 600; border: 1px solid;
-  &--low { color: #0f8a5c; background: #e6f7f0; border-color: #9edfc2; }
-  &--medium { color: #7d6a16; background: #fdf7e4; border-color: #e0d29a; }
-  &--high { color: #a04030; background: #fbeef0; border-color: #ecc0c0; }
-  &--critical { color: #fff; background: var(--ark-ink); border-color: var(--ark-ink); }
+  &--low { color: #0f8a5c !important; background: #e6f7f0; border-color: #9edfc2; }
+  &--medium { color: #7d6a16 !important; background: #fdf7e4; border-color: #e0d29a; }
+  &--high { color: #a04030 !important; background: #fbeef0; border-color: #ecc0c0; }
+  &--critical { color: #fff !important; background: var(--ark-ink); border-color: var(--ark-ink); }
 }
 .ag-tag {
   display: inline-block; padding: 2px 10px; font-size: 11px;

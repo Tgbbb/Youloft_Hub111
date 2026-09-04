@@ -310,14 +310,21 @@ class MidsceneGlobalConfigSerializer(serializers.ModelSerializer):
 class MidsceneSequenceItemSerializer(serializers.ModelSerializer):
     """编排项（读）。"""
     case_name = serializers.SerializerMethodField()
+    install_package_name = serializers.SerializerMethodField()
 
     class Meta:
         model = MidsceneSequenceItem
         fields = ['id', 'order', 'case', 'case_name', 'clear_relaunch', 'break_on_fail',
-                  'replay_mode', 'replay_index']
+                  'replay_mode', 'replay_index', 'install_package_id', 'install_package_name']
 
     def get_case_name(self, obj):
         return obj.case.name if obj.case else ''
+
+    def get_install_package_name(self, obj):
+        if not obj.install_package:
+            return ''
+        pkg = obj.install_package
+        return f"{pkg.name or pkg.package_name} ({pkg.get_platform_display()})"
 
 
 class MidsceneSequenceItemWriteSerializer(serializers.Serializer):
@@ -327,10 +334,18 @@ class MidsceneSequenceItemWriteSerializer(serializers.Serializer):
     break_on_fail = serializers.BooleanField(required=False, default=True)
     replay_mode = serializers.ChoiceField(choices=['auto', 'fixed'], required=False, default='auto')
     replay_index = serializers.IntegerField(required=False, default=0)
+    install_package_id = serializers.IntegerField(required=False, allow_null=True, default=None)
 
     def validate_case_id(self, value):
         if not MidsceneCase.objects.filter(id=value).exists():
             raise serializers.ValidationError('用例不存在')
+        return value
+
+    def validate_install_package_id(self, value):
+        if value is None:
+            return value
+        if not MidsceneAppPackage.objects.filter(id=value).exists():
+            raise serializers.ValidationError('安装包不存在或已被删除')
         return value
 
 
@@ -396,6 +411,7 @@ class MidsceneSequenceCreateSerializer(serializers.ModelSerializer):
                 break_on_fail=it.get('break_on_fail', True),
                 replay_mode=it.get('replay_mode', 'auto'),
                 replay_index=it.get('replay_index', 0),
+                install_package_id=it.get('install_package_id'),
             )
 
     def create(self, validated_data):

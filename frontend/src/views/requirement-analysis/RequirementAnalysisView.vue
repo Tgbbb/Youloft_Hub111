@@ -1,5 +1,12 @@
 <template>
   <div class="ef-root" data-ark-theme="endfield" data-ark-depth="moderate">
+    <div
+      class="app-loading-mask"
+      style="position:fixed;inset:0;z-index:9999;background:rgba(8,10,14,.72);display:flex;align-items:center;justify-content:center;"
+      v-if="isGenerating || isGeneratingSmoke"
+    >
+      <MsLoading size="lg" :label="isGeneratingSmoke ? '生成冒烟用例中' : '生成中'" />
+    </div>
     <div class="ef-grid" aria-hidden="true"></div>
 
     <!-- ======== Config Guide Modal ======== -->
@@ -110,10 +117,11 @@
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'modao' }" @click="manualTab = 'modao'">墨刀</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'input' }" @click="manualTab = 'input'">手动</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'doc' }" @click="manualTab = 'doc'">文档上传</button>
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'smoke' }" @click="manualTab = 'smoke'">冒烟用例</button>
           </div>
 
           <!-- Modao -->
-          <div v-if="manualTab === 'modao'" class="ef-tab-body">
+          <div v-if="manualTab === 'modao' || manualTab === 'smoke'" class="ef-tab-body">
             <div v-if="modaoHistory.length > 0" class="ef-history">
               <span class="ef-history__label">历史</span>
               <span v-for="(h, i) in modaoHistory" :key="i" class="ef-history-pill">
@@ -124,7 +132,12 @@
             <div class="ef-fields">
               <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
               <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
-              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label><select v-model="manualInput.selectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select v-model="manualInput.selectedModuleId" class="ef-select" style="flex:1"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select>
+                  <button class="ef-btn ef-btn--text" @click="quickAddModule('manual')">+ 新增</button>
+                </div>
+              </div>
             </div>
             <div class="ef-fields">
               <div class="ef-field ef-field--wide"><label>墨刀链接</label><input v-model="modaoUrl" class="ef-input" placeholder="https://modao.cc/proto/..." /></div>
@@ -132,7 +145,11 @@
             </div>
             <div class="ef-actions">
               <button class="ef-btn ef-btn--signal" @click="importFromModao" :disabled="isImportingModao || !modaoUrl || !modaoToken">{{ isImportingModao ? `导入中 ${_importProgress}%` : '从墨刀导入' }}</button>
-              <button v-if="modaoCanvases.length > 0" class="ef-btn ef-btn--dark" @click="generateFromModao" :disabled="isGenerating || selectedCanvasCount === 0">生成 ({{ selectedCanvasCount }})</button>
+              <button v-if="modaoCanvases.length > 0" class="ef-btn ef-btn--dark"
+                :disabled="(manualTab === 'smoke' ? isGeneratingSmoke : isGenerating) || selectedCanvasCount === 0"
+                @click="manualTab === 'smoke' ? generateSmokeFromModao() : generateFromModao()">
+                {{ manualTab === 'smoke' ? (isGeneratingSmoke ? '生成中…' : `生成冒烟用例 (${selectedCanvasCount})`) : ('生成 (' + selectedCanvasCount + ')') }}
+              </button>
             </div>
             <!-- 导入进度面板 -->
             <div v-if="isImportingModao" class="ef-import">
@@ -163,11 +180,42 @@
               </button>
             </div>
             <div v-if="modaoCanvases.length > 0" class="ef-canvases">
-              <div v-for="(c, i) in modaoCanvases" :key="i" class="ef-canvas" :class="{ 'is-on': c.selected }" @click="c.selected = !c.selected">
-                <span class="ef-canvas__check" v-if="c.selected">✓</span>
-                <span class="ef-canvas__n">{{ String(i + 1).padStart(2, '0') }}</span>
-                <span class="ef-canvas__name">{{ c.name }}</span>
+              <template v-for="row in canvasTree.rows" :key="row.type === 'folder' ? ('f-' + row.path) : ('c-' + cNum(row.c))">
+                <div v-if="row.type === 'folder'" class="ef-canvas-group__head" :class="'depth-' + row.depth">
+                  <span class="ef-canvas-group__expander" @click="toggleFolderExpanded(row.path)">
+                    <span>{{ row.expanded ? '▾' : '▸' }}</span>
+                  </span>
+                  <input type="checkbox" :checked="row.allSelected" @change="toggleFolderSelection(row.path)" />
+                  <span class="ef-canvas-group__name">{{ row.name }}（{{ row.count }}）</span>
+                </div>
+                <div
+                  v-else
+                  class="ef-canvas"
+                  :class="[{ 'is-on': row.c.selected }, depthCls(row.depth)]"
+                  @click="row.c.selected = !row.c.selected"
+                >
+                  <span class="ef-canvas__check" v-if="row.c.selected">✓</span>
+                  <span class="ef-canvas__n">{{ String(cNum(row.c)).padStart(2, '0') }}</span>
+                  <span class="ef-canvas__name">{{ row.c.name }}</span>
+                </div>
+              </template>
+            </div>
+            <!-- 冒烟用例结果 -->
+            <div v-if="manualTab === 'smoke' && smokeResult" class="ef-smoke">
+              <div class="ef-smoke__head">
+                <span class="ef-smoke__title">{{ smokeResult.title || '冒烟测试用例' }}</span>
+                <div class="ef-smoke__actions">
+                  <button class="ef-btn ef-btn--sm" @click="copySmokeResult">复制</button>
+                  <button class="ef-btn ef-btn--sm" @click="exportSmokeCsv">导出CSV</button>
+                  <button class="ef-btn ef-btn--sm" @click="goSmokeManage">到冒烟用例管理</button>
+                </div>
               </div>
+              <table class="ef-smoke__table">
+                <thead><tr><th>编号</th><th>步骤</th><th>预期</th></tr></thead>
+                <tbody>
+                  <tr v-for="s in (smokeResult.steps || [])" :key="s.no"><td>{{ s.no }}</td><td>{{ s.step }}</td><td>{{ s.expected }}</td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -182,7 +230,12 @@
             <div class="ef-fields">
               <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
               <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
-              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label><select v-model="manualInput.selectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select v-model="manualInput.selectedModuleId" class="ef-select" style="flex:1"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select>
+                  <button class="ef-btn ef-btn--text" @click="quickAddModule('manual')">+ 新增</button>
+                </div>
+              </div>
             </div>
             <div class="ef-actions">
               <button class="ef-btn ef-btn--signal" @click="generateFromManualInput" :disabled="!canGenerateManual || isGenerating">{{ isGenerating ? $t('requirementAnalysis.generating') : $t('requirementAnalysis.generateButton') }}</button>
@@ -215,7 +268,12 @@
               <div class="ef-field"><label>标题</label><input v-model="documentTitle" class="ef-input" /></div>
               <div class="ef-field"><label>项目</label><select v-model="selectedProject" class="ef-select" @change="onDocProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
               <div class="ef-field" v-show="selectedProject"><label>版本</label><select v-model="selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(selectedVersionIds, 'doc')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
-              <div class="ef-field" v-show="selectedVersionIds && selectedVersionIds.length > 0"><label>模块</label><select v-model="docSelectedModuleId" class="ef-select"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in docModules" :key="m.id" :value="m.id">{{ m.name }}</option></select></div>
+              <div class="ef-field" v-show="selectedVersionIds && selectedVersionIds.length > 0"><label>模块</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select v-model="docSelectedModuleId" class="ef-select" style="flex:1"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in docModules" :key="m.id" :value="m.id">{{ m.name }}</option></select>
+                  <button class="ef-btn ef-btn--text" @click="quickAddModule('doc')">+ 新增</button>
+                </div>
+              </div>
             </div>
             <div class="ef-actions" v-if="selectedFile">
               <label class="ef-check" v-if="isMultimodalFile"><input type="checkbox" v-model="enableMultimodal"><span>{{ $t('requirementAnalysis.enableMultimodal') }}</span></label>
@@ -262,7 +320,7 @@
           </div>
           <div class="ef-actions" v-if="!isClarifying">
             <button class="ef-btn ef-btn--signal" @click="confirmWithClarification">确认并生成</button>
-            <button class="ef-btn" @click="skipClarification">跳过，直接生成</button>
+            <button class="ef-btn" @click="skipClarification" style="display:none">跳过，直接生成</button>
           </div>
         </div>
       </div>
@@ -338,9 +396,11 @@ import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import { useUserStore } from '@/stores/user'
+import MsLoading from '@/components/MsLoading.vue'
 
 export default {
   name: 'RequirementAnalysisView',
+  components: { MsLoading },
   data() {
     return {
       // 全局输出模式设置
@@ -459,6 +519,10 @@ export default {
       _importStage: '',            // 当前阶段 prepare/login/list/canvas/done/failed
       _importDetail: null,         // 导入进度明细 {stage, message, current, total, canvases: []}
       _importPollTimer: null,      // 导入进度轮询定时器
+      expandedFolders: {},         // 文件夹展开状态 {path: bool}，缺省展开
+      smokeResult: null,           // 冒烟用例生成结果 {title, preconditions, steps}
+      isGeneratingSmoke: false,    // 冒烟用例生成中
+      smokeCaseId: null,           // 最近一次生成的冒烟用例记录ID
 
       // 需求澄清
       showClarificationPanel: false,  // 是否显示澄清面板
@@ -475,6 +539,54 @@ export default {
     versionModules() { return this.manualModules },
     selectedCanvasCount() {
       return this.modaoCanvases.filter(c => c.selected).length
+    },
+    canvasTree() {
+      // 按 folder 路径（如 首页板块/首页）构建层级树，再拍平为可渲染行
+      const tree = { children: {}, canvases: [] }
+      const ungrouped = []
+      for (const c of this.modaoCanvases) {
+        const parts = (c.folder || '').split('/').filter(p => p && p.trim())
+        if (!parts.length) { ungrouped.push(c); continue }
+        let node = tree
+        for (const seg of parts) {
+          if (!node.children[seg]) node.children[seg] = { name: seg, children: {}, canvases: [] }
+          node = node.children[seg]
+        }
+        node.canvases.push(c)
+      }
+      const toNodes = (node, parentPath) => {
+        const nodes = []
+        for (const name of Object.keys(node.children).sort((a, b) => a.localeCompare(b))) {
+          const child = node.children[name]
+          const path = parentPath ? parentPath + '/' + name : name
+          nodes.push({ name, path, canvases: child.canvases, children: toNodes(child, path) })
+        }
+        return nodes
+      }
+      const nodes = toNodes(tree, '')
+      if (ungrouped.length) nodes.push({ name: '未分组', path: '未分组', canvases: ungrouped, children: [] })
+
+      const allOf = (n) => {
+        let arr = n.canvases.slice()
+        for (const k of n.children) arr = arr.concat(allOf(k))
+        return arr
+      }
+      const folderMap = {}
+      const rows = []
+      const walk = (arr, depth) => {
+        for (const n of arr) {
+          const allc = allOf(n)
+          folderMap[n.path] = allc
+          const expanded = this.expandedFolders[n.path] !== false
+          rows.push({ type: 'folder', path: n.path, name: n.name, depth, count: allc.length, allSelected: allc.every(c => c.selected), expanded, hasChildren: n.children.length > 0 })
+          if (expanded) {
+            for (const c of n.canvases) rows.push({ type: 'canvas', c, depth: depth + 1 })
+            walk(n.children, depth + 1)
+          }
+        }
+      }
+      walk(nodes, 0)
+      return { rows, folderMap }
     },
     canGenerateManual() {
       return this.manualInput.title.trim() &&
@@ -914,6 +1026,37 @@ export default {
       const all = this.selectedCanvasCount === this.modaoCanvases.length
       this.modaoCanvases.forEach(c => c.selected = !all)
     },
+    toggleFolderSelection(path) {
+      const items = this.canvasTree.folderMap[path] || []
+      const allSelected = items.every(c => c.selected)
+      items.forEach(c => c.selected = !allSelected)
+    },
+    toggleFolderExpanded(path) {
+      this.expandedFolders[path] = this.expandedFolders[path] === false
+    },
+    collapseAllFolders() {
+      // 所有文件夹（含未分组）默认收起
+      this.expandedFolders = {}
+      const folders = new Set()
+      for (const c of this.modaoCanvases) {
+        const parts = (c.folder || '').split('/').filter(p => p && p.trim())
+        let cur = ''
+        for (const seg of parts) {
+          cur = cur ? cur + '/' + seg : seg
+          folders.add(cur)
+        }
+      }
+      for (const f of folders) this.expandedFolders[f] = false
+      if (this.modaoCanvases.some(c => !(c.folder || '').trim())) {
+        this.expandedFolders['未分组'] = false
+      }
+    },
+    cNum(c) {
+      return this.modaoCanvases.indexOf(c) + 1
+    },
+    depthCls(d) {
+      return 'depth-' + d
+    },
     toggleCanvasSelection(i) {
       this.modaoCanvases[i].selected = !this.modaoCanvases[i].selected
     },
@@ -962,6 +1105,7 @@ export default {
           name: c.name,
           texts: c.texts || [],
           screenshots: c.screenshots,
+          folder: c.folder || '',
         }))
         const pId = this.manualInput.selectedProject || this.selectedProject || null
         const vIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
@@ -1008,8 +1152,10 @@ export default {
           name: c.name,
           texts: c.texts || [],
           screenshots: c.screenshots || (c.screenshot_url ? [{ url: c.screenshot_url, width: c.width, height: c.height }] : []),
+          folder: c.folder || '',
           selected: true,
         }))
+        this.collapseAllFolders()
       } catch (e) { ElMessage.error('加载历史失败') }
     },
     async deleteModaoHistory(i) {
@@ -1079,8 +1225,10 @@ export default {
                 screenshots: (c.screenshot_url || c.screenshots)
                   ? (c.screenshots || [{ url: c.screenshot_url, width: c.width, height: c.height }])
                   : [],
+                folder: c.folder || '',
                 selected: true,
               }))
+              this.collapseAllFolders()
               this.modaoTitle = r.title || ''
               this._modaoHistoryId = r.id
               this._modaoImportId = r.data?.import_id || ''
@@ -1181,6 +1329,71 @@ export default {
       } finally {
         this.isClarifying = false
       }
+    },
+
+    async generateSmokeFromModao() {
+      if (this.isGeneratingSmoke) return
+      if (this.selectedCanvasCount === 0) { ElMessage.warning('请至少选择一个画布'); return }
+      const selected = this.modaoCanvases.filter(c => c.selected)
+      const canvases = selected.flatMap(c => {
+        const imgs = c.screenshots || (c.screenshot_url ? [{ url: c.screenshot_url, width: c.width, height: c.height }] : [])
+        return imgs.filter(s => s.url).map(s => ({
+          name: c.name,
+          screenshot_url: s.url,
+          texts: c.texts || [],
+          folder: c.folder || '',
+          width: s.width,
+          height: s.height,
+        }))
+      })
+      if (!canvases.length) { ElMessage.warning('所选画布没有截图'); return }
+      this.isGeneratingSmoke = true
+      try {
+        const { data } = await api.post('/requirement-analysis/testcase-generation/generate-smoke/', {
+          canvases,
+          requirement_text: this.modaoTitle || '墨刀需求',
+          default_title: this.modaoTitle || '',
+          project_id: this.manualInput.selectedProject || this.selectedProject || null,
+        }, { timeout: 300000 })
+        this.smokeResult = data
+        this.smokeCaseId = data.smoke_case_id || null
+        ElMessage.success('冒烟用例已生成')
+      } catch (e) {
+        ElMessage.error(e.response?.data?.error || '冒烟用例生成失败')
+      } finally {
+        this.isGeneratingSmoke = false
+      }
+    },
+    copySmokeResult() {
+      const r = this.smokeResult
+      if (!r) return
+      const steps = (r.steps || []).map(s => `${s.no}. ${s.step}`).join('\n')
+      const expects = (r.steps || []).map(s => `${s.no}. ${s.expected}`).join('\n')
+      const text = `用例标题：${r.title || ''}\n\n步骤：\n${steps}\n\n预期：\n${expects}`
+      if (navigator.clipboard) navigator.clipboard.writeText(text)
+      ElMessage.success('已复制')
+    },
+    goSmokeManage() {
+      this.$router.push('/ai-generation/smoke-test-cases')
+    },
+    exportSmokeCsv() {
+      const r = this.smokeResult
+      if (!r) return
+      const steps = (r.steps || []).map(s => `${s.no}. ${s.step}`).join('\n')
+      const expects = (r.steps || []).map(s => `${s.no}. ${s.expected}`).join('\n')
+      const header = ['用例标题', '前置条件', '步骤', '预期', '实际情况']
+      const row = [r.title || '', '', steps, expects, '']
+      const csv = '\ufeff' + [header, row]
+        .map(fields => fields.map(field => `"${String(field ?? '').replace(/"/g, '""')}"`).join(','))
+        .join('\n') + '\n'
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = (r.title || '冒烟测试用例') + '.csv'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
     },
 
     async extractDocument() {
@@ -2694,10 +2907,29 @@ export default {
 .ef-canvas-bar { display: flex; align-items: center; margin-bottom: 10px; }
 
 /* ======== Canvases ======== */
-.ef-canvases { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.ef-canvases { display: flex; flex-direction: column; gap: 6px; }
+.ef-smoke {
+  margin-top: 16px;
+  border: 1px solid var(--ef-border, #e4e4e0);
+  background: #fff;
+}
+.ef-smoke__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-bottom: 1px solid var(--ef-border, #e4e4e0);
+}
+.ef-smoke__title { font-size: 14px; font-weight: 600; }
+.ef-smoke__actions { display: flex; gap: 8px; }
+.ef-smoke__table { width: 100%; border-collapse: collapse; }
+.ef-smoke__table th, .ef-smoke__table td {
+  padding: 8px 12px; text-align: left; font-size: 12px;
+  border-bottom: 1px solid #f0f0ec; vertical-align: top;
+}
+.ef-smoke__table th { background: #fafaf8; font-weight: 600; }
+.ef-smoke__table td:first-child { width: 48px; }
+
 .ef-canvas {
-  cursor: pointer; display: block; max-width: 260px;
-  padding: 12px; background: #fff; border: 1px solid #e4e2dc;
+  cursor: pointer; display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: #fff; border: 1px solid #e4e2dc;
   transition: all .12s; position: relative;
   &:hover { border-color: #aaa; }
   &.is-on { border-color: var(--ef-ink); background: #fffef5; }
@@ -2711,8 +2943,26 @@ export default {
     text-transform: uppercase; letter-spacing: .08em; color: #b5b3ad;
     border: 1px dashed #e0ded8; margin-bottom: 8px; background: #fafaf8;
   }
-  &__name { font-size: 12px; color: #555; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  &__name { font-size: 12px; color: #555; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; flex: 1; }
 }
+
+.ef-canvas-group__head {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 6px; padding: 4px 2px;
+  font-size: 11px; font-weight: 700; color: #555;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: .06em;
+  input { cursor: pointer; }
+}
+.ef-canvas-group__expander {
+  cursor: pointer; width: 16px; text-align: center; color: #999; font-size: 12px; user-select: none;
+  &:hover { color: var(--ef-ink); }
+}
+.ef-canvas-group__name { color: #888; }
+
+.ef-canvases .depth-1 { margin-left: 16px; }
+.ef-canvases .depth-2 { margin-left: 32px; }
+.ef-canvases .depth-3 { margin-left: 48px; }
 
 /* ======== Modao import progress ======== */
 .ef-import {

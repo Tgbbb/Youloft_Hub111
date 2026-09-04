@@ -1,5 +1,12 @@
 <template>
   <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <div
+      class="app-loading-mask"
+      style="position:fixed;inset:0;z-index:9999;background:rgba(8,10,14,.72);display:flex;align-items:center;justify-content:center;"
+      v-if="isGeneratingSmoke || isBatchAdopting || isAdoptingCase"
+    >
+      <MsLoading size="lg" :label="isGeneratingSmoke ? '生成冒烟用例中' : '采纳中'" />
+    </div>
     <!-- Grid -->
     <div class="ag-grid" aria-hidden="true"></div>
 
@@ -20,6 +27,13 @@
         </div>
         <div class="ag-head__actions">
           <button
+            v-if="task.status === 'completed' && task.has_smoke_source"
+            class="ag-btn ag-btn--ok"
+            @click="generateSmokeFromTask"
+            :disabled="isGeneratingSmoke">
+            {{ isGeneratingSmoke ? '生成中…' : '生成冒烟用例' }}
+          </button>
+          <button
             v-if="testCases.length > 0"
             class="ag-btn ag-btn--ok"
             @click="exportToExcel"
@@ -27,6 +41,30 @@
             {{ isExporting ? $t('taskDetail.exporting') : $t('taskDetail.exportBtn') }}
           </button>
         </div>
+      </div>
+    </section>
+
+    <!-- ====== 冒烟用例结果 ====== -->
+    <section class="ag-zone ag-zone--smoke" v-if="smokeResult">
+      <div class="ag-smoke">
+        <div class="ag-smoke__head">
+          <span class="ag-smoke__title">{{ smokeResult.title || '冒烟测试用例' }}</span>
+          <div class="ag-smoke__actions">
+            <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="copySmokeResult">复制</button>
+            <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="exportSmokeCsv">导出CSV</button>
+            <button class="ag-btn ag-btn--sm ag-btn--ghost" @click="goSmokeManage">到冒烟用例管理</button>
+          </div>
+        </div>
+        <table class="ag-table">
+          <thead><tr><th class="ag-th ag-th--idx">编号</th><th class="ag-th">步骤</th><th class="ag-th">预期</th></tr></thead>
+          <tbody>
+            <tr v-for="s in (smokeResult.steps || [])" :key="s.no" class="ag-tr">
+              <td class="ag-td ag-td--idx">{{ s.no }}</td>
+              <td class="ag-td">{{ s.step }}</td>
+              <td class="ag-td">{{ s.expected }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -74,7 +112,7 @@
             </span>
           </div>
           <div class="ag-batch__actions">
-            <button class="ag-btn ag-btn--ok" :disabled="selectedCases.length === 0" @click="batchAdopt">
+            <button class="ag-btn ag-btn--ok" :disabled="selectedCases.length === 0 || isBatchAdopting" @click="batchAdopt">
               {{ $t('taskDetail.batchAdopt', { count: selectedCases.length }) }}
             </button>
             <button class="ag-btn ag-btn--danger" :disabled="selectedCases.length === 0" @click="batchDiscard">
@@ -114,7 +152,7 @@
                 <td class="ag-td ag-td--act">
                   <div class="ag-actions">
                     <button class="ag-btn ag-btn--sm" @click="viewCaseDetail(testCase, index)">{{ $t('taskDetail.viewDetail') }}</button>
-                    <button class="ag-btn ag-btn--sm ag-btn--ok" @click="adoptSingleCase(testCase, index)">{{ $t('taskDetail.adopt') }}</button>
+                    <button class="ag-btn ag-btn--sm ag-btn--ok" :disabled="isAdoptingCase" @click="adoptSingleCase(testCase, index)">{{ $t('taskDetail.adopt') }}</button>
                     <button class="ag-btn ag-btn--sm ag-btn--danger" @click="discardSingleCase(testCase, index)">{{ $t('taskDetail.discard') }}</button>
                   </div>
                 </td>
@@ -215,9 +253,11 @@ import api from '@/utils/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
+import MsLoading from '@/components/MsLoading.vue'
 
 export default {
   name: 'TaskDetail',
+  components: { MsLoading },
   data() {
     return {
       taskId: '',
@@ -231,6 +271,11 @@ export default {
       currentPage: 1,
       pageSize: 10,
       isExporting: false,
+      isBatchAdopting: false,
+      isAdoptingCase: false,
+      smokeResult: null,
+      isGeneratingSmoke: false,
+      smokeCaseId: null,
       // 编辑相关状态
       isEditing: false,
       isSaving: false,
@@ -320,6 +365,55 @@ export default {
       } finally {
         this.isLoading = false
       }
+    },
+
+    async generateSmokeFromTask() {
+      if (this.isGeneratingSmoke) return
+      if (!this.taskId) { ElMessage.error('缺少任务ID'); return }
+      this.isGeneratingSmoke = true
+      try {
+        const { data } = await api.post('/requirement-analysis/testcase-generation/generate-smoke-from-task/', {
+          task_id: this.taskId,
+        }, { timeout: 300000 })
+        this.smokeResult = data
+        this.smokeCaseId = data.smoke_case_id || null
+        ElMessage.success('冒烟用例已生成')
+      } catch (e) {
+        ElMessage.error(e.response?.data?.error || '冒烟用例生成失败')
+      } finally {
+        this.isGeneratingSmoke = false
+      }
+    },
+    copySmokeResult() {
+      const r = this.smokeResult
+      if (!r) return
+      const steps = (r.steps || []).map(s => `${s.no}. ${s.step}`).join('\n')
+      const expects = (r.steps || []).map(s => `${s.no}. ${s.expected}`).join('\n')
+      const text = `用例标题：${r.title || ''}\n\n步骤：\n${steps}\n\n预期：\n${expects}`
+      if (navigator.clipboard) navigator.clipboard.writeText(text)
+      ElMessage.success('已复制')
+    },
+    goSmokeManage() {
+      this.$router.push('/ai-generation/smoke-test-cases')
+    },
+    exportSmokeCsv() {
+      const r = this.smokeResult
+      if (!r) return
+      const steps = (r.steps || []).map(s => `${s.no}. ${s.step}`).join('\n')
+      const expects = (r.steps || []).map(s => `${s.no}. ${s.expected}`).join('\n')
+      const header = ['用例标题', '前置条件', '步骤', '预期', '实际情况']
+      const row = [r.title || '', '', steps, expects, '']
+      const csv = '\ufeff' + [header, row]
+        .map(fields => fields.map(field => `"${String(field ?? '').replace(/"/g, '""')}"`).join(','))
+        .join('\n') + '\n'
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = (r.title || '冒烟测试用例') + '.csv'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
     },
 
     parseTestCases(content) {
@@ -501,27 +595,29 @@ export default {
     },
 
     async batchAdopt() {
+      if (this.isBatchAdopting) return
       if (this.selectedCases.length === 0) {
         ElMessage.warning(this.$t('taskDetail.pleaseSelectFirst', { action: this.$t('taskDetail.adopt') }))
         return
       }
 
+      this.isBatchAdopting = true
       try {
-        await ElMessageBox.confirm(
-          this.$t('taskDetail.confirmAdopt', { count: this.selectedCases.length }),
-          this.$t('taskDetail.confirmAdoptTitle'),
-          {
-            confirmButtonText: this.$t('taskDetail.btnConfirm'),
-            cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
-            type: 'success',
-            customClass: 'ag-confirm'
-          }
-        )
-      } catch {
-        return
-      }
+        try {
+          await ElMessageBox.confirm(
+            this.$t('taskDetail.confirmAdopt', { count: this.selectedCases.length }),
+            this.$t('taskDetail.confirmAdoptTitle'),
+            {
+              confirmButtonText: this.$t('taskDetail.btnConfirm'),
+              cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
+              type: 'success',
+              customClass: 'ag-confirm'
+            }
+          )
+        } catch {
+          return
+        }
 
-      try {
         const casesData = this.selectedCases.map((testCase, index) => ({
           title: testCase.scenario || `Test Case ${index + 1}`,
           description: testCase.scenario || '',
@@ -547,6 +643,8 @@ export default {
       } catch (error) {
         console.error('Batch adopt failed:', error)
         ElMessage.error(this.$t('taskDetail.batchAdoptFailed') + ': ' + (error.response?.data?.message || error.message))
+      } finally {
+        this.isBatchAdopting = false
       }
     },
 
@@ -754,22 +852,24 @@ export default {
     },
 
     async adoptSingleCase(testCase, index) {
+      if (this.isAdoptingCase) return
+      this.isAdoptingCase = true
       try {
-        await ElMessageBox.confirm(
-          this.$t('taskDetail.confirmAdoptSingle', { scenario: testCase.scenario }),
-          this.$t('taskDetail.confirmAdoptTitle'),
-          {
-            confirmButtonText: this.$t('taskDetail.btnConfirm'),
-            cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
-            type: 'success',
-            customClass: 'ag-confirm'
-          }
-        )
-      } catch {
-        return
-      }
+        try {
+          await ElMessageBox.confirm(
+            this.$t('taskDetail.confirmAdoptSingle', { scenario: testCase.scenario }),
+            this.$t('taskDetail.confirmAdoptTitle'),
+            {
+              confirmButtonText: this.$t('taskDetail.btnConfirm'),
+              cancelButtonText: this.$t('taskDetail.btnCancelOperation'),
+              type: 'success',
+              customClass: 'ag-confirm'
+            }
+          )
+        } catch {
+          return
+        }
 
-      try {
         const caseData = {
           title: testCase.scenario || `测试用例${index + 1}`,
           description: testCase.scenario || '',
@@ -792,6 +892,8 @@ export default {
       } catch (error) {
         console.error('Adopt case failed:', error)
         ElMessage.error(this.$t('taskDetail.adoptFailed') + ': ' + (error.response?.data?.message || error.message))
+      } finally {
+        this.isAdoptingCase = false
       }
     },
 
@@ -1037,6 +1139,17 @@ export default {
 /* ============================================
    Header
    ============================================ */
+.ag-zone--smoke { padding: 20px; }
+.ag-smoke {
+  border: 1px solid var(--ark-border); background: #fff;
+}
+.ag-smoke__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--ark-border);
+}
+.ag-smoke__title { font-size: 15px; font-weight: 700; }
+.ag-smoke__actions { display: flex; gap: 8px; }
+
 .ag-head {
   display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;
   padding: 16px 20px 20px;

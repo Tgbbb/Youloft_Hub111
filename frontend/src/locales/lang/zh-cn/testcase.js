@@ -52,6 +52,7 @@ export default {
     ui: 'UI测试',
     performance: '性能测试',
     security: '安全测试',
+    smoke: '冒烟测试',
 
     // Placeholders
     searchPlaceholder: '搜索用例标题',

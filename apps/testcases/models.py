@@ -58,6 +58,7 @@ class TestCase(models.Model):
         choices=[('passed', '通过'), ('failed', '不通过')],
         verbose_name='执行状态'
     )
+    is_smoke = models.BooleanField(default=False, verbose_name='冒烟用例', help_text='标记为冒烟测试用例')
     test_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='functional', verbose_name='测试类型')
     tags = models.JSONField(default=list, verbose_name='标签')
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='authored_testcases', verbose_name='作者')

@@ -264,7 +264,8 @@ export default {
       writer: 'Test Case Writer',
       reviewer: 'Test Reviewer',
       clarifier: 'Requirement Clarifier',
-      reviser: 'Case Reviser'
+      reviser: 'Case Reviser',
+      smoke_generate: 'Smoke Flow Generator'
     },
     messages: {
       loadFailed: 'Failed to load configurations',

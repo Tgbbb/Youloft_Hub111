@@ -159,6 +159,11 @@ const routes = [
                 component: () => import('@/views/requirement-analysis/GeneratedTestCaseList.vue')
             },
             {
+                path: 'smoke-test-cases',
+                name: 'SmokeTestCaseList',
+                component: () => import('@/views/testcases/SmokeTestCaseList.vue')
+            },
+            {
                 path: 'task-detail/:taskId',
                 name: 'TaskDetail',
                 component: () => import('@/views/requirement-analysis/TaskDetail.vue')

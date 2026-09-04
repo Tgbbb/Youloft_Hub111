@@ -110,6 +110,7 @@
                 <option value="clarifier">{{ $t('promptConfig.clarifierPrompt') }}</option>
                 <option value="reviser">{{ $t('promptConfig.reviserPrompt') }}</option>
                 <option value="extractor">{{ $t('promptConfig.extractorPrompt') }}</option>
+                <option value="smoke_generate">{{ $t('promptConfig.smokePrompt') }}</option>
               </select>
             </div>
 
@@ -306,7 +307,8 @@ export default {
         reviewer: 'promptConfig.reviewerPrompt',
         clarifier: 'promptConfig.clarifierPrompt',
         reviser: 'promptConfig.reviserPrompt',
-        extractor: 'promptConfig.extractorPrompt'
+        extractor: 'promptConfig.extractorPrompt',
+        smoke_generate: 'promptConfig.smokePrompt'
       }
       return this.$t(labelMap[promptType] || 'promptConfig.reviewerPrompt')
     },

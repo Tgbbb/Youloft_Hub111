@@ -39,6 +39,7 @@
               <el-menu-item index="/ai-generation/projects"><el-icon><Folder /></el-icon><span>{{ $t('menu.projectManagement') }}</span></el-menu-item>
               <el-menu-item index="/ai-generation/testcases"><el-icon><Document /></el-icon><span>{{ $t('menu.testCases') }}</span></el-menu-item>
               <el-menu-item index="/ai-generation/versions"><el-icon><Flag /></el-icon><span>{{ $t('menu.versionManagement') }}</span></el-menu-item>
+              <el-menu-item index="/ai-generation/smoke-test-cases"><el-icon><Collection /></el-icon><span>{{ $t('menu.smokeTestCases') }}</span></el-menu-item>
               <el-sub-menu index="reviews">
                 <template #title><el-icon><Check /></el-icon><span>{{ $t('menu.reviewManagement') }}</span></template>
                 <el-menu-item index="/ai-generation/reviews">{{ $t('menu.reviewList') }}</el-menu-item>
@@ -239,6 +240,7 @@ const breadcrumbTitle = computed(() => {
     '/ai-generation/projects': t('menu.projectManagement'),
     '/ai-generation/testcases': t('menu.testCases'),
     '/ai-generation/versions': t('menu.versionManagement'),
+    '/ai-generation/smoke-test-cases': t('menu.smokeTestCases'),
     '/ai-generation/reviews': t('menu.reviewList'),
     '/ai-generation/review-templates': t('menu.reviewTemplates'),
     '/ai-generation/testsuites': t('menu.suiteManagement'),

@@ -1378,6 +1378,11 @@ class MidsceneSequenceItem(models.Model):
                                    verbose_name='回放脚本选择')
     replay_index = models.IntegerField(default=0, verbose_name='固定回放脚本索引',
                                        help_text='仅 replay_mode=fixed 时生效，0=最新录制')
+    install_package = models.ForeignKey(
+        'MidsceneAppPackage', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sequence_items', verbose_name='安装包（可选）',
+        help_text='执行本项前覆盖安装该包并启动；不选则沿用链级默认包或当前已装版本',
+    )
 
     class Meta:
         db_table = 'midscene_sequence_items'

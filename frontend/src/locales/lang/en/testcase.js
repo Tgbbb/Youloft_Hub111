@@ -55,6 +55,7 @@ export default {
     ui: 'UI Testing',
     performance: 'Performance Testing',
     security: 'Security Testing',
+    smoke: 'Smoke Testing',
 
     // Placeholders
     searchPlaceholder: 'Search case title',

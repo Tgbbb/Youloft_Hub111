@@ -1,5 +1,12 @@
 <template>
   <div class="ag-shell" data-ark-theme="endfield" data-ark-depth="moderate">
+    <div
+      class="app-loading-mask"
+      style="position:fixed;inset:0;z-index:9999;background:rgba(8,10,14,.72);display:flex;align-items:center;justify-content:center;"
+      v-if="isBatchAdopting || isAdopting"
+    >
+      <MsLoading size="lg" label="采纳中" />
+    </div>
     <!-- Grid -->
     <div class="ag-grid" aria-hidden="true"></div>
 
@@ -89,7 +96,8 @@
               <td class="ag-td ag-td--time">{{ formatDateTime(task.created_at) }}</td>
               <td class="ag-td ag-td--act">
                 <button class="ag-btn ag-btn--sm" @click="viewTaskDetail(task)">{{ $t('generatedTestCases.viewDetail') }}</button>
-                <button v-if="task.status === 'completed'" class="ag-btn ag-btn--sm ag-btn--ok" @click="batchAdoptTask(task)">{{ $t('generatedTestCases.batchAdopt') }}</button>
+                <button class="ag-btn ag-btn--sm" @click="openModulePicker(task)">关联模块</button>
+                <button v-if="task.status === 'completed'" class="ag-btn ag-btn--sm ag-btn--ok" :disabled="isBatchAdopting" @click="batchAdoptTask(task)">{{ $t('generatedTestCases.batchAdopt') }}</button>
                 <button v-if="task.status === 'completed'" class="ag-btn ag-btn--sm ag-btn--danger" @click="batchDiscardTask(task)">{{ $t('generatedTestCases.batchDiscard') }}</button>
                 <button v-if="task.status === 'failed'" class="ag-btn ag-btn--sm ag-btn--warn" @click="retryTask(task)">{{ $t('generatedTestCases.retry') }}</button>
               </td>
@@ -189,16 +197,46 @@
         </div>
       </div>
     </div>
+    <!-- ====== Modal: 关联功能模块 ====== -->
+    <div v-if="modulePickerTask" class="ag-modal" @click.self="closeModulePicker">
+      <div class="ag-modal__box">
+        <header class="ag-modal__head">
+          <span class="ag-modal__kicker">CASE / MODULE</span>
+          <button class="ag-modal__close" @click="closeModulePicker">×</button>
+        </header>
+        <div class="ag-modal__body">
+          <div class="ag-detail">
+            <div class="ag-detail__row">
+              <label>关联功能模块</label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select v-model="moduleSelectedModule" class="ag-input" style="flex:1">
+                  <option value="">—— 选择模块 ——</option>
+                  <option v-for="m in moduleOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+                <button class="ag-btn ag-btn--sm" @click="quickAddModule">+ 新增</button>
+              </div>
+            </div>
+            <div class="ag-detail__row"><label>当前任务</label><span>{{ modulePickerTask.title }}</span></div>
+          </div>
+          <div class="ag-form__actions" style="justify-content:flex-end">
+            <button class="ag-btn ag-btn--ghost" @click="closeModulePicker">{{ $t('generatedTestCases.cancel') }}</button>
+            <button class="ag-btn ag-btn--ok" @click="confirmModule" :disabled="isSavingModule">{{ isSavingModule ? '保存中…' : '确认关联' }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script>
 import api from '@/utils/api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import MsLoading from '@/components/MsLoading.vue'
 
 export default {
   name: 'GeneratedTestCaseList',
-  data() { return { isLoading: false, tasks: [], selectedStatus: '', selectedTaskDetail: null, selectedTestCaseDetail: null, showAdoptModal: false, isAdopting: false, projects: [], projectVersions: [], allVersions: [], adoptForm: { title: '', description: '', project_id: null, priority: 'low', test_type: 'functional', status: 'draft', preconditions: '', steps: '', expected_result: '', version_id: null }, currentAdoptingTask: null, selectedTasks: [], isDeleting: false, pagination: { currentPage: 1, pageSize: 10, total: 0, pageSizeOptions: [10, 20, 50] }, jumpPage: '', allStats: { total: 0, completed: 0, running: 0, failed: 0 } } },
+  components: { MsLoading },
+  data() { return { isLoading: false, tasks: [], selectedStatus: '', selectedTaskDetail: null, selectedTestCaseDetail: null, showAdoptModal: false, isAdopting: false, isBatchAdopting: false, modulePickerTask: null, moduleOptions: [], moduleSelectedModule: '', isSavingModule: false, projects: [], projectVersions: [], allVersions: [], adoptForm: { title: '', description: '', project_id: null, priority: 'low', test_type: 'functional', status: 'draft', preconditions: '', steps: '', expected_result: '', version_id: null }, currentAdoptingTask: null, selectedTasks: [], isDeleting: false, pagination: { currentPage: 1, pageSize: 10, total: 0, pageSizeOptions: [10, 20, 50] }, jumpPage: '', allStats: { total: 0, completed: 0, running: 0, failed: 0 } } },
   computed: {
     availableVersions() { return this.adoptForm.project_id ? this.projectVersions : this.allVersions },
     totalPages() { return Math.ceil(this.pagination.total / this.pagination.pageSize) },
@@ -218,7 +256,7 @@ export default {
     getStatusText(status) { const m = { pending: this.$t('generatedTestCases.statusPending'), generating: this.$t('generatedTestCases.statusGenerating'), reviewing: this.$t('generatedTestCases.statusReviewing'), completed: this.$t('generatedTestCases.statusCompleted'), failed: this.$t('generatedTestCases.statusFailed') }; return m[status] || status },
     getTestCaseCount(task) { if (!task.final_test_cases) return 0; const lines = task.final_test_cases.split('\n').filter(l => l.trim()); let rows = 0, first = true, table = false; for (let line of lines) { if (line.includes('|') && !line.includes('--------')) { const cells = line.split('|').map(c => c.trim()).filter(c => c); if (cells.length > 1) { if (first) { first = false; if (line.includes('测试用例编号') || line.includes('ID') || line.includes('用例ID') || line.includes('场景') || line.includes('步骤')) { table = true; continue } }; rows++; if (rows >= 1) table = true } } }; if (table && rows > 0) return rows; let cnt = 0; for (const line of lines) { if (line.includes('测试用例') || line.includes('Test Case') || line.match(/^(\d+\.|测试场景)/)) cnt++ }; return cnt || 0 },
     viewTaskDetail(task) { const url = this.$router.resolve({ name: 'TaskDetail', params: { taskId: task.task_id } }).href; window.open(url, '_blank') },
-    async batchAdoptTask(task) { if (!confirm(this.$t('generatedTestCases.adoptConfirm', { title: task.title }))) return; try { await api.post(`/requirement-analysis/testcase-generation/${task.task_id}/batch_adopt/`); ElMessage.success(this.$t('generatedTestCases.adoptSuccess')); this.loadTasks() } catch (e) { ElMessage.error(this.$t('generatedTestCases.adoptFailed')) } },
+    async batchAdoptTask(task) { if (this.isBatchAdopting) return; if (!confirm(this.$t('generatedTestCases.adoptConfirm', { title: task.title }))) return; this.isBatchAdopting = true; try { await api.post(`/requirement-analysis/testcase-generation/${task.task_id}/batch_adopt/`); ElMessage.success(this.$t('generatedTestCases.adoptSuccess')); this.loadTasks() } catch (e) { ElMessage.error(this.$t('generatedTestCases.adoptFailed')) } finally { this.isBatchAdopting = false } },
     async batchDiscardTask(task) { if (!confirm(this.$t('generatedTestCases.discardConfirm', { title: task.title }))) return; try { await api.post(`/requirement-analysis/testcase-generation/${task.task_id}/batch_discard/`); ElMessage.success(this.$t('generatedTestCases.discardSuccess')); this.loadTasks() } catch (e) { ElMessage.error(this.$t('generatedTestCases.discardFailed')) } },
     async retryTask(task) { if (!confirm(`确认重试「${task.title}」？`)) return; try { const r = await api.post(`/requirement-analysis/testcase-generation/${task.task_id}/retry/`); ElMessage.success(r.data.message || '已启动'); this.loadTasks() } catch (e) { ElMessage.error('重试失败') } },
     formatDateTime(d) { if (!d) return ''; const dt = new Date(d); return dt.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) },
@@ -228,6 +266,54 @@ export default {
     async onAdoptProjectChange() { if (this.adoptForm.project_id) { await this.fetchProjectVersions(this.adoptForm.project_id); if (this.adoptForm.version_id && !this.projectVersions.some(v => v.id === this.adoptForm.version_id)) this.adoptForm.version_id = null } else { this.projectVersions = [] } },
     async confirmAdopt() { if (!this.adoptForm.project_id) { alert(this.$t('generatedTestCases.selectProjectRequired')); return }; if (!this.adoptForm.version_id) { alert(this.$t('generatedTestCases.selectVersionRequired')); return }; if (!this.adoptForm.title.trim()) { alert(this.$t('generatedTestCases.enterCaseTitle')); return }; if (!this.adoptForm.expected_result.trim()) { alert(this.$t('generatedTestCases.enterExpectedResult')); return }; this.isAdopting = true; try { await api.post('/testcases/', { title: this.adoptForm.title, description: this.adoptForm.description, project_id: this.adoptForm.project_id, priority: this.adoptForm.priority || 'low', test_type: this.adoptForm.test_type, status: this.adoptForm.status, preconditions: this.adoptForm.preconditions, steps: this.adoptForm.steps, expected_result: this.adoptForm.expected_result, version_ids: this.adoptForm.version_id ? [this.adoptForm.version_id] : [] }); alert(this.$t('generatedTestCases.adoptModalSuccess')); this.closeAdoptModal(); this.loadTestCases() } catch (e) { alert(this.$t('generatedTestCases.adoptCaseFailedRetry')) } finally { this.isAdopting = false } },
     closeAdoptModal() { this.showAdoptModal = false; this.currentAdoptingTask = null; this.projectVersions = [] },
+    async openModulePicker(task) {
+      this.modulePickerTask = task
+      this.moduleSelectedModule = task.function_module ? (task.function_module.id || task.function_module) : ''
+      await this.loadTaskModules(task)
+    },
+    async loadTaskModules(task) {
+      const versionId = task.version_ids && task.version_ids[0]
+      if (!versionId) { ElMessage.warning(this.$t('generatedTestCases.selectProjectRequired')); this.moduleOptions = []; return }
+      try {
+        const r = await api.get(`/versions/${versionId}/modules/`)
+        this.moduleOptions = r.data.results || r.data || []
+      } catch (e) { this.moduleOptions = [] }
+    },
+    async quickAddModule() {
+      const versionId = this.modulePickerTask && this.modulePickerTask.version_ids && this.modulePickerTask.version_ids[0]
+      if (!versionId) { ElMessage.warning(this.$t('generatedTestCases.selectProjectRequired')); return }
+      try {
+        const { value } = await ElMessageBox.prompt('请输入新功能模块名称', '新增功能模块', { confirmButtonText: '创建', cancelButtonText: '取消' })
+        if (value && value.trim()) {
+          await api.post(`/versions/${versionId}/modules/`, { name: value.trim() })
+          ElMessage.success('模块创建成功')
+          const r = await api.get(`/versions/${versionId}/modules/`)
+          this.moduleOptions = r.data.results || r.data || []
+          this.$nextTick(() => {
+            const last = this.moduleOptions[this.moduleOptions.length - 1]
+            if (last) this.moduleSelectedModule = last.id
+          })
+        }
+      } catch (error) {
+        if (error !== 'cancel') ElMessage.error(error.response?.data?.error || '创建失败')
+      }
+    },
+    async confirmModule() {
+      if (!this.modulePickerTask) return
+      if (!this.moduleSelectedModule) { ElMessage.warning('请选择功能模块'); return }
+      this.isSavingModule = true
+      try {
+        await api.patch(`/requirement-analysis/testcase-generation/${this.modulePickerTask.task_id}/`, { function_module: this.moduleSelectedModule })
+        ElMessage.success('已关联模块')
+        this.modulePickerTask = null
+        this.loadTasks()
+      } catch (e) {
+        ElMessage.error('关联模块失败')
+      } finally {
+        this.isSavingModule = false
+      }
+    },
+    closeModulePicker() { this.modulePickerTask = null },
     closeTestCaseDetail() { this.selectedTestCaseDetail = null },
     loadTestCases() { this.loadTasks() },
     getProjectName(projectId) { const p = this.projects.find(p => p.id === projectId); return p ? p.name : '' },

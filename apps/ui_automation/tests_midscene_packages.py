@@ -7,7 +7,7 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.projects.models import Project
@@ -88,16 +88,41 @@ class MidscenePackageApiTests(TestCase):
         self.assertEqual(resp.status_code, 400, resp.data)
         self.assertIn('不支持的文件类型', resp.data['error'])
 
-    def test_ios_install_rejected(self):
-        pkg = MidsceneAppPackage.objects.create(
+    def _make_ios_pkg(self):
+        return MidsceneAppPackage.objects.create(
             name='iOS包', platform='ios',
             file=SimpleUploadedFile('app.ipa', b'x', content_type='application/octet-stream'),
             created_by=self.user,
         )
+
+    def test_platform_mismatch_install_failed(self):
+        # android 设备 + ios 包：逐设备失败条目，不创建安装记录
+        pkg = self._make_ios_pkg()
         resp = self.client.post(f'/api/ui-automation/midscene/packages/{pkg.id}/install/',
                                 {'device_ids': [self.device.id]}, format='json')
-        self.assertEqual(resp.status_code, 400, resp.data)
-        self.assertIn('仅支持 Android', resp.data['error'])
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['installs'], [])
+        self.assertEqual(len(resp.data['failed']), 1)
+        self.assertIn('不匹配', resp.data['failed'][0]['error'])
+        self.delay.assert_not_called()
+        self.assertEqual(MidsceneAppInstallRecord.objects.count(), 0)
+
+    def test_ios_install_on_ios_device_success(self):
+        pkg = self._make_ios_pkg()
+        ios_dev = MidsceneDevice.objects.create(
+            platform='ios', device_id='udid-ios-1', name='iPhone 1',
+            status='available', wda_host='127.0.0.1:8100',
+        )
+        resp = self.client.post(f'/api/ui-automation/midscene/packages/{pkg.id}/install/',
+                                {'device_ids': [ios_dev.id], 'overwrite': True, 'launch': True},
+                                format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['failed'], [])
+        self.assertEqual(len(resp.data['installs']), 1)
+        self.delay.assert_called_once()
+        record = MidsceneAppInstallRecord.objects.get(id=resp.data['installs'][0]['install_id'])
+        self.assertEqual(record.package, pkg)
+        self.assertTrue(record.options['launch'])
 
     def test_install_offline_device_failed(self):
         pkg = self._make_android_pkg()
@@ -300,3 +325,74 @@ class ExecuteTaskInstallPackageTests(TestCase):
             result = execute_midscene_task(rec.id)
         self.assertEqual(result, 'passed')
         self.assertEqual(run_test.call_args.kwargs.get('app_package_override'), '')
+
+
+class RunPackageInstallDispatchTests(SimpleTestCase):
+    """run_package_install 双平台分发：adb / tidevice 命令拼装、launch 分支与失败返回。"""
+
+    def setUp(self):
+        from apps.ui_automation.tasks import run_package_install
+        self.run_package_install = run_package_install
+
+    def _apk(self):
+        return mock.Mock(platform='android', name='APK', package_name='com.example.a',
+                         file=mock.Mock(path=r'C:\pkgs\app.apk'))
+
+    def _android_dev(self):
+        return mock.Mock(platform='android', adb_serial='SER-A', tidevice_udid='',
+                         device_id='DEV-A', name='Android')
+
+    def _ipa(self):
+        return mock.Mock(platform='ios', name='IPA', package_name='com.example.b',
+                         file=mock.Mock(path=r'C:\pkgs\app.ipa'))
+
+    def _ios_dev(self, udid='UDID-1'):
+        return mock.Mock(platform='ios', adb_serial='', tidevice_udid=udid,
+                         device_id='DEV-I', name='iPhone')
+
+    def _run(self, returncode=0, stdout='', stderr=''):
+        return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_android_builds_adb_install_r(self):
+        with mock.patch('apps.ui_automation.tasks.subprocess.run',
+                        return_value=self._run(stdout='Success')) as run:
+            ok, log, err = self.run_package_install(self._apk(), self._android_dev(),
+                                                    {'overwrite': True})
+        self.assertTrue(ok)
+        self.assertEqual(run.call_args.args[0],
+                         ['adb', '-s', 'SER-A', 'install', '-r', r'C:\pkgs\app.apk'])
+
+    def test_android_launch_appends_monkey(self):
+        with mock.patch('apps.ui_automation.tasks.subprocess.run',
+                        return_value=self._run(stdout='Success')) as run:
+            self.run_package_install(self._apk(), self._android_dev(),
+                                     {'overwrite': True, 'launch': True})
+        self.assertEqual(len(run.call_args_list), 2)
+        monkey = run.call_args_list[1].args[0]
+        self.assertEqual(monkey[:3], ['adb', '-s', 'SER-A'])
+        self.assertIn('monkey', monkey)
+        self.assertIn('com.example.a', monkey)
+
+    def test_ios_builds_tidevice_install_with_udid_and_launch(self):
+        with mock.patch('apps.ui_automation.tasks.subprocess.run',
+                        return_value=self._run(stdout='Installed')) as run:
+            ok, log, err = self.run_package_install(self._ipa(), self._ios_dev(),
+                                                    {'overwrite': True, 'launch': True})
+        self.assertTrue(ok)
+        self.assertEqual(run.call_args.args[0],
+                         ['tidevice', '-u', 'UDID-1', 'install', '-L', r'C:\pkgs\app.ipa'])
+
+    def test_ios_falls_back_to_device_id_when_no_udid(self):
+        with mock.patch('apps.ui_automation.tasks.subprocess.run',
+                        return_value=self._run(stdout='Installed')) as run:
+            self.run_package_install(self._ipa(), self._ios_dev(udid=''), {})
+        self.assertEqual(run.call_args.args[0],
+                         ['tidevice', '-u', 'DEV-I', 'install', r'C:\pkgs\app.ipa'])
+
+    def test_ios_tidevice_failure_returns_log_and_error(self):
+        with mock.patch('apps.ui_automation.tasks.subprocess.run',
+                        return_value=self._run(returncode=1, stderr='tidevice error')):
+            ok, log, err = self.run_package_install(self._ipa(), self._ios_dev(), {})
+        self.assertFalse(ok)
+        self.assertIn('tidevice error', log)
+        self.assertIn('tidevice error', err)

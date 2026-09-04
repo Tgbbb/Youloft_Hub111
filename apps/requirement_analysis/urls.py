@@ -12,6 +12,7 @@ from .views import (
     TestCaseGenerationTaskViewSet,
     ConfigStatusViewSet,
     ModaoImportViewSet,
+    SmokeCaseViewSet,
     upload_and_analyze,
     analyze_text
 )
@@ -29,6 +30,7 @@ router.register(r'generation-config', GenerationConfigViewSet, basename='generat
 router.register(r'testcase-generation', TestCaseGenerationTaskViewSet, basename='testcasegenerationtask')
 router.register(r'config', ConfigStatusViewSet, basename='configstatus')
 router.register(r'wx', ModaoImportViewSet, basename='modaoimport')
+router.register(r'smoke-cases', SmokeCaseViewSet, basename='smokecase')
 
 app_name = 'requirement_analysis'
 

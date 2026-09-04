@@ -152,6 +152,7 @@
                 <option value="clarifier">{{ $t('configuration.aiModel.roles.clarifier') }}</option>
                 <option value="reviser">{{ $t('configuration.aiModel.roles.reviser') }}</option>
                 <option value="extractor">{{ $t('configuration.aiModel.roles.extractor') }}</option>
+                <option value="smoke_generate">{{ $t('configuration.aiModel.roles.smoke_generate') }}</option>
                 <option value="browser_use_text">{{ $t('configuration.aiModel.roles.browser_use_text') }}</option>
                 <option value="app_automation_vision">APP自动化-VLM视觉模型</option>
               </select>
@@ -241,7 +242,6 @@
                   v-model.number="configForm.max_tokens"
                   type="number"
                   min="100"
-                  max="32000"
                   class="form-input"
                   placeholder="4096">
               </div>

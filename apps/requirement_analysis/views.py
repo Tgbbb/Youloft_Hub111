@@ -34,7 +34,8 @@ from django.db import models
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService, ModaoImport, check_image_pixel_limits
+    GenerationConfig, AIModelService, ModaoImport, SmokeCase,
+    check_image_pixel_limits, SMOKE_GENERATE_DEFAULT_PROMPT
 )
 from .serializers import (
     RequirementDocumentSerializer, RequirementAnalysisSerializer,
@@ -42,7 +43,7 @@ from .serializers import (
     AnalysisTaskSerializer, DocumentUploadSerializer,
     TestCaseGenerationRequestSerializer, TestCaseReviewRequestSerializer,
     AIModelConfigSerializer, PromptConfigSerializer, TestCaseGenerationTaskSerializer,
-    GenerationConfigSerializer, ClarificationRequestSerializer
+    GenerationConfigSerializer, ClarificationRequestSerializer, SmokeCaseSerializer
 )
 from .services import RequirementAnalysisService, DocumentProcessor
 
@@ -688,6 +689,196 @@ class TestCaseGenerationTaskPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+
+class SmokeCasePagination(PageNumberPagination):
+    """冒烟测试用例分页器"""
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+def _group_canvases_by_folder(canvases):
+    """把平坦画布列表按 folder 分组为 [{name, canvases}]，供 modules_snapshot 使用。"""
+    groups = []
+    index = {}
+    for c in canvases or []:
+        if not isinstance(c, dict):
+            continue
+        folder = (c.get('folder') or '').strip() or '未分组'
+        if folder not in index:
+            index[folder] = len(groups)
+            groups.append({'name': folder, 'canvases': []})
+        groups[index[folder]]['canvases'].append(dict(c))
+    return groups
+
+
+class SmokeCaseViewSet(viewsets.ModelViewSet):
+    """冒烟测试用例视图集（管理页：列表/查看/删除/合并/重新生成/导出）"""
+    serializer_class = SmokeCaseSerializer
+    pagination_class = SmokeCasePagination
+    http_method_names = ['get', 'post', 'delete']
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        from apps.testcases.views import get_user_accessible_projects
+        qs = SmokeCase.objects.all()
+        if user.is_superuser:
+            qs = qs.all()
+        else:
+            accessible = get_user_accessible_projects(user)
+            qs = qs.filter(
+                models.Q(project__in=accessible) |
+                models.Q(project__isnull=True, created_by=user)
+            ).distinct()
+        project = self.request.query_params.get('project')
+        if project:
+            try:
+                qs = qs.filter(project_id=int(project))
+            except (TypeError, ValueError):
+                pass
+        return qs.order_by('-created_at')
+
+    def _get_smoke_config_prompt(self):
+        """获取冒烟生成用模型配置与提示词（smoke_generate，缺省回退 writer + 内置默认提示词）。"""
+        config = AIModelConfig.objects.filter(role='smoke_generate', is_active=True).first()
+        if not config:
+            config = AIModelConfig.objects.filter(role='writer', is_active=True).first()
+        prompt = PromptConfig.get_active_config('smoke_generate')
+        prompt_content = prompt.content if prompt else SMOKE_GENERATE_DEFAULT_PROMPT
+        return config, prompt_content
+
+    @action(detail=False, methods=['post'], url_path='merge')
+    def merge(self, request):
+        """合并多条冒烟用例为一条：程序拼接 + 全局重编号，并存成新记录。"""
+        ids = request.data.get('ids') or []
+        if not ids:
+            return Response({'error': '请选择要合并的冒烟用例'}, status=status.HTTP_400_BAD_REQUEST)
+        title = (request.data.get('title') or '').strip()
+        from apps.testcases.views import get_user_accessible_projects
+        if request.user.is_superuser:
+            qs = SmokeCase.objects.all()
+        else:
+            accessible = get_user_accessible_projects(request.user)
+            qs = SmokeCase.objects.filter(
+                models.Q(project__in=accessible) |
+                models.Q(project__isnull=True, created_by=request.user)
+            ).distinct()
+        records = list(qs.filter(id__in=ids))
+        if not records:
+            return Response({'error': '未找到可合并的冒烟用例'}, status=status.HTTP_404_NOT_FOUND)
+        # 保持提交顺序
+        order = {}
+        for idx, i in enumerate(ids):
+            try:
+                order[int(i)] = idx
+            except (TypeError, ValueError):
+                continue
+        records.sort(key=lambda r: order.get(r.id, 9999))
+
+        steps = []
+        module_names = []
+        for r in records:
+            for st in (r.steps or []):
+                steps.append({
+                    'no': len(steps) + 1,
+                    'step': st.get('step', ''),
+                    'expected': st.get('expected', ''),
+                })
+            module_names.append(r.title or '')
+        if not title:
+            title = records[0].title if records else '合并冒烟用例'
+        merged = SmokeCase.objects.create(
+            title=title,
+            module_names=[t for t in module_names if t],
+            source_type='manual',
+            source_ref='merge',
+            steps=steps,
+            preconditions='',
+            status='completed',
+            progress=100,
+            project=records[0].project if records else None,
+            created_by=request.user,
+            merged_from_ids=[r.id for r in records],
+        )
+        return Response(SmokeCaseSerializer(merged).data, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        """仅创建者或超级管理员可删除；团队成员可查看/合并/导出/重新生成。"""
+        sc = self.get_object()
+        if sc.created_by_id != request.user.id and not request.user.is_superuser:
+            return Response(
+                {'error': '只有创建者或管理员可删除该冒烟用例'},
+                status=status.HTTP_403_FORBIDDEN)
+        sc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='regenerate')
+    def regenerate(self, request, pk=None):
+        """用模块画布快照重新生成冒烟用例，覆盖 steps。"""
+        sc = self.get_object()
+        if sc.source_type not in ('modao', 'task') or not sc.modules_snapshot:
+            return Response(
+                {'error': '该用例不可重新生成（缺少模块快照）'},
+                status=status.HTTP_400_BAD_REQUEST)
+        canvases = []
+        for m in sc.modules_snapshot or []:
+            for c in m.get('canvases', []):
+                canvases.append(dict(c))
+        if not canvases:
+            return Response({'error': '模块快照中没有画布'}, status=status.HTTP_400_BAD_REQUEST)
+        config, prompt_content = self._get_smoke_config_prompt()
+        if not config:
+            return Response(
+                {'error': '未找到可用的冒烟生成模型配置（smoke_generate 或 writer）'},
+                status=status.HTTP_400_BAD_REQUEST)
+        if not config.supports_vision:
+            return Response(
+                {'error': f'模型 {config.model_name} 不支持多模态，无法生成冒烟用例'},
+                status=status.HTTP_400_BAD_REQUEST)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(AIModelService.generate_smoke_case(
+                canvases, sc.title or '', [], config, prompt_content, sc.title or ''))
+        except Exception as e:
+            logger.error(f"[smoke-regenerate] 冒烟重新生成失败: {e}")
+            return Response({'error': f'冒烟重新生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            loop.close()
+        sc.title = result.get('title') or sc.title or '冒烟测试用例'
+        sc.steps = result.get('steps') or []
+        sc.preconditions = result.get('preconditions', '')
+        sc.status = 'completed'
+        sc.progress = 100
+        sc.error_message = ''
+        sc.save(update_fields=['title', 'steps', 'preconditions', 'status', 'progress',
+                               'error_message', 'updated_at'])
+        return Response(SmokeCaseSerializer(sc).data)
+
+    @action(detail=True, methods=['get'], url_path='export')
+    def export(self, request, pk=None):
+        """导出为 ZenTao 兼容 CSV：一行记录，步骤/预期多行逐行对应，UTF-8 BOM，带表头。"""
+        from django.http import HttpResponse
+        import urllib.parse
+        import csv as csv_mod
+        sc = self.get_object()
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        filename = (sc.title or '冒烟测试用例').replace('"', '')
+        try:
+            response['Content-Disposition'] = (
+                "attachment; filename*=UTF-8''" +
+                urllib.parse.quote(filename) + '.csv')
+        except Exception:
+            response['Content-Disposition'] = 'attachment; filename="smoke_case.csv"'
+        response.write('\ufeff')
+        writer = csv_mod.writer(response, lineterminator='\n')
+        writer.writerow(['用例标题', '前置条件', '步骤', '预期', '实际情况'])
+        steps = '\n'.join(f"{st.get('no', '')}. {st.get('step', '')}" for st in sc.steps)
+        expects = '\n'.join(f"{st.get('no', '')}. {st.get('expected', '')}" for st in sc.steps)
+        writer.writerow([sc.title or '', sc.preconditions or '', steps, expects, ''])
+        return response
 
 
 class GeneratedTestCaseViewSet(viewsets.ModelViewSet):
@@ -2199,9 +2390,16 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     else:
                         task_images.append(img)
                 task.page_images_base64 = task_images
+                # 记录墨刀画布快照，供冒烟用例生成复用（不被完成清理）
+                task.modao_canvas_snapshot = [
+                    {k: img[k] for k in ('name', 'screenshot_url', 'texts', 'folder', 'width', 'height')
+                     if img.get(k) is not None}
+                    for img in page_images_from_json_raw
+                    if img.get('screenshot_url')
+                ]
                 task.pipeline_stage = 'awaiting_answers'
                 task.save(update_fields=['clarification_questions', 'multimodal_mode',
-                    'page_images_base64', 'pipeline_stage'])
+                    'page_images_base64', 'modao_canvas_snapshot', 'pipeline_stage'])
 
                 return Response({
                     'task_id': task.task_id,
@@ -2566,6 +2764,131 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             update_fields = ['status', 'pipeline_stage', 'error_message']
             _clear_generation_task_images(task, update_fields)
             task.save(update_fields=update_fields)
+
+    def _get_smoke_config_prompt(self, task=None):
+        """获取冒烟生成用模型配置与提示词（smoke_generate，缺省回退 writer + 内置默认提示词）。"""
+        config = AIModelConfig.objects.filter(role='smoke_generate', is_active=True).first()
+        if not config:
+            if task is not None and task.writer_model_config:
+                config = task.writer_model_config
+            else:
+                config = AIModelConfig.objects.filter(role='writer', is_active=True).first()
+        prompt = PromptConfig.get_active_config('smoke_generate')
+        prompt_content = prompt.content if prompt else SMOKE_GENERATE_DEFAULT_PROMPT
+        return config, prompt_content
+
+    @action(detail=False, methods=['post'], url_path='generate-smoke')
+    def generate_smoke(self, request):
+        """入口A：从所选墨刀画布生成一条连贯正向流程冒烟用例并落库。"""
+        canvases = request.data.get('canvases') or []
+        requirement_text = request.data.get('requirement_text') or '墨刀需求'
+        default_title = request.data.get('default_title') or ''
+        if not canvases:
+            return Response({'error': '缺少画布数据'}, status=status.HTTP_400_BAD_REQUEST)
+        project_id = request.data.get('project_id')
+        project = None
+        if project_id:
+            from apps.testcases.views import get_user_accessible_projects
+            if request.user.is_superuser:
+                from apps.projects.models import Project
+                project = Project.objects.filter(id=project_id).first()
+            else:
+                accessible = get_user_accessible_projects(request.user)
+                project = accessible.filter(id=project_id).first()
+        if project_id and project is None:
+            return Response({'error': '无权访问该项目'}, status=status.HTTP_403_FORBIDDEN)
+        config, prompt_content = self._get_smoke_config_prompt()
+        if not config:
+            return Response(
+                {'error': '未找到可用的冒烟生成模型配置（smoke_generate 或 writer）'},
+                status=status.HTTP_400_BAD_REQUEST)
+        if not config.supports_vision:
+            return Response(
+                {'error': f'模型 {config.model_name} 不支持多模态，无法生成冒烟用例'},
+                status=status.HTTP_400_BAD_REQUEST)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(AIModelService.generate_smoke_case(
+                canvases, requirement_text, [], config, prompt_content, default_title))
+        except Exception as e:
+            logger.error(f"[generate_smoke] 冒烟生成失败: {e}")
+            return Response({'error': f'冒烟生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            loop.close()
+        smoke = SmokeCase.objects.create(
+            title=result.get('title') or default_title or '冒烟测试用例',
+            module_names=[g['name'] for g in _group_canvases_by_folder(canvases)],
+            source_type='modao',
+            steps=result.get('steps') or [],
+            preconditions=result.get('preconditions', ''),
+            modules_snapshot=_group_canvases_by_folder(canvases),
+            status='completed',
+            progress=100,
+            project=project,
+            created_by=request.user,
+        )
+        return Response({
+            'smoke_case_id': smoke.id,
+            'title': smoke.title,
+            'steps': smoke.steps,
+            'preconditions': smoke.preconditions,
+        })
+
+    @action(detail=False, methods=['post'], url_path='generate-smoke-from-task')
+    def generate_smoke_from_task(self, request):
+        """入口B：从已完成任务复用 需求文字+画布快照+澄清回答 生成一条冒烟用例并落库。"""
+        task_id = request.data.get('task_id')
+        if not task_id:
+            return Response({'error': '缺少 task_id'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            task = TestCaseGenerationTask.objects.get(task_id=task_id)
+        except TestCaseGenerationTask.DoesNotExist:
+            return Response({'error': '任务不存在'}, status=status.HTTP_404_NOT_FOUND)
+        canvases = task.modao_canvas_snapshot or []
+        if not canvases:
+            return Response(
+                {'error': '该任务没有墨刀画布快照，无法生成冒烟用例'},
+                status=status.HTTP_400_BAD_REQUEST)
+        config, prompt_content = self._get_smoke_config_prompt(task)
+        if not config:
+            return Response(
+                {'error': '未找到可用的冒烟生成模型配置（smoke_generate 或 writer）'},
+                status=status.HTTP_400_BAD_REQUEST)
+        if not config.supports_vision:
+            return Response(
+                {'error': f'模型 {config.model_name} 不支持多模态，无法生成冒烟用例'},
+                status=status.HTTP_400_BAD_REQUEST)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(AIModelService.generate_smoke_case(
+                canvases, task.requirement_text or '', task.clarification_answers or [],
+                config, prompt_content, task.title or ''))
+        except Exception as e:
+            logger.error(f"[generate_smoke_from_task] 冒烟生成失败: {e}")
+            return Response({'error': f'冒烟生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            loop.close()
+        smoke = SmokeCase.objects.create(
+            title=result.get('title') or task.title or '冒烟测试用例',
+            module_names=[g['name'] for g in _group_canvases_by_folder(canvases)],
+            source_type='task',
+            source_ref=task_id,
+            steps=result.get('steps') or [],
+            preconditions=result.get('preconditions', ''),
+            modules_snapshot=_group_canvases_by_folder(canvases),
+            status='completed',
+            progress=100,
+            project=task.project,
+            created_by=request.user,
+        )
+        return Response({
+            'smoke_case_id': smoke.id,
+            'title': smoke.title,
+            'steps': smoke.steps,
+            'preconditions': smoke.preconditions,
+        })
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser],
              url_path='generate_multimodal')
@@ -3177,6 +3500,12 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 if page_images_refs:
                     task_data['multimodal_mode'] = True
                     task_data['page_images_base64'] = page_images_refs
+                    task_data['modao_canvas_snapshot'] = [
+                        {k: img[k] for k in ('name', 'screenshot_url', 'texts', 'folder', 'width', 'height')
+                         if img.get(k) is not None}
+                        for img in page_images_raw
+                        if img.get('screenshot_url')
+                    ]
                     logger.info(f"[generate] 多模态模式，{len(page_images_refs)} 张截图（引用，不落库）")
 
             # 如果请求中包含需求澄清回答，添加到任务数据中
@@ -3238,8 +3567,11 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                         if imgs:
                             task.page_images_base64 = imgs
                             logger.info(f'[generate] 已复用旧任务 {len(imgs)} 张图片引用')
+                    if not task.modao_canvas_snapshot and existing_task_obj.modao_canvas_snapshot:
+                        task.modao_canvas_snapshot = existing_task_obj.modao_canvas_snapshot
+                        logger.info(f'[generate] 已复用旧任务墨刀画布快照 {len(task.modao_canvas_snapshot)} 个')
                     task.pipeline_stage = 'answers_ready'
-                    update_fields = ['clarification_questions', 'clarification_answers', 'pipeline_stage']
+                    update_fields = ['clarification_questions', 'clarification_answers', 'modao_canvas_snapshot', 'pipeline_stage']
                     if task.multimodal_mode:
                         update_fields += ['multimodal_mode', 'page_images_base64']
                     task.save(update_fields=update_fields)

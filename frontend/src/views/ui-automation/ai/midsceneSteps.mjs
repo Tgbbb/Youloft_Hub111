@@ -56,13 +56,24 @@ export function parsePrompt(text) {
 
     if (isBranch) {
       const children = []
+      const elseChildren = []
       let j = i + 1
+      let inElse = false
       while (j < raw.length && raw[j].indent > 0) {
         const { text: ct, repeat: crep } = clean(raw[j].text)
-        if (ct) children.push(newItem('child', { text: ct, repeat: crep }))
+        if (ct) {
+          if (ct.startsWith('否则') || ct.startsWith('else')) {
+            if (inElse) throw new Error(`分支 "${instruction}" 只能有一个否则`)
+            inElse = true
+          } else if (inElse) {
+            elseChildren.push(newItem('child', { text: ct, repeat: crep }))
+          } else {
+            children.push(newItem('child', { text: ct, repeat: crep }))
+          }
+        }
         j += 1
       }
-      if (children.length === 0) {
+      if (children.length === 0 && elseChildren.length === 0) {
         throw new Error(`分支 "${instruction}" 必须至少有一个缩进的子步骤`)
       }
       const prefix = instruction.startsWith('若') ? '若' : '如果'
@@ -74,6 +85,7 @@ export function parsePrompt(text) {
         condition: cond.trim(),
         repeat,
         children,
+        elseChildren,
       }))
       i = j
     } else {
@@ -97,6 +109,13 @@ export function serialize(items) {
       for (const c of (it.children || [])) {
         lines.push('  ' + prefixOf(c) + c.text)
       }
+      const ec = it.elseChildren || []
+      if (ec.length) {
+        lines.push(' 否则:')
+        for (const c of ec) {
+          lines.push('  ' + prefixOf(c) + c.text)
+        }
+      }
     } else {
       lines.push(prefixOf(it) + it.text)
     }
@@ -112,12 +131,15 @@ export function validate(items) {
     if (it.kind === 'branch') {
       if (!String(it.condition || '').trim()) errors.push('分支条件不能为空')
       const kids = it.children || []
-      if (kids.length === 0) {
+      if (kids.length === 0 && (it.elseChildren || []).length === 0) {
         errors.push(`分支 "如果${it.condition || ''}:" 必须有至少一个子步骤`)
       } else if (kids.some((k) => !String(k.text || '').trim())) {
         errors.push(`分支 "如果${it.condition || ''}:" 的子步骤不能为空`)
+      } else if ((it.elseChildren || []).some((k) => !String(k.text || '').trim())) {
+        errors.push(`分支 "如果${it.condition || ''}:" 的否则子步骤不能为空`)
       }
       walk(kids)
+      walk(it.elseChildren || [])
     } else if (!String(it.text || '').trim()) {
       errors.push('步骤不能为空')
     }

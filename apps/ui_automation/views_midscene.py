@@ -703,6 +703,134 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         midscene_case.save(update_fields=['replay_data'])
         return Response({'message': '已重命名', 'replay_data': midscene_case.replay_data})
 
+    @action(detail=True, methods=['post'], url_path='rerun_step')
+    def rerun_step(self, request, pk=None):
+        """单步重录：在用户手动准备好的页面上只录制目标步骤，并写回对应回放脚本。
+
+        入参：replay_index（目标脚本）/ step_index（步骤序号，从 0 起）/ device_id。
+        创建一条新的执行记录并投递 rerun_step_task；不启动不清理应用，尊重手动页面状态。
+        """
+        midscene_case = self.get_object()
+        from .midscene_runner import parse_ai_prompt
+        try:
+            step_index = int(request.data.get('step_index'))
+            replay_index = int(request.data.get('replay_index', 0))
+            device_id = int(request.data.get('device_id'))
+        except (TypeError, ValueError):
+            return Response({'error': '参数无效: step_index/replay_index/device_id 必须为整数'}, status=400)
+
+        steps = parse_ai_prompt(midscene_case.ai_prompt)
+        if step_index < 0 or step_index >= len(steps):
+            return Response({'error': f'步骤索引越界（共 {len(steps)} 步）'}, status=400)
+        if steps[step_index].get('type') == 'branch':
+            return Response({'error': '暂不支持重录分支头步骤，请重录其子步骤或整条脚本'}, status=400)
+
+        raw = midscene_case.replay_data
+        entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        if replay_index < 0 or replay_index >= len(entries):
+            return Response({'error': '回放脚本不存在'}, status=400)
+        entry_steps = entries[replay_index].get('steps') if isinstance(entries[replay_index], dict) else None
+        if not isinstance(entry_steps, list) or step_index >= len(entry_steps):
+            return Response({'error': f'脚本步骤索引越界（共 {len(entry_steps) if isinstance(entry_steps, list) else 0} 步）'}, status=400)
+
+        with transaction.atomic():
+            try:
+                device = MidsceneDevice.objects.select_for_update().get(id=device_id)
+            except MidsceneDevice.DoesNotExist:
+                return Response({'error': '设备不存在'}, status=404)
+            if device.status == 'locked' and device.locked_by != request.user:
+                return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+            if device.status in ('offline',):
+                return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+            busy = MidsceneExecutionRecord.objects.filter(
+                device=device, status__in=['pending', 'running'],
+            ).exists()
+            if busy:
+                return Response({'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'}, status=409)
+
+            execution = MidsceneExecutionRecord.objects.create(
+                midscene_case=midscene_case, case_name=midscene_case.name,
+                device=device, platform=device.platform, status='pending',
+                auto_plan=False, total_steps=len(steps), executed_by=request.user,
+                model_config_snapshot={
+                    'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
+                    'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
+                    'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
+                } if midscene_case.ai_model_config else {},
+            )
+
+        from .tasks import rerun_step_task
+        task = rerun_step_task.delay(execution.id, replay_index, step_index)
+        execution.task_id = task.id
+        execution.save(update_fields=['task_id'])
+        return Response({'execution_id': execution.id, 'task_id': task.id, 'status': 'pending'})
+
+    @action(detail=True, methods=['post'], url_path='rerun_else')
+    def rerun_else(self, request, pk=None):
+        """整组补录 else：在 else 态(条件不满足)页面上只重录分支头 else 槽 + 该分支 else 组子步骤。
+
+        入参：replay_index（目标脚本）/ branch_step_index（分支头步骤序号，从 0 起）/ device_id。
+        创建一条新的执行记录并投递 rerun_else_task；不启动不清理应用，尊重手动 else 态页面。
+        """
+        midscene_case = self.get_object()
+        from .midscene_runner import parse_ai_prompt
+        try:
+            branch_step_index = int(request.data.get('branch_step_index'))
+            replay_index = int(request.data.get('replay_index', 0))
+            device_id = int(request.data.get('device_id'))
+        except (TypeError, ValueError):
+            return Response({'error': '参数无效: branch_step_index/replay_index/device_id 必须为整数'}, status=400)
+
+        steps = parse_ai_prompt(midscene_case.ai_prompt)
+        if branch_step_index < 0 or branch_step_index >= len(steps):
+            return Response({'error': f'分支头步骤索引越界（共 {len(steps)} 步）'}, status=400)
+        head = steps[branch_step_index]
+        if head.get('type') != 'branch':
+            return Response({'error': '目标步骤不是分支头，无法补录 else'}, status=400)
+        else_indices = head.get('else_children', [])
+        if not else_indices:
+            return Response({'error': '该分支没有 else 组子步骤，无法补录'}, status=400)
+
+        raw = midscene_case.replay_data
+        entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        if replay_index < 0 or replay_index >= len(entries):
+            return Response({'error': '回放脚本不存在'}, status=400)
+        entry_steps = entries[replay_index].get('steps') if isinstance(entries[replay_index], dict) else None
+        if not isinstance(entry_steps, list) or branch_step_index >= len(entry_steps):
+            return Response({'error': '脚本分支头索引越界'}, status=400)
+
+        with transaction.atomic():
+            try:
+                device = MidsceneDevice.objects.select_for_update().get(id=device_id)
+            except MidsceneDevice.DoesNotExist:
+                return Response({'error': '设备不存在'}, status=404)
+            if device.status == 'locked' and device.locked_by != request.user:
+                return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+            if device.status in ('offline',):
+                return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+            busy = MidsceneExecutionRecord.objects.filter(
+                device=device, status__in=['pending', 'running'],
+            ).exists()
+            if busy:
+                return Response({'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'}, status=409)
+
+            execution = MidsceneExecutionRecord.objects.create(
+                midscene_case=midscene_case, case_name=midscene_case.name,
+                device=device, platform=device.platform, status='pending',
+                auto_plan=False, total_steps=len(steps), executed_by=request.user,
+                model_config_snapshot={
+                    'name': midscene_case.ai_model_config.name if midscene_case.ai_model_config else '',
+                    'model_type': midscene_case.ai_model_config.model_type if midscene_case.ai_model_config else '',
+                    'model_name': midscene_case.ai_model_config.model_name if midscene_case.ai_model_config else '',
+                } if midscene_case.ai_model_config else {},
+            )
+
+        from .tasks import rerun_else_task
+        task = rerun_else_task.delay(execution.id, replay_index, branch_step_index)
+        execution.task_id = task.id
+        execution.save(update_fields=['task_id'])
+        return Response({'execution_id': execution.id, 'task_id': task.id, 'status': 'pending'})
+
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         """执行 Midscene 用例"""
@@ -712,7 +840,7 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         replay_mode = request.data.get('replay', False)
         clear_app_data = request.data.get('clear_app_data', False)
 
-        # 安装包（可选）：选了执行前自动安装并清数据；仅 Android 支持
+        # 安装包（可选）：选了执行前覆盖安装并清数据；包平台需与设备平台一致
         install_package_id = request.data.get('install_package_id')
         if install_package_id in (None, '', 0, '0', 'null'):
             install_package_id = None
@@ -721,7 +849,8 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
                 install_package_id = int(install_package_id)
             except (TypeError, ValueError):
                 return Response({'error': '无效的安装包 ID'}, status=400)
-            if not MidsceneAppPackage.objects.filter(id=install_package_id).exists():
+            install_pkg_obj = MidsceneAppPackage.objects.filter(id=install_package_id).first()
+            if not install_pkg_obj:
                 return Response({'error': '安装包不存在或已被删除'}, status=400)
 
         # 解析设备请求：兼容单设备 device_id 与多设备 devices 数组
@@ -782,9 +911,9 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
                     failed.append({'device_id': did, 'status': 400,
                                    'error': f'设备 {device.name or device.device_id} 不在线'})
                     continue
-                if install_package_id and device.platform != 'android':
+                if install_package_id and install_pkg_obj.platform != device.platform:
                     failed.append({'device_id': did, 'status': 400,
-                                   'error': f'设备 {device.name or device.device_id} 是 iOS，暂不支持自动安装'})
+                                   'error': f'安装包平台与设备 {device.name or device.device_id} 不匹配（{install_pkg_obj.get_platform_display()} 包）'})
                     continue
                 busy = MidsceneExecutionRecord.objects.filter(
                     device=device, status__in=['pending', 'running'],
@@ -1109,8 +1238,7 @@ class MidsceneAppPackageViewSet(viewsets.ModelViewSet):
     def install(self, request, pk=None):
         """一键安装到指定设备（每设备一个安装任务，异步执行）。"""
         pkg = self.get_object()
-        if pkg.platform != 'android':
-            return Response({'error': '当前仅支持 Android 安装包安装，iOS 请先完成签名接入'}, status=400)
+        # 包平台需与设备平台一致（Android 装 apk / iOS 装 ipa）
 
         device_ids = request.data.get('device_ids') or request.data.get('devices')
         if not device_ids:
@@ -1145,6 +1273,10 @@ class MidsceneAppPackageViewSet(viewsets.ModelViewSet):
                 if device.status in ('offline',):
                     failed.append({'device_id': did,
                                    'error': f'设备 {device.name or device.device_id} 不在线'})
+                    continue
+                if pkg.platform != device.platform:
+                    failed.append({'device_id': did,
+                                   'error': f'安装包平台与设备不匹配（{pkg.get_platform_display()} 包 -> {device.get_platform_display()} 设备）'})
                     continue
                 busy = (
                     MidsceneExecutionRecord.objects.filter(
@@ -1325,7 +1457,8 @@ class MidsceneSequenceViewSet(viewsets.ModelViewSet):
                 install_package_id = int(install_package_id)
             except (TypeError, ValueError):
                 return Response({'error': '无效的安装包 ID'}, status=400)
-            if not MidsceneAppPackage.objects.filter(id=install_package_id).exists():
+            chain_pkg_obj = MidsceneAppPackage.objects.filter(id=install_package_id).first()
+            if not chain_pkg_obj:
                 return Response({'error': '安装包不存在或已被删除'}, status=400)
 
         items = list(sequence.items.select_related('case').order_by('order'))
@@ -1344,8 +1477,16 @@ class MidsceneSequenceViewSet(viewsets.ModelViewSet):
                 return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
             if device.status == 'offline':
                 return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
-            if install_package_id and device.platform != 'android':
-                return Response({'error': f'设备 {device.name or device.device_id} 是 iOS，暂不支持自动安装'}, status=400)
+            if install_package_id and chain_pkg_obj.platform != device.platform:
+                return Response({'error': f'安装包平台与设备 {device.name or device.device_id} 不匹配（{chain_pkg_obj.get_platform_display()} 包）'}, status=400)
+
+            for it in items:
+                if it.install_package_id:
+                    item_pkg = MidsceneAppPackage.objects.filter(id=it.install_package_id).first()
+                    if not item_pkg:
+                        return Response({'error': f'编排项 {it.case.name} 的安装包不存在或已被删除'}, status=400)
+                    if item_pkg.platform != device.platform:
+                        return Response({'error': f'编排项 {it.case.name} 的安装包平台与设备不匹配（{item_pkg.get_platform_display()} 包 -> {device.get_platform_display()} 设备）'}, status=400)
 
             busy_run = MidsceneSequenceRun.objects.filter(
                 device=device, status__in=['pending', 'running', 'stopping']).exists()

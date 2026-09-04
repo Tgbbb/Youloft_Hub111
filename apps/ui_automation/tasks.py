@@ -49,6 +49,38 @@ def run_apk_install(pkg, device, options=None):
     return False, log, log[-500:]
 
 
+def run_ipa_install(pkg, device, options=None):
+    """同步执行 tidevice install（iOS 覆盖安装，同一 bundle 覆盖升级保留沙盒数据）。
+    返回 (ok, log, error)；不更新安装记录、不锁定设备，由调用方负责。"""
+    def _run(cmd, timeout=600):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              encoding='utf-8', errors='replace', **_SUBPROCESS_KWARGS)
+
+    path = pkg.file.path
+    opts = options or {}
+    udid = (getattr(device, 'tidevice_udid', '') or '').strip() or (device.device_id or '')
+    cmd = ['tidevice']
+    if udid:
+        cmd += ['-u', udid]
+    cmd += ['install']
+    if opts.get('launch'):
+        cmd.append('-L')
+    cmd.append(path)
+
+    r = _run(cmd)
+    log = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        return True, log, ''
+    return False, log, log[-500:]
+
+
+def run_package_install(pkg, device, options=None):
+    """按设备平台分发安装（Android adb install / iOS tidevice install）。
+    返回 (ok, log, error)；不更新安装记录、不锁定设备，由调用方负责。"""
+    if getattr(device, 'platform', '') == 'ios':
+        return run_ipa_install(pkg, device, options)
+    return run_apk_install(pkg, device, options)
+
 def _append_replay_entry(midscene_case, entry, result):
     """把本次录制写入用例 replay_data：新条目插队首，不限制条数，自动命名。
     返回保存后的总条数。"""
@@ -159,26 +191,24 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
 
         _send_progress_update(execution.id, 'running', 5, '开始执行...')
 
-        # ---- 执行前安装：选了安装包则装包 + 强制清数据，失败则整个执行失败 ----
+        # ---- 执行前安装：选了安装包则覆盖安装（Android/iOS），失败则整个执行失败 ----
         app_package_override = ''
         if install_package_id:
             from .models import MidsceneAppPackage
             install_pkg = MidsceneAppPackage.objects.filter(id=install_package_id).first()
             if not install_pkg:
                 raise ValueError('安装包不存在或已被删除')
-            if device.platform != 'android':
-                raise ValueError('iOS 设备暂不支持自动安装')
             _send_progress_update(execution.id, 'running', 5,
                                   f'安装 {install_pkg.name or install_pkg.package_name}...')
             logger.info(f'[Task] 执行前安装: {install_pkg.name or install_pkg.package_name} -> {device.device_id}')
-            ok, log, err = run_apk_install(install_pkg, device, {'overwrite': True})
+            ok, log, err = run_package_install(install_pkg, device, {'overwrite': True})
             if not ok:
                 logger.error(f'[Task] 执行前安装失败(记录 {execution_id}): {err}')
                 raise ValueError(f'安装包安装失败: {err}')
             logger.info(f'[Task] 安装完成: {install_pkg.name or install_pkg.package_name} '
                         f'({install_pkg.package_name})')
             app_package_override = install_pkg.package_name or ''
-            clear_app_data = True  # 选了包强制清数据
+            clear_app_data = True  # 单用例选了包强制清数据
 
         # 进度回调
         def on_progress(step, total, data):
@@ -287,6 +317,301 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
     return execution.status if execution else 'error'
 
 
+@shared_task(bind=True, max_retries=0)
+def rerun_step_task(self, execution_id, replay_index, step_index):
+    """单步重录：在用户手动准备好的页面上只录制目标步骤，并写回对应回放脚本。
+
+    不启动/不清理应用（skip_launch=True），尊重用户手动准备的页面状态；
+    只执行目标步骤的录制循环，其余步骤仅标记 skipped；成功后仅替换该步录制数据。
+    """
+    from .models import MidsceneExecutionRecord
+
+    execution = None
+    device = None
+    try:
+        execution = MidsceneExecutionRecord.objects.get(id=execution_id)
+        midscene_case = execution.midscene_case
+        if not midscene_case:
+            raise ValueError('执行记录没有关联的测试用例')
+        if execution.status in ('stopped', 'stopping'):
+            if execution.status == 'stopping':
+                execution.status = 'stopped'
+                execution.finished_at = timezone.now()
+                execution.save(update_fields=['status', 'finished_at'])
+            logger.info(f'[Task] 单步重录执行 {execution_id} 已在启动前被停止，跳过')
+            return 'stopped'
+        device = execution.device
+        if not device:
+            raise ValueError('没有选择执行设备')
+        model_config = midscene_case.ai_model_config
+        if not model_config or not model_config.api_key:
+            raise ValueError('未配置 AI 模型或 API Key')
+
+        device.lock(execution.executed_by)
+        execution.status = 'running'
+        execution.started_at = timezone.now()
+        execution.save(update_fields=['status', 'started_at'])
+        _send_progress_update(execution.id, 'running', 0,
+                              f'单步重录：步骤 {step_index + 1}（请保持设备处于该步执行前页面）')
+
+        def on_progress(step, total, data):
+            msg_type = data.get('type', '')
+            if msg_type == 'step_start':
+                execution.refresh_from_db()
+                execution.progress = data.get('progress', 0)
+                execution.save(update_fields=['progress'])
+                _send_progress_update(execution.id, 'running', data.get('progress', 0),
+                                      f"步骤 {step}/{total}: {data.get('instruction', '')}")
+            elif msg_type == 'step_done':
+                execution.refresh_from_db()
+                execution.progress = data.get('progress', 0)
+                execution.steps_detail = execution.steps_detail or []
+                execution.steps_detail.append({
+                    'step': step,
+                    'instruction': data.get('instruction', ''),
+                    'status': data.get('status', 'failed'),
+                    'screenshot': data.get('screenshot', ''),
+                    'aiReasoning': data.get('aiReasoning', []),
+                    'error': data.get('error', ''),
+                    'action': data.get('action', ''),
+                    'anomalies': data.get('anomalies', []),
+                    'query_data': data.get('query_data', ''),
+                    'assert_passed': data.get('assert_passed'),
+                    'complete_message': data.get('complete_message', ''),
+                })
+                execution.passed_steps = sum(
+                    1 for s in execution.steps_detail if s['status'] == 'passed')
+                execution.failed_steps = sum(
+                    1 for s in execution.steps_detail if s['status'] == 'failed')
+                execution.save()
+                _send_progress_update(execution.id, 'running', data.get('progress', 0),
+                                      f"步骤 {step}/{total}: {data.get('instruction', '')}")
+
+        result = run_midscene_test(
+            ai_prompt=midscene_case.ai_prompt, device=device, model_config=model_config,
+            execution_record=execution, progress_callback=on_progress,
+            record_mode=True, replay_mode=False, clear_app_data=False,
+            skip_launch=True, rerun_step=step_index,
+        )
+
+        # 取目标步骤的录制结果，仅替换该步，其余步骤/名称/设备信息不动
+        rec_data = None
+        if result.get('replay_data'):
+            rec_steps = result['replay_data'].get('steps') or []
+            if 0 <= step_index < len(rec_steps):
+                rec_data = rec_steps[step_index]
+        wrote_back = False
+        if rec_data is not None:
+            midscene_case.refresh_from_db()
+            raw = midscene_case.replay_data
+            if isinstance(raw, dict):
+                raw = [raw]
+            if isinstance(raw, list) and 0 <= replay_index < len(raw):
+                entry = raw[replay_index]
+                if isinstance(entry, dict) and isinstance(entry.get('steps'), list) \
+                        and 0 <= step_index < len(entry['steps']):
+                    entry['steps'][step_index] = rec_data
+                    midscene_case.replay_data = raw
+                    midscene_case.save(update_fields=['replay_data'])
+                    wrote_back = True
+        if not wrote_back:
+            raise ValueError('重录目标脚本不存在或已被删除，未写回')
+
+        execution.refresh_from_db()
+        execution.status = result['status']
+        execution.progress = 100
+        execution.total_steps = result['totalSteps']
+        execution.passed_steps = result['passedSteps']
+        execution.failed_steps = result['failedSteps']
+        execution.steps_detail = result.get('steps', [])
+        execution.finished_at = timezone.now()
+        if execution.started_at:
+            execution.duration = (execution.finished_at - execution.started_at).total_seconds()
+        execution.save()
+        _send_progress_update(execution.id, result['status'], 100,
+                              f"重录完成: {result['passedSteps']}/{result['totalSteps']} 通过")
+    except Exception as e:
+        logger.error(f'[Task] 单步重录失败(记录 {execution_id}): {e}', exc_info=True)
+        if execution:
+            execution.refresh_from_db()
+            execution.status = 'error'
+            execution.error_message = str(e)[-2000:]
+            execution.finished_at = timezone.now()
+            if execution.started_at:
+                execution.duration = (execution.finished_at - execution.started_at).total_seconds()
+            execution.save()
+            _send_progress_update(execution.id, 'error', execution.progress or 0, f'单步重录异常: {e}')
+    finally:
+        if device:
+            try:
+                device.refresh_from_db()
+                device.unlock()
+            except Exception as e:
+                logger.error(f'[Task] 解锁设备失败: {e}')
+
+    return execution.status if execution else 'error'
+
+
+@shared_task(bind=True, max_retries=0)
+def rerun_else_task(self, execution_id, replay_index, branch_step_index):
+    """整组补录 else：在 else 态(条件不满足)页面上只重录分支头 else 槽 + 该分支 else 组子步骤。
+
+    不启动/不清理应用（skip_launch=True），尊重用户手动准备的 else 态页面；
+    成功后仅合并写回该分支的 else_* 槽与 else 组叶子步骤，if 槽与其他步骤保持不变。
+    """
+    from .models import MidsceneExecutionRecord
+
+    execution = None
+    device = None
+    try:
+        execution = MidsceneExecutionRecord.objects.get(id=execution_id)
+        midscene_case = execution.midscene_case
+        if not midscene_case:
+            raise ValueError('执行记录没有关联的测试用例')
+        if execution.status in ('stopped', 'stopping'):
+            if execution.status == 'stopping':
+                execution.status = 'stopped'
+                execution.finished_at = timezone.now()
+                execution.save(update_fields=['status', 'finished_at'])
+            logger.info(f'[Task] 补录else执行 {execution_id} 已在启动前被停止，跳过')
+            return 'stopped'
+        device = execution.device
+        if not device:
+            raise ValueError('没有选择执行设备')
+        model_config = midscene_case.ai_model_config
+        if not model_config or not model_config.api_key:
+            raise ValueError('未配置 AI 模型或 API Key')
+
+        # 解析分支头与其 else 组下标，用于写回合并范围
+        from .midscene_runner import parse_ai_prompt
+        steps = parse_ai_prompt(midscene_case.ai_prompt)
+        if branch_step_index < 0 or branch_step_index >= len(steps):
+            raise ValueError('分支头步骤越界')
+        head = steps[branch_step_index]
+        if head.get('type') != 'branch':
+            raise ValueError('目标步骤不是分支头')
+        else_indices = head.get('else_children', [])
+        if not else_indices:
+            raise ValueError('该分支没有 else 组子步骤')
+
+        device.lock(execution.executed_by)
+        execution.status = 'running'
+        execution.started_at = timezone.now()
+        execution.save(update_fields=['status', 'started_at'])
+        _send_progress_update(execution.id, 'running', 0,
+                              f'补录else：步骤 {branch_step_index + 1}（请保持设备处于else态页面）')
+
+        def on_progress(step, total, data):
+            msg_type = data.get('type', '')
+            if msg_type == 'step_start':
+                execution.refresh_from_db()
+                execution.progress = data.get('progress', 0)
+                execution.save(update_fields=['progress'])
+                _send_progress_update(execution.id, 'running', data.get('progress', 0),
+                                      f"步骤 {step}/{total}: {data.get('instruction', '')}")
+            elif msg_type == 'step_done':
+                execution.refresh_from_db()
+                execution.progress = data.get('progress', 0)
+                execution.steps_detail = execution.steps_detail or []
+                execution.steps_detail.append({
+                    'step': step,
+                    'instruction': data.get('instruction', ''),
+                    'status': data.get('status', 'failed'),
+                    'screenshot': data.get('screenshot', ''),
+                    'aiReasoning': data.get('aiReasoning', []),
+                    'error': data.get('error', ''),
+                    'action': data.get('action', ''),
+                    'anomalies': data.get('anomalies', []),
+                    'query_data': data.get('query_data', ''),
+                    'assert_passed': data.get('assert_passed'),
+                    'complete_message': data.get('complete_message', ''),
+                })
+                execution.passed_steps = sum(
+                    1 for s in execution.steps_detail if s['status'] == 'passed')
+                execution.failed_steps = sum(
+                    1 for s in execution.steps_detail if s['status'] == 'failed')
+                execution.save()
+                _send_progress_update(execution.id, 'running', data.get('progress', 0),
+                                      f"步骤 {step}/{total}: {data.get('instruction', '')}")
+
+        result = run_midscene_test(
+            ai_prompt=midscene_case.ai_prompt, device=device, model_config=model_config,
+            execution_record=execution, progress_callback=on_progress,
+            record_mode=True, replay_mode=False, clear_app_data=False,
+            skip_launch=True, rerun_else_slot=branch_step_index,
+        )
+
+        # 取分支头 else 槽 + else 组子步骤录制结果，合并写回（保留 if 槽与其他步骤）
+        rec_steps = (result.get('replay_data') or {}).get('steps') or []
+        head_rec = rec_steps[branch_step_index] if 0 <= branch_step_index < len(rec_steps) else None
+        else_leaf_recs = {}
+        for ci in else_indices:
+            if 0 <= ci < len(rec_steps) and rec_steps[ci] is not None:
+                else_leaf_recs[ci] = rec_steps[ci]
+        wrote_back = False
+        if head_rec is not None and isinstance(head_rec, dict):
+            midscene_case.refresh_from_db()
+            raw = midscene_case.replay_data
+            entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            if isinstance(raw, dict):
+                raw = [raw]
+            if isinstance(raw, list) and 0 <= replay_index < len(raw):
+                entry = raw[replay_index]
+                if isinstance(entry, dict) and isinstance(entry.get('steps'), list) \
+                        and 0 <= branch_step_index < len(entry['steps']):
+                    existing_head = entry['steps'][branch_step_index]
+                    if isinstance(existing_head, dict):
+                        # 合并：只更新 else_* 槽，保留 if 槽（branch_entered/act_before_hash/after_hash）
+                        for k in ('else_entered', 'else_act_before_hash', 'else_after_hash'):
+                            if k in head_rec:
+                                existing_head[k] = head_rec[k]
+                        existing_head.setdefault('else_entered', False)
+                        entry['steps'][branch_step_index] = existing_head
+                    # 替换 else 组子步骤录制数据（仅存在的 item）
+                    for ci, leaf in else_leaf_recs.items():
+                        if 0 <= ci < len(entry['steps']):
+                            entry['steps'][ci] = leaf
+                    midscene_case.replay_data = raw
+                    midscene_case.save(update_fields=['replay_data'])
+                    wrote_back = True
+        if not wrote_back:
+            raise ValueError('补录目标脚本不存在或已被删除，未写回')
+
+        execution.refresh_from_db()
+        execution.status = result['status']
+        execution.progress = 100
+        execution.total_steps = result['totalSteps']
+        execution.passed_steps = result['passedSteps']
+        execution.failed_steps = result['failedSteps']
+        execution.steps_detail = result.get('steps', [])
+        execution.finished_at = timezone.now()
+        if execution.started_at:
+            execution.duration = (execution.finished_at - execution.started_at).total_seconds()
+        execution.save()
+        _send_progress_update(execution.id, result['status'], 100,
+                              f"补录else完成: {result['passedSteps']}/{result['totalSteps']} 通过")
+    except Exception as e:
+        logger.error(f'[Task] 补录else失败(记录 {execution_id}): {e}', exc_info=True)
+        if execution:
+            execution.refresh_from_db()
+            execution.status = 'error'
+            execution.error_message = str(e)[-2000:]
+            execution.finished_at = timezone.now()
+            if execution.started_at:
+                execution.duration = (execution.finished_at - execution.started_at).total_seconds()
+            execution.save()
+            _send_progress_update(execution.id, 'error', execution.progress or 0, f'补录else异常: {e}')
+    finally:
+        if device:
+            try:
+                device.refresh_from_db()
+                device.unlock()
+            except Exception as e:
+                logger.error(f'[Task] 解锁设备失败: {e}')
+
+    return execution.status if execution else 'error'
+
+
 def _resolve_replay_index(device, item):
     """编排项回放索引：fixed 用 item.replay_index；auto 按执行设备挑最匹配录制，无匹配回退最新。"""
     if item.replay_mode == 'fixed':
@@ -338,20 +663,7 @@ def execute_midscene_sequence_task(self, run_id, install_package_id=None):
         run.save(update_fields=['status', 'started_at'])
         _send_progress_update_run(run.id, 'running', 5, '开始执行...')
 
-        # 链级安装包：仅首个 fresh 项生效
-        app_package_override = ''
-        if install_package_id:
-            pkg = MidsceneAppPackage.objects.filter(id=install_package_id).first()
-            if not pkg:
-                raise ValueError('安装包不存在或已被删除')
-            if device.platform != 'android':
-                raise ValueError('iOS 设备暂不支持自动安装')
-            _send_progress_update_run(run.id, 'running', 5,
-                                      f'安装 {pkg.name or pkg.package_name}...')
-            ok, log, err = run_apk_install(pkg, device, {'overwrite': True})
-            if not ok:
-                raise ValueError(f'安装包安装失败: {err}')
-            app_package_override = pkg.package_name or ''
+        # 链级 install_package_id 作为首项未指定包时的默认包，在循环内按项处理
 
         n_items = len(items)
         done_items = 0
@@ -388,8 +700,30 @@ def execute_midscene_sequence_task(self, run_id, install_package_id=None):
                 model_config = case.ai_model_config
                 if not model_config or not model_config.api_key:
                     raise ValueError('未配置 AI 模型或 API Key')
-                clear_app_data = (it.clear_relaunch or (idx == 0 and bool(app_package_override)))
-                skip_launch = not it.clear_relaunch
+                # 项级安装包：有包则覆盖安装并启动；无包沿用 clear_relaunch 决定清/启
+                item_pkg = None
+                if it.install_package_id:
+                    item_pkg = MidsceneAppPackage.objects.filter(id=it.install_package_id).first()
+                    if not item_pkg:
+                        raise ValueError(f'编排项 {idx + 1} 的安装包不存在或已被删除')
+                elif idx == 0 and install_package_id:
+                    item_pkg = MidsceneAppPackage.objects.filter(id=install_package_id).first()
+                    if not item_pkg:
+                        raise ValueError('安装包不存在或已被删除')
+
+                app_package_override = ''
+                if item_pkg:
+                    _send_progress_update_run(run.id, 'running', 5,
+                                              f'安装 {item_pkg.name or item_pkg.package_name}...')
+                    ok, log, err = run_package_install(item_pkg, device, {'overwrite': True})
+                    if not ok:
+                        raise ValueError(f'安装包安装失败: {err}')
+                    app_package_override = item_pkg.package_name or ''
+                    clear_app_data = bool(it.clear_relaunch)
+                    skip_launch = False  # 装完要启动新包
+                else:
+                    clear_app_data = bool(it.clear_relaunch)
+                    skip_launch = not it.clear_relaunch
 
                 def on_progress(step, total_s, data):
                     msg_type = data.get('type', '')
@@ -431,6 +765,16 @@ def execute_midscene_sequence_task(self, run_id, install_package_id=None):
                     clear_app_data=clear_app_data, app_package_override=app_package_override,
                     skip_launch=skip_launch,
                 )
+                # 与单用例执行一致：把 runner 返回的结果状态写回子执行记录
+                if result:
+                    child.refresh_from_db()
+                    child.status = result.get('status', child.status)
+                    child.total_steps = result.get('totalSteps', child.total_steps)
+                    child.passed_steps = result.get('passedSteps', child.passed_steps)
+                    child.failed_steps = result.get('failedSteps', child.failed_steps)
+                    if result.get('steps'):
+                        child.steps_detail = result['steps']
+                    child.save()
             except Exception as e:
                 logger.error(f'[Task] 编排项 {idx + 1} 执行失败: {e}', exc_info=True)
                 if child:
@@ -535,7 +879,7 @@ def execute_midscene_sequence_task(self, run_id, install_package_id=None):
 
 @shared_task(bind=True, max_retries=0)
 def install_app_package_task(self, install_id):
-    """异步安装 APK 到单台设备（adb install），安装期间锁定设备防冲突。"""
+    """异步安装安装包到单台设备（Android adb install / iOS tidevice install），安装期间锁定设备防冲突。"""
     from .models import MidsceneAppInstallRecord
 
     record = MidsceneAppInstallRecord.objects.select_related('package', 'device').get(id=install_id)
@@ -560,7 +904,7 @@ def install_app_package_task(self, install_id):
         pkg = record.package
         opts = record.options or {}
         start = time.time()
-        ok, log, err = run_apk_install(pkg, device, opts)
+        ok, log, err = run_package_install(pkg, device, opts)
         record.log = log[-2000:]
         if ok:
             record.status = 'success'
@@ -568,7 +912,7 @@ def install_app_package_task(self, install_id):
         else:
             record.status = 'failed'
             record.error_message = err
-            logger.error(f'[Install] adb install 失败(设备 {device.device_id}): {err}')
+            logger.error(f'[Install] 安装失败(设备 {device.device_id}): {err}')
     except Exception as e:
         logger.error(f'[Install] 安装异常(记录 {install_id}): {e}', exc_info=True)
         record.status = 'failed'

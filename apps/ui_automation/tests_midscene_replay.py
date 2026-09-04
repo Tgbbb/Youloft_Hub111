@@ -1070,6 +1070,7 @@ class NormalStepReplayHashTests(TestCase):
         # 输入类动作：整屏 pHash 难以感知文本变化，执行前后同屏 + hash 不符
         # → 判定为已执行，按通过记警告，不再白白降级 VLM
         mc, execution, device, model = self._context()
+        mc.replay_data[0]['steps'][0]['instruction'] = '输入1111'
         mc.replay_data[0]['steps'][0]['actions'] = [
             {'action': 'input', 'text': '1111', 'x_pct': 50, 'y_pct': 50},
         ]

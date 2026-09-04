@@ -20,6 +20,7 @@ export default {
     promptConfig: 'Prompt Configuration',
     projectManagement: 'Project Management',
     testCases: 'Test Cases',
+    smokeTestCases: 'Smoke Test Cases',
     versionManagement: 'Version Management',
     reviewManagement: 'Review Management',
     reviewList: 'Review List',

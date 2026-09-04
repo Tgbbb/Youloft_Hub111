@@ -55,4 +55,28 @@ console.log(JSON.stringify({
   repeat: serialize(parsePrompt('重复 点击登录')),
 }, null, 2))
 
+// 8. else 分支解析/序列化
+const elseItems = parsePrompt('如果展示会员页:\n  点击左上角关闭\n  否则:\n  点击跳过')
+assert.equal(elseItems[0].kind, 'branch')
+assert.equal(elseItems[0].children.length, 1)
+assert.equal(elseItems[0].elseChildren.length, 1)
+assert.equal(elseItems[0].elseChildren[0].text, '点击跳过')
+const elseSerialized = serialize(elseItems)
+assert.match(elseSerialized, /否则:/)
+assert.equal(parsePrompt(elseSerialized)[0].children.length, 1)
+assert.equal(parsePrompt(elseSerialized)[0].elseChildren.length, 1)
+
+// 9. 往返稳定（含 else）
+for (const text of [
+  '如果展示会员页:\n  点击左上角关闭\n  否则:\n  点击跳过\n  点击返回',
+  '如果A:\n  点击B\n  否则:\n  点击C',
+]) {
+  const once = parsePrompt(text)
+  const twice = parsePrompt(serialize(once))
+  assert.deepEqual(serialize(twice), serialize(once), 'else 往返不稳定: ' + text)
+}
+
+// 10. 有 else 子步骤即合法
+const noKids = parsePrompt('如果A:\n  否则:\n  点击B')
+assert.equal(validate(noKids).ok, true)
 console.log('all midsceneSteps tests pass')

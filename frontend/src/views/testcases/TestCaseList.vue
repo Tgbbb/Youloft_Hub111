@@ -436,6 +436,7 @@ const goToTestCase = (id) => {
   if (versionFilter.value) query.versions = versionFilter.value
   if (moduleFilter.value) query.function_module = moduleFilter.value
   if (priorityFilter.value) query.priority = priorityFilter.value
+  if (sceneTypeFilter.value) query.scene_type = sceneTypeFilter.value
   if (searchText.value) query.search = searchText.value
   query.page = currentPage.value
   router.push({ path: `/ai-generation/testcases/${id}`, query })
@@ -447,6 +448,7 @@ const editTestCase = (tc) => {
   if (versionFilter.value) query.versions = versionFilter.value
   if (moduleFilter.value) query.function_module = moduleFilter.value
   if (priorityFilter.value) query.priority = priorityFilter.value
+  if (sceneTypeFilter.value) query.scene_type = sceneTypeFilter.value
   if (searchText.value) query.search = searchText.value
   query.page = currentPage.value
   router.push({ path: `/ai-generation/testcases/${tc.id}/edit`, query })
@@ -632,7 +634,7 @@ const fetchProjects = async () => {
   try { const r = await api.get('/projects/'); projects.value = r.data.results || r.data || [] }
   catch (e) { ElMessage.error(t('testcase.fetchProjectsFailed')) }
 }
-const hasAnyFilter = () => projectFilter.value || versionFilter.value || moduleFilter.value || priorityFilter.value || searchText.value
+const hasAnyFilter = () => projectFilter.value || versionFilter.value || moduleFilter.value || priorityFilter.value || sceneTypeFilter.value || searchText.value
 
 onMounted(() => {
   fetchProjects(); fetchVersions()
@@ -640,6 +642,7 @@ onMounted(() => {
   if (route.query.versions) { versionFilter.value = Number(route.query.versions); fetchModulesForFilter() }
   if (route.query.function_module) moduleFilter.value = Number(route.query.function_module)
   if (route.query.priority) priorityFilter.value = route.query.priority
+  if (route.query.scene_type) sceneTypeFilter.value = route.query.scene_type
   if (route.query.search) searchText.value = route.query.search
   if (route.query.page) currentPage.value = Number(route.query.page)
   if (hasAnyFilter()) fetchTestCases()
@@ -879,6 +882,10 @@ input[type="checkbox"] {
   font-family: "Space Grotesk", system-ui, sans-serif;
   text-transform: uppercase; letter-spacing: .04em;
   color: #555; background: #fafaf8; border: 1px solid var(--ark-border);
+}
+.ag-tag--smoke {
+  color: #fff; background: var(--ark-ink); border-color: var(--ark-ink);
+  margin-left: 6px;
 }
 .ag-exec {
   display: inline-block; padding: 3px 10px; font-size: 10px;

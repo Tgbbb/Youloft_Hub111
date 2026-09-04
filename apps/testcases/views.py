@@ -18,6 +18,7 @@ from apps.projects.models import Project
 from .services import TestCaseImportTemplateService, TestCaseExcelImportService
 from .tasks import import_testcases_from_excel
 
+
 class TestCasePagination(pagination.PageNumberPagination):
     page_size = 10
     page_size_query_param = 'page_size'
@@ -251,7 +252,7 @@ def testcase_neighbors(request, pk):
     qs = TestCase.objects.filter(project__in=accessible_projects)
 
     # 应用与列表页相同的筛选
-    for field in ['project', 'priority', 'test_type', 'function_module']:
+    for field in ['project', 'priority', 'test_type', 'function_module', 'scene_type']:
         val = request.query_params.get(field)
         if val:
             qs = qs.filter(**{field: val})
@@ -285,6 +286,8 @@ def testcase_neighbors(request, pk):
         'previous': prev,
         'next': next_item,
     })
+
+
 
 
 @api_view(['PATCH'])

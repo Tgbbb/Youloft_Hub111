@@ -64,14 +64,24 @@ def parse_ai_prompt(ai_prompt):
             and (instruction.rstrip().endswith(':') or instruction.rstrip().endswith('：'))
         )
         if is_branch:
-            children_raw = []
+            # 分支子步骤按「缩进」收集，并以「否则」开头的行为 else 组开始标记
+            if_children_raw = []
+            else_children_raw = []
             j = i + 1
+            in_else = False
             while j < len(raw) and raw[j]['indent'] > 0:
                 ctext, crepeat = _clean(raw[j]['text'])
                 if ctext:
-                    children_raw.append({'instruction': ctext, 'repeat': crepeat})
+                    if ctext.startswith('否则') or ctext.startswith('else'):
+                        if in_else:
+                            raise ValueError(f'分支 "{instruction}" 只能有一个否则')
+                        in_else = True
+                    elif in_else:
+                        else_children_raw.append({'instruction': ctext, 'repeat': crepeat})
+                    else:
+                        if_children_raw.append({'instruction': ctext, 'repeat': crepeat})
                 j += 1
-            if not children_raw:
+            if not if_children_raw and not else_children_raw:
                 raise ValueError(f'分支 "{instruction}" 必须至少有一个缩进的子步骤')
             header_index = len(steps)
             condition = (
@@ -86,13 +96,19 @@ def parse_ai_prompt(ai_prompt):
                 'type': 'branch',
                 'condition': condition,
                 'children': [],
+                'else_children': [],
             }
             steps.append(node)
-            for ct in children_raw:
+            for ct in if_children_raw:
                 child_index = len(steps)
                 steps.append({'instruction': ct['instruction'], 'repeat': ct['repeat'],
                               'branch_parent': header_index})
                 node['children'].append(child_index)
+            for ct in else_children_raw:
+                child_index = len(steps)
+                steps.append({'instruction': ct['instruction'], 'repeat': ct['repeat'],
+                              'branch_parent': header_index, 'branch_side': 'else'})
+                node['else_children'].append(child_index)
             i = j
         else:
             steps.append({'instruction': instruction, 'repeat': repeat})
@@ -1120,7 +1136,7 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
 
 def run_midscene_test(ai_prompt, device, model_config, execution_record, progress_callback=None,
                       record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False,
-                      app_package_override='', skip_launch=False):
+                      app_package_override='', skip_launch=False, rerun_step=None, rerun_else_slot=None):
     steps = parse_ai_prompt(ai_prompt)
     if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
 
@@ -1276,6 +1292,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         replay_pass = 0; replay_fail = 0
         branch_state = {}  # 缩进分组分支：记录每个分支头是否进入，用于门控其子步骤
 
+        # 补录 else：目标步集合 = 分支头 + 其 else 组子步骤，其余步骤仅记 skipped
+        rerun_else_active = None
+        if rerun_else_slot is not None:
+            _head = steps[rerun_else_slot] if 0 <= rerun_else_slot < len(steps) else None
+            _els = (_head.get('else_children', []) if _head and _head.get('type') == 'branch' else [])
+            rerun_else_active = {rerun_else_slot} | set(_els)
+
         while step_idx < len(steps):
             step = steps[step_idx]
             instruction = step['instruction']
@@ -1285,38 +1308,86 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             step_anomalies = list(pre_step_anomalies)
             pre_step_anomalies = []
 
-            # ---- 缩进分组分支：子步骤门控 + 分支头门控 ----
-            parent = step.get('branch_parent')
-            if parent is not None and branch_state.get(parent) is False:
-                # 所属分支未进入 → 整组跳过，不再单独判断
-                logger.info(f'[Runner] 步骤 {step_idx+1} 分支未进入，跳过: {instruction}')
-                if progress_callback:
-                    progress_callback(step_idx+1, len(steps), {
-                        'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
-                        'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
-                    })
+            # 补录 else：只执行分支头 + 其 else 组子步骤，其余步骤仅追加 skipped 结果
+            if rerun_else_active is not None and step_idx not in rerun_else_active:
+                logger.info(f'[Runner] 补录else：跳过步骤 {step_idx+1}（仅重录分支 {rerun_else_slot+1} 的else组）')
                 replay_pass += 1
-                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
-                                'screenshot': '', 'aiReasoning': ['[回放] 分支未进入，跳过'],
-                                'action': 'skip', 'anomalies': list(step_anomalies)})
-                _push_step_memory(step_memory, step_idx + 1, instruction, 'skip')
+                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'skipped',
+                                'screenshot': '', 'aiReasoning': ['补录else-非目标步骤跳过'],
+                                'action': 'skip', 'anomalies': []})
                 if record_mode:
                     while len(recording) <= step_idx:
                         recording.append(None)
                     recording[step_idx] = None
-                step_idx += 1
                 if progress_callback:
-                    progress_callback(step_idx, len(steps), {
-                        'type': 'step_done', 'step': step_idx, 'total': len(steps),
-                        'instruction': instruction, 'status': 'passed', 'screenshot': '',
-                        'aiReasoning': ['[回放] 分支未进入，跳过'],
-                        'anomalies': list(step_anomalies),
-                        'progress': int(step_idx / len(steps) * 100)
+                    progress_callback(step_idx+1, len(steps), {
+                        'type': 'step_done', 'step': step_idx+1, 'total': len(steps),
+                        'instruction': instruction, 'status': 'skipped', 'screenshot': '',
+                        'aiReasoning': ['补录else-非目标步骤跳过'], 'action': 'skip',
+                        'anomalies': [], 'progress': int((step_idx+1) / len(steps) * 100)
                     })
+                step_idx += 1
                 continue
+
+            # 单步重录：只执行目标步骤，其余步骤仅追加 skipped 结果，不截图不触屏
+            if rerun_step is not None and step_idx != rerun_step:
+                logger.info(f'[Runner] 单步重录：跳过步骤 {step_idx+1}（仅重录步骤 {rerun_step+1}）')
+                replay_pass += 1
+                results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'skipped',
+                                'screenshot': '', 'aiReasoning': ['单步重录-非目标步骤跳过'],
+                                'action': 'skip', 'anomalies': []})
+                if record_mode:
+                    while len(recording) <= step_idx:
+                        recording.append(None)
+                    recording[step_idx] = None
+                if progress_callback:
+                    progress_callback(step_idx+1, len(steps), {
+                        'type': 'step_done', 'step': step_idx+1, 'total': len(steps),
+                        'instruction': instruction, 'status': 'skipped', 'screenshot': '',
+                        'aiReasoning': ['单步重录-非目标步骤跳过'], 'action': 'skip',
+                        'anomalies': [], 'progress': int((step_idx+1) / len(steps) * 100)
+                    })
+                step_idx += 1
+                continue
+
+            # ---- 缩进分组分支：子步骤按 if/else 分组门控 ----
+            parent = step.get('branch_parent')
+            if parent is not None:
+                _entered = branch_state.get(parent)
+                _is_else_side = (step.get('branch_side') == 'else')
+                _active = _entered is True if not _is_else_side else _entered is False
+                if not _active:
+                    _side = 'else' if _is_else_side else 'if'
+                    logger.info(f'[Runner] 步骤 {step_idx+1} 分支{_side}组未激活，跳过: {instruction}')
+                    if progress_callback:
+                        progress_callback(step_idx+1, len(steps), {
+                            'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
+                            'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
+                        })
+                    replay_pass += 1
+                    results.append({'step': step_idx+1, 'instruction': instruction, 'status': 'passed',
+                                    'screenshot': '', 'aiReasoning': ['[回放] 分支未进入，跳过'],
+                                    'action': 'skip', 'anomalies': list(step_anomalies)})
+                    _push_step_memory(step_memory, step_idx + 1, instruction, 'skip')
+                    if record_mode:
+                        while len(recording) <= step_idx:
+                            recording.append(None)
+                        recording[step_idx] = None
+                    step_idx += 1
+                    if progress_callback:
+                        progress_callback(step_idx, len(steps), {
+                            'type': 'step_done', 'step': step_idx, 'total': len(steps),
+                            'instruction': instruction, 'status': 'passed', 'screenshot': '',
+                            'aiReasoning': ['[回放] 分支未进入，跳过'],
+                            'anomalies': list(step_anomalies),
+                            'progress': int(step_idx / len(steps) * 100)
+                        })
+                    continue
 
             if step.get('type') == 'branch':
                 # 分支头：只做一次门控，命中激活子步骤，未命中整组跳过
+                if rerun_step is not None and step_idx == rerun_step:
+                    raise ValueError('暂不支持重录分支头步骤')
                 if progress_callback:
                     progress_callback(step_idx+1, len(steps), {
                         'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
@@ -1326,19 +1397,33 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                 entered = None
                 gate_reason = ''
                 r_step_gate = None
-                if replay_available and step_idx < len(replay_data['steps']):
+                if replay_available and rerun_step is None and step_idx < len(replay_data['steps']):
                     candidate = replay_data['steps'][step_idx]
                     if candidate and _instruction_similar(candidate.get('instruction', ''), instruction):
                         r_step_gate = candidate
                 rec_entered = r_step_gate.get('branch_entered') if r_step_gate else None
                 act_hash = (r_step_gate.get('act_before_hash', '') if r_step_gate else '')
                 after_hash = (r_step_gate.get('after_hash', '') if r_step_gate else '')
-                if rec_entered is True and act_hash and _is_same_page_by_hash(png_gate, act_hash):
+                # else 槽：分别存 else 态门控指纹
+                else_entered = (r_step_gate.get('else_entered') if r_step_gate else None)
+                else_act_hash = (r_step_gate.get('else_act_before_hash', '') if r_step_gate else '')
+                else_after_hash = (r_step_gate.get('else_after_hash', '') if r_step_gate else '')
+                # 补录 else：强制按未进入处理（记录 else 态槽）
+                if rerun_else_slot is not None and step_idx == rerun_else_slot:
+                    entered = False
+                    gate_reason = '分支补录else-强制未进入'
+                elif rec_entered is True and act_hash and _is_same_page_by_hash(png_gate, act_hash):
                     entered = True
                     gate_reason = '分支命中-录制同路径'
                 elif rec_entered is False and after_hash and _is_same_page_by_hash(png_gate, after_hash):
                     entered = False
                     gate_reason = '分支跳过-录制同路径'
+                elif else_entered is True and else_act_hash and _is_same_page_by_hash(png_gate, else_act_hash):
+                    entered = False
+                    gate_reason = '分支else命中-录制同路径'
+                elif else_entered is False and else_after_hash and _is_same_page_by_hash(png_gate, else_after_hash):
+                    entered = True
+                    gate_reason = '分支else未命中-录制同路径'
                 if entered is None:
                     # 快速路径未命中 → 元素确认兜底；无法判定时按未进入处理并记异常
                     try:
@@ -1407,9 +1492,15 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     if entered:
                         gate_rec['act_before_hash'] = str(_phash(png_gate))
                         gate_rec['after_hash'] = ''
+                        gate_rec['else_entered'] = False
+                        gate_rec['else_act_before_hash'] = ''
+                        gate_rec['else_after_hash'] = ''
                     else:
                         gate_rec['after_hash'] = str(_phash(png_gate))
                         gate_rec['act_before_hash'] = ''
+                        gate_rec['else_entered'] = True
+                        gate_rec['else_act_before_hash'] = str(_phash(png_gate))
+                        gate_rec['else_after_hash'] = ''
                     while len(recording) <= step_idx:
                         recording.append(None)
                     recording[step_idx] = gate_rec
@@ -1434,7 +1525,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     })
                 continue
 
-            if not auto_plan and re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
+            if not auto_plan and rerun_step is None and re.match(r'^打开.*(?:com\.|应用|app|APP)', instruction) and app_package:
                 results.append({'step':step_idx+1,'instruction':instruction,'status':'passed',
                                 'screenshot':'','aiReasoning':['ADB启动'],'action':'launch',
                                 'anomalies': list(step_anomalies)})
@@ -1443,7 +1534,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             logger.info(f'[Runner] 步骤 {step_idx+1}/{len(steps)}: {instruction}')
 
             # ---- 回放尝试（每步独立） ----
-            if replay_available and step_idx < len(replay_data['steps']):
+            if replay_available and rerun_step is None and step_idx < len(replay_data['steps']):
                 r_step = replay_data['steps'][step_idx]
                 # r_step 可能为 None：未录制到的步骤保留占位，保证与 ai_prompt 步骤索引一一对应
                 if r_step and _instruction_similar(r_step.get('instruction', ''), instruction):

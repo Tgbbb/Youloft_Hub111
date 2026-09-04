@@ -234,7 +234,8 @@ export default {
       reviewer: '测试评审专家',
       clarifier: '需求澄清专家',
       reviser: '用例改进专家',
-      extractor: '需求文档提取专家'
+      extractor: '需求文档提取专家',
+      smoke_generate: '冒烟流程生成专家'
     },
     messages: {
       loadFailed: '加载配置失败',

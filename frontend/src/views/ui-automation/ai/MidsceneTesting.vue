@@ -136,10 +136,17 @@
                   </el-tooltip>
                 </label>
                 <el-select v-model="selectedInstallPackageId" clearable size="small" placeholder="安装包（可选）"
-                  class="ms-select" style="width: 180px" @change="onInstallPackageChange">
-                  <el-option v-for="p in installPackages" :key="p.id"
-                    :label="`${p.name || p.package_name} ${p.version_name ? 'v' + p.version_name : ''}`"
-                    :value="p.id" />
+                  class="ms-select" style="width: 200px" @change="onInstallPackageChange">
+                  <el-option-group label="Android">
+                    <el-option v-for="p in androidPackages" :key="p.id"
+                      :label="`${p.name || p.package_name} ${p.version_name ? 'v' + p.version_name : ''}`"
+                      :value="p.id" />
+                  </el-option-group>
+                  <el-option-group label="iOS">
+                    <el-option v-for="p in iosPackages" :key="p.id"
+                      :label="`${p.name || p.package_name} ${p.version_name ? 'v' + p.version_name : ''}`"
+                      :value="p.id" />
+                  </el-option-group>
                 </el-select>
                 <span class="ms-cmd-strip__divider" aria-hidden="true"></span>
                 <span class="ms-ai-config">
@@ -204,28 +211,42 @@
               </div>
               <div class="ms-field-console__list">
                 <div v-for="row in stepRows" :key="row.key"
-                     class="ms-step-row" :class="{ 'is-branch': row.kind === 'branch', 'is-child': row.kind === 'child' }">
-                  <span class="ms-step-row__idx">{{ row.num }}</span>
+                     class="ms-step-row"
+                     :class="{ 'is-branch': row.kind === 'branch', 'is-child': row.kind === 'child', 'is-else-marker': row.kind === 'elseMarker', 'is-drag-over': dragOverKey === row.key && dragKey !== row.key }"
+                     :draggable="!dragDisabled(row)"
+                     @dragstart="onDragStart(row, $event)"
+                     @dragover="onDragOver(row, $event)"
+                     @drop="onDrop(row, $event)"
+                     @dragend="onDragEnd">
+                  <span class="ms-step-row__idx">{{ row.kind === 'elseMarker' ? '否则' : row.num }}</span>
                   <template v-if="row.kind === 'branch'">
                     <span class="ms-step-row__prefix">{{ row.it.prefix }}</span>
                     <el-input v-model="row.it.condition" class="ms-step-row__input" size="small"
                               placeholder="条件，如 展示会员购买页" @input="onEdit" />
                     <span class="ms-step-row__colon">:</span>
                   </template>
+                  <template v-else-if="row.kind === 'elseMarker'">
+                    <span class="ms-step-row__else">否则:</span>
+                  </template>
                   <el-input v-else v-model="row.it.text" class="ms-step-row__input" size="small"
                             placeholder="步骤，如 点击登录" @input="onEdit" />
                   <div class="ms-step-row__tools">
                     <button v-if="row.kind !== 'child'" class="ms-iconbtn" title="上移" @click="moveTop(row.idx, -1)">↑</button>
                     <button v-if="row.kind !== 'child'" class="ms-iconbtn" title="下移" @click="moveTop(row.idx, 1)">↓</button>
-                    <button v-if="row.kind === 'child'" class="ms-iconbtn" title="上移" @click="moveChild(row.branchId, row.cidx, -1)">↑</button>
-                    <button v-if="row.kind === 'child'" class="ms-iconbtn" title="下移" @click="moveChild(row.branchId, row.cidx, 1)">↓</button>
+                    <button v-if="row.kind === 'child' && !row.elseSide" class="ms-iconbtn" title="上移" @click="moveChild(row.branchId, row.cidx, -1)">↑</button>
+                    <button v-if="row.kind === 'child' && !row.elseSide" class="ms-iconbtn" title="下移" @click="moveChild(row.branchId, row.cidx, 1)">↓</button>
+                    <button v-if="row.kind === 'child' && row.elseSide" class="ms-iconbtn" title="上移" @click="moveElseChild(row.branchId, row.cidx, -1)">↑</button>
+                    <button v-if="row.kind === 'child' && row.elseSide" class="ms-iconbtn" title="下移" @click="moveElseChild(row.branchId, row.cidx, 1)">↓</button>
+                    <button v-if="row.kind === 'child' || row.kind === 'elseMarker'" class="ms-iconbtn ms-textbtn" title="加否则子步骤" @click="addElseChild(row.branchId)">+ else</button>
                     <button v-if="row.kind === 'branch'" class="ms-iconbtn ms-textbtn" title="加子步骤" @click="addChild(row.branchId)">+ 子</button>
+                    <button v-if="row.kind === 'branch'" class="ms-iconbtn ms-textbtn" title="加否则子步骤" @click="addElseChild(row.branchId)">+ 否则</button>
                     <button v-if="row.kind === 'step'" class="ms-iconbtn ms-textbtn"
                             :disabled="!(row.idx > 0 && stepItems[row.idx - 1] && stepItems[row.idx - 1].kind === 'branch')"
                             title="缩进为子步骤" @click="indentStep(row.idx)">缩进</button>
-                    <button v-if="row.kind === 'child'" class="ms-iconbtn ms-textbtn" title="取消缩进" @click="outdentChild(row.branchId, row.cidx)">取消缩进</button>
-                    <button v-if="row.kind !== 'branch'" class="ms-iconbtn ms-iconbtn--danger" title="删除"
-                            @click="row.kind === 'child' ? removeChild(row.branchId, row.cidx) : removeStep(row.idx)">×</button>
+                    <button v-if="row.kind === 'child' && !row.elseSide" class="ms-iconbtn ms-textbtn" title="取消缩进" @click="outdentChild(row.branchId, row.cidx)">取消缩进</button>
+                    <button v-if="row.kind === 'child' && row.elseSide" class="ms-iconbtn ms-textbtn" title="取消缩进" @click="outdentElseChild(row.branchId, row.cidx)">取消缩进</button>
+                    <button v-if="row.kind !== 'branch' && row.kind !== 'elseMarker'" class="ms-iconbtn ms-iconbtn--danger" title="删除"
+                            @click="row.elseSide ? removeElseChild(row.branchId, row.cidx) : removeChild(row.branchId, row.cidx)">×</button>
                   </div>
                 </div>
               </div>
@@ -265,7 +286,7 @@
             <template #label>
               <span class="ms-exec-tab">
                 <span class="ms-status-dot" :class="'dot-' + exec.status"></span>
-                {{ exec.device_name || ('设备 ' + exec.device_id) }}
+                {{ exec.device_name || ('设备 ' + exec.device_id) }}<template v-if="exec.rerun_mark"> · {{ exec.rerun_mark }}</template>
                 <span class="ms-exec-tab__status">{{ exec.status_display || exec.status }}</span>
               </span>
             </template>
@@ -398,6 +419,11 @@
                     <el-option label="固定脚本" value="fixed" />
                   </el-select>
                   <el-input-number v-if="it.replay_mode === 'fixed'" v-model="it.replay_index" :min="0" size="small" />
+                  <el-select v-model="it.install_package_id" clearable size="small" placeholder="安装包（可选）" style="width: 200px">
+                    <el-option v-for="p in installPackages" :key="p.id"
+                      :label="`${p.name || p.package_name} ${p.version_name ? 'v' + p.version_name : ''}（${p.platform_display || p.platform}）`"
+                      :value="p.id" />
+                  </el-select>
                 </span>
                 <span class="ms-seq__item-ops">
                   <el-button size="small" text :disabled="i === 0" @click="moveSeqItem(i, -1)">↑</el-button>
@@ -557,6 +583,8 @@
             <span class="ms-detail-step__text">{{ s?.instruction || '（未录制）' }}</span>
             <el-tag v-if="s?.actions?.length" size="small">{{ s.actions.length }} 个动作</el-tag>
             <el-tag v-else-if="s?.after_hash" size="small" type="info">跳过</el-tag>
+            <el-button v-if="s?.type !== 'branch'" size="small" text type="primary" @click.stop="openRerunStep(si)">重录</el-button>
+            <el-button v-if="s?.type === 'branch' && branchHasElse(si)" size="small" text type="warning" @click.stop="openRerunElse(si)">补录 else</el-button>
           </div>
           <div v-if="s?.after_hash" class="ms-detail-step__meta">校验指纹 after_hash: {{ s.after_hash }}</div>
           <div v-if="s?.actions?.length" class="ms-detail-actions">
@@ -571,6 +599,52 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 单步重录 -->
+    <!-- 补录 else -->
+    <el-dialog v-model="showRerunElseDialog" title="补录 else" width="480px">
+      <div class="ms-rerun">
+        <div class="ms-rerun__step">分支 {{ rerunElseBranchIndex + 1 }}：{{ rerunElseBranchText || '' }}</div>
+        <p class="ms-rerun__hint">请先把设备带到 else 态（条件不满足）页面，确认后只重录该分支的否则子步骤，if 组与其他步骤保持不变。</p>
+        <div class="ms-rerun__row">
+          <span class="ms-rerun__label">重录设备</span>
+          <el-select v-model="rerunElseDeviceId" size="small" class="ms-select" style="flex:1">
+            <el-option v-for="d in rerunDevices" :key="d.id"
+              :label="`${d.name || d.device_id}（${d.platform}）`" :value="d.id" :disabled="d.status === 'offline'" />
+          </el-select>
+        </div>
+        <div class="ms-rerun__row">
+          <span class="ms-rerun__label">目标脚本</span>
+          <span class="ms-rerun__meta">{{ selectedReplay?.name || '未命名' }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="showRerunElseDialog = false">取消</el-button>
+        <el-button size="small" type="warning" :loading="rerunElseStarting" @click="startRerunElse">我已在 else 态准备，开始补录</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showRerunStepDialog" title="单步重录" width="480px">
+      <div class="ms-rerun">
+        <div class="ms-rerun__step">步骤 {{ rerunStepIndex + 1 }}：{{ rerunStepText || '（未录制）' }}</div>
+        <p class="ms-rerun__hint">请先在设备上把页面带到该步骤执行前的状态（不会自动启动、清理数据），再开始录制。录制只覆盖该步骤，其余步骤保持不变。</p>
+        <div class="ms-rerun__row">
+          <span class="ms-rerun__label">重录设备</span>
+          <el-select v-model="rerunStepDeviceId" size="small" class="ms-select" style="flex:1">
+            <el-option v-for="d in rerunDevices" :key="d.id"
+              :label="`${d.name || d.device_id}（${d.platform}）`" :value="d.id" :disabled="d.status === 'offline'" />
+          </el-select>
+        </div>
+        <div class="ms-rerun__row">
+          <span class="ms-rerun__label">目标脚本</span>
+          <span class="ms-rerun__meta">{{ selectedReplay?.name || '未命名' }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="showRerunStepDialog = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="rerunStarting" @click="startRerunStep">我已在设备上准备好，开始录制</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 设备匹配提醒 -->
     <el-dialog v-model="deviceMatchDialog.show" title="设备匹配提醒" width="540px">
@@ -662,6 +736,8 @@ const recordMode = ref(false)
 const replayMode = ref(false)
 const clearAppData = ref(false)
 const installPackages = ref([])
+const androidPackages = computed(() => installPackages.value.filter(p => p.platform === 'android'))
+const iosPackages = computed(() => installPackages.value.filter(p => p.platform === 'ios'))
 const selectedInstallPackageId = ref(null)
 const midsceneConfig = ref({ use_locate: null, use_deep_locate: '' })
 const filterProjectId = ref(null)
@@ -737,7 +813,7 @@ let _eid = 0
 const nid = () => 'e' + (++_eid)
 const newStep = () => ({ id: nid(), kind: 'step', text: '', repeat: false })
 const newChild = () => ({ id: nid(), kind: 'child', text: '', repeat: false })
-const newBranch = () => ({ id: nid(), kind: 'branch', prefix: '如果', condition: '', repeat: false, children: [] })
+const newBranch = () => ({ id: nid(), kind: 'branch', prefix: '如果', condition: '', repeat: false, children: [], elseChildren: [] })
 
 const updateStepsFromPrompt = () => {
   try {
@@ -760,6 +836,61 @@ const syncAll = () => { syncPrompt(); syncError() }
 const promptValid = computed(() => {
   try { return validate(parsePrompt(form.ai_prompt)).ok } catch (e) { return false }
 })
+const dragKey = ref(null)
+const dragOverKey = ref(null)
+const groupOf = (row) => {
+  if (row.kind === 'branch' || row.kind === 'step') return 'top'
+  if (row.kind === 'child') return (row.elseSide ? 'else:' : 'if:') + row.branchId
+  return null // elseMarker 不可拖
+}
+const dragDisabled = (row) => row.kind === 'elseMarker'
+const canDrop = (src, tgt) => {
+  if (!src || !tgt) return false
+  if (dragDisabled(src) || dragDisabled(tgt)) return false
+  return groupOf(src) === groupOf(tgt)
+}
+const onDragStart = (row, ev) => {
+  if (dragDisabled(row)) { ev.preventDefault(); return }
+  dragKey.value = row.key
+  ev.dataTransfer.effectAllowed = 'move'
+  ev.dataTransfer.setData('text/plain', row.key)
+}
+const onDragOver = (row, ev) => {
+  if (!canDrop(rowAt(dragKey.value), row)) return
+  ev.preventDefault()
+  ev.dataTransfer.dropEffect = 'move'
+  dragOverKey.value = row.key
+}
+const onDrop = (row, ev) => {
+  ev.preventDefault()
+  const src = rowAt(dragKey.value)
+  dragOverKey.value = null
+  dragKey.value = null
+  if (!src || !canDrop(src, row)) return
+  if (src.key === row.key) return
+  reorderByRow(src, row)
+  syncAll()
+}
+const onDragEnd = () => { dragKey.value = null; dragOverKey.value = null }
+const rowAt = (key) => stepRows.value.find((r) => r.key === key) || null
+const reorderByRow = (src, tgt) => {
+  const g = groupOf(src)
+  const grab = (arr) => { const i = arr.findIndex((x) => x.id === src.it.id); return i >= 0 ? arr.splice(i, 1)[0] : null }
+  if (g === 'top') {
+    const item = grab(stepItems.value)
+    if (!item) return
+    const insertAt = stepItems.value.findIndex((x) => x === tgt.it)
+    stepItems.value.splice(insertAt === -1 ? stepItems.value.length : insertAt, 0, item)
+  } else if (g === 'if:' + src.branchId || g === 'else:' + src.branchId) {
+    const b = stepItems.value.find((x) => x.id === src.branchId)
+    if (!b) return
+    const arr = g.startsWith('else:') ? (b.elseChildren = b.elseChildren || []) : b.children
+    const item = grab(arr)
+    if (!item) return
+    const insertAt = arr.findIndex((x) => x === tgt.it)
+    arr.splice(insertAt === -1 ? arr.length : insertAt, 0, item)
+  }
+}
 const stepRows = computed(() => {
   const rows = []
   let n = 0
@@ -771,6 +902,14 @@ const stepRows = computed(() => {
         n += 1
         rows.push({ key: c.id, kind: 'child', num: n, it: c, idx, cidx, branchId: it.id })
       })
+      const ec = it.elseChildren || []
+      if (ec.length) {
+        rows.push({ key: it.id + '_else', kind: 'elseMarker', it, idx, branchId: it.id })
+        ec.forEach((c, cidx) => {
+          n += 1
+          rows.push({ key: c.id, kind: 'child', num: n, it: c, idx, cidx, branchId: it.id, elseSide: true })
+        })
+      }
     } else {
       n += 1
       rows.push({ key: it.id, kind: 'step', num: n, it, idx })
@@ -784,6 +923,31 @@ const addBranch = () => { const b = newBranch(); b.children.push(newChild()); st
 const addChild = (branchId) => {
   const b = stepItems.value.find((x) => x.id === branchId)
   if (b) { b.children.push(newChild()); syncAll() }
+}
+const addElseChild = (branchId) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (b) { (b.elseChildren = b.elseChildren || []).push(newChild()); syncAll() }
+}
+const removeElseChild = (branchId, cidx) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (b) { (b.elseChildren || []).splice(cidx, 1); syncAll() }
+}
+const moveElseChild = (branchId, cidx, dir) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (!b) return
+  const arr = b.elseChildren = b.elseChildren || []
+  const to = cidx + dir
+  if (to < 0 || to >= arr.length) return
+  const tmp = arr[cidx]; arr[cidx] = arr[to]; arr[to] = tmp
+  syncAll()
+}
+const outdentElseChild = (branchId, cidx) => {
+  const b = stepItems.value.find((x) => x.id === branchId)
+  if (!b) return
+  const c = (b.elseChildren || []).splice(cidx, 1)[0]
+  const bi = stepItems.value.indexOf(b)
+  stepItems.value.splice(bi + 1, 0, { id: c.id, kind: 'step', text: c.text, repeat: c.repeat })
+  syncAll()
 }
 const removeStep = (idx) => { stepItems.value.splice(idx, 1); syncAll() }
 const removeChild = (branchId, cidx) => {
@@ -969,8 +1133,8 @@ const loadCases = async () => { try { const { data } = await api.get('/ui-automa
 const loadFolders = async () => { try { const { data } = await api.get('/ui-automation/midscene/folders/'); folders.value = data.results || [] } catch (e) {} }
 const loadProjects = async () => { try { const { data } = await api.get('/ui-automation/midscene/projects/'); projects.value = data.results || [] } catch (e) {} }
 const loadDevices = async () => { try { const { data } = await api.get('/ui-automation/midscene/devices/'); devices.value = data.results || [] } catch (e) {} }
-const loadInstallPackages = async () => { try { const { data } = await api.get('/ui-automation/midscene/packages/'); installPackages.value = (data.results || []).filter(p => p.platform === 'android') } catch (e) {} }
-const onInstallPackageChange = (val) => { if (val) { clearAppData.value = true; if (isIosDevice.value) ElMessage.warning('iOS 设备暂不支持自动安装，执行时会被拦截') } }
+const loadInstallPackages = async () => { try { const { data } = await api.get('/ui-automation/midscene/packages/'); installPackages.value = data.results || [] } catch (e) {} }
+const onInstallPackageChange = (val) => { const pkg = installPackages.value.find(p => p.id === val); if (!pkg) return; clearAppData.value = pkg.platform === 'android'; if (isIosDevice.value && pkg.platform === 'ios') ElMessage.info('iOS 覆盖安装并保留数据，不执行清除数据') }
 const loadMidsceneConfig = async () => {
   try {
     const { data } = await api.get('/ui-automation/midscene/config/')
@@ -1031,6 +1195,125 @@ const renameReplayEntry = async () => {
     await loadCases()
     ElMessage.success('已重命名')
   } catch (e) { if (e !== 'cancel') ElMessage.error('重命名失败') }
+}
+const showRerunStepDialog = ref(false)
+const rerunStepIndex = ref(0)
+const rerunStepDeviceId = ref(null)
+const rerunStarting = ref(false)
+const rerunStepText = computed(() => selectedReplay.value?.steps?.[rerunStepIndex.value]?.instruction || '')
+const rerunDevices = computed(() => devices.value.filter(d => d.status !== 'offline'))
+const openRerunStep = (si) => {
+  rerunStepIndex.value = si
+  rerunStepDeviceId.value = selectedDeviceIds.value[0] || rerunDevices.value[0]?.id || null
+  showRerunStepDialog.value = true
+}
+const startRerunStep = async () => {
+  if (!currentCaseId.value) { ElMessage.warning('请先选择用例'); return }
+  if (!rerunStepDeviceId.value) { ElMessage.warning('请选择重录设备'); return }
+  rerunStarting.value = true
+  try {
+    const { data } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/rerun_step/`, {
+      replay_index: selectedReplayIndex.value,
+      step_index: rerunStepIndex.value,
+      device_id: rerunStepDeviceId.value,
+    })
+    showRerunStepDialog.value = false
+    executions.value.push({
+      id: data.execution_id,
+      task_id: data.task_id,
+      device_id: rerunStepDeviceId.value,
+      device_name: deviceNameById(rerunStepDeviceId.value),
+      replay_index: selectedReplayIndex.value,
+      rerun_mark: `重录步骤 ${rerunStepIndex.value + 1}`,
+      status: 'pending',
+      status_display: '待执行',
+      progress: 0,
+      total_steps: selectedReplay.value?.steps?.length || 0,
+      steps_detail: [],
+      passed_steps: 0,
+      failed_steps: 0,
+      screenshot: '',
+      reasoning: [],
+      step: 0,
+    })
+    activeExecIndex.value = String(executions.value.length - 1)
+    startPolling()
+    ElMessage.success(`已开始重录步骤 ${rerunStepIndex.value + 1}，请保持设备页面不变直到完成`)
+  } catch (e) {
+    ElMessage.error('重录启动失败: ' + (e.response?.data?.error || e.message))
+  } finally {
+    rerunStarting.value = false
+  }
+}
+const branchHasElse = (si) => {
+  // 依据当前脚本的 ai_prompt 解析，判断该步骤是否为「含 else 组」的分支头
+  try {
+    const items = parsePrompt(form.ai_prompt || '')
+    let leaf = 0
+    const walk = (list) => {
+      for (const it of list) {
+        if (it.kind === 'branch') {
+          if (leaf === si) return (it.elseChildren || []).length > 0
+          leaf += 1
+          for (const c of it.children || []) { if (leaf === si) return false; leaf += 1 }
+          for (const c of it.elseChildren || []) { if (leaf === si) return false; leaf += 1 }
+        } else {
+          if (leaf === si) return false
+          leaf += 1
+        }
+      }
+      return false
+    }
+    return walk(items)
+  } catch (e) { return false }
+}
+const showRerunElseDialog = ref(false)
+const rerunElseBranchIndex = ref(0)
+const rerunElseDeviceId = ref(null)
+const rerunElseStarting = ref(false)
+const rerunElseBranchText = computed(() => selectedReplay.value?.steps?.[rerunElseBranchIndex.value]?.instruction || '')
+const openRerunElse = (si) => {
+  rerunElseBranchIndex.value = si
+  rerunElseDeviceId.value = selectedDeviceIds.value[0] || rerunDevices.value[0]?.id || null
+  showRerunElseDialog.value = true
+}
+const startRerunElse = async () => {
+  if (!currentCaseId.value) { ElMessage.warning('请先选择用例'); return }
+  if (!rerunElseDeviceId.value) { ElMessage.warning('请选择重录设备'); return }
+  rerunElseStarting.value = true
+  try {
+    const { data } = await api.post(`/ui-automation/midscene/cases/${currentCaseId.value}/rerun_else/`, {
+      replay_index: selectedReplayIndex.value,
+      branch_step_index: rerunElseBranchIndex.value,
+      device_id: rerunElseDeviceId.value,
+    })
+    showRerunElseDialog.value = false
+    executions.value.push({
+      id: data.execution_id,
+      task_id: data.task_id,
+      device_id: rerunElseDeviceId.value,
+      device_name: deviceNameById(rerunElseDeviceId.value),
+      replay_index: selectedReplayIndex.value,
+      rerun_mark: `补录 else（分支 ${rerunElseBranchIndex.value + 1}）`,
+      status: 'pending',
+      status_display: '待执行',
+      progress: 0,
+      total_steps: selectedReplay.value?.steps?.length || 0,
+      steps_detail: [],
+      passed_steps: 0,
+      failed_steps: 0,
+      screenshot: '',
+      reasoning: [],
+      step: 0,
+    })
+    activeExecIndex.value = String(executions.value.length - 1)
+    startPolling()
+    ElMessage.success(`已开始补录分支 ${rerunElseBranchIndex.value + 1} 的 else，请保持设备 else 态页面不变`)
+  } catch (e) {
+    ElMessage.error('补录 else 启动失败: ' + (e.response?.data?.error || e.message))
+  } finally {
+    rerunElseStarting.value = false
+  }
 }
 const connectNetwork = async () => {
   if (!networkForm.ip.trim()) { ElMessage.warning('请输入 IP'); return }
@@ -1301,6 +1584,7 @@ const editSequence = (seq) => {
     items: (seq.items || []).map(it => ({
       case_id: it.case, clear_relaunch: it.clear_relaunch,
       break_on_fail: it.break_on_fail, replay_mode: it.replay_mode, replay_index: it.replay_index,
+      install_package_id: it.install_package_id ?? null,
     })),
   })
   if (!seqForm.items.length) addSeqItem()
@@ -1308,7 +1592,7 @@ const editSequence = (seq) => {
 const addSeqItem = () => {
   seqForm.items.push({
     case_id: null, clear_relaunch: seqForm.items.length === 0,
-    break_on_fail: true, replay_mode: 'auto', replay_index: 0,
+    break_on_fail: true, replay_mode: 'auto', replay_index: 0, install_package_id: null,
   })
 }
 const removeSeqItem = (i) => { seqForm.items.splice(i, 1) }
@@ -1327,6 +1611,7 @@ const saveSequence = async () => {
     items: items.map((it, i) => ({
       case_id: it.case_id, clear_relaunch: i === 0 ? true : it.clear_relaunch,
       break_on_fail: it.break_on_fail, replay_mode: it.replay_mode, replay_index: it.replay_index,
+      install_package_id: it.install_package_id || null,
     })),
   }
   seqSaving.value = true
@@ -2259,6 +2544,14 @@ onUnmounted(() => { stopPolling(); stopSeqPolling() })
   &__meta { color: #909399; font-size: 11px; }
 }
 
+.ms-rerun {
+  &__step { font-weight: 600; color: #303133; margin-bottom: 8px; font-size: 13px; }
+  &__hint { color: #909399; font-size: 12px; line-height: 1.7; margin: 0 0 14px; }
+  &__row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  &__label { flex: 0 0 64px; color: #909399; font-size: 13px; }
+  &__meta { font-size: 13px; color: #303133; }
+}
+
 /* ============================================
    Responsive
    ============================================ */
@@ -2313,6 +2606,17 @@ onUnmounted(() => { stopPolling(); stopSeqPolling() })
     padding-left: 26px;
     &::before { background: rgba(0,0,0,.14); }
     & .ms-step-row__idx { border-left: 1px solid rgba(0,0,0,.12); }
+  }
+  &.is-drag-over {
+    outline: 2px dashed var(--ms-signal);
+    outline-offset: -2px;
+    background: rgba(255,250,0,.08);
+  }
+  &.is-else-marker {
+    padding-left: 26px;
+    &::before { background: rgba(0,0,0,.14); }
+    & .ms-step-row__idx { border-left: 1px solid rgba(0,0,0,.12); }
+    & .ms-step-row__else { color: #b4532e; font-weight: 700; font-size: 13px; }
   }
   &__prefix { flex-shrink: 0; font-size: 12px; }
   &__colon { flex-shrink: 0; font-size: 13px; }

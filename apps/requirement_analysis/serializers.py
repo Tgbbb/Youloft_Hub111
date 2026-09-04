@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig
+    GenerationConfig, SmokeCase
 )
 
 
@@ -253,6 +253,10 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     reviewer_model_name = serializers.CharField(source='reviewer_model_config.name', read_only=True)
     writer_prompt_name = serializers.CharField(source='writer_prompt_config.name', read_only=True)
     reviewer_prompt_name = serializers.CharField(source='reviewer_prompt_config.name', read_only=True)
+    has_smoke_source = serializers.SerializerMethodField(read_only=True)
+
+    def get_has_smoke_source(self, obj):
+        return bool(obj.modao_canvas_snapshot)
     
     class Meta:
         model = TestCaseGenerationTask
@@ -266,6 +270,7 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
                  'output_mode', 'multimodal_mode', 'page_images_base64',
                  'clarification_questions', 'clarification_answers',
+                 'has_smoke_source',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
         read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases',
                           'review_feedback', 'final_test_cases', 'generation_log',
@@ -317,5 +322,24 @@ class GenerationConfigSerializer(serializers.ModelSerializer):
             'id', 'name', 'default_output_mode', 'default_output_mode_display',
             'enable_auto_review', 'review_timeout',
             'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class SmokeCaseSerializer(serializers.ModelSerializer):
+    """冒烟测试用例记录序列化器"""
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    project_name = serializers.CharField(source='project.name', read_only=True, default='')
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, default='')
+
+    class Meta:
+        model = SmokeCase
+        fields = [
+            'id', 'title', 'module_names', 'source_type', 'source_type_display',
+            'source_ref', 'modules_snapshot', 'steps', 'preconditions',
+            'status', 'status_display', 'progress', 'error_message',
+            'project', 'project_name', 'merged_from_ids',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
