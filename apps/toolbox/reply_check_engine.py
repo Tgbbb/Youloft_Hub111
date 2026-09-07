@@ -118,8 +118,25 @@ def _strip_script_style(html):
 
 def _is_verified_text(text):
     """正文含验证/关闭标记 → 该邮件是验证/确认回复，而非未回复请求。"""
-    lowered = (text or '').lower()
+    lowered = _primary_body(text or '').lower()
     return any(kw.lower() in lowered for kw in _VERIFIED_KEYWORDS)
+
+
+# 引用/转发历史的边界（内嵌邮件头或分隔线），用于只取当前邮件正文首部
+_QUOTE_BOUNDARY_RE = re.compile(
+    r'^[ \t]*(主\s*题\s*[:：]|发件人\s*[:：]|收件人\s*[:：]|-{3,}|_{3,}|═{3,})',
+    re.I | re.M)
+
+
+def _primary_body(text):
+    """截取正文首部（当前邮件自身内容），避开被引用/转发的旧邮件历史。"""
+    if not text:
+        return ''
+    m = _QUOTE_BOUNDARY_RE.search(text)
+    if m:
+        return text[:m.start()].strip()
+    # 无明确引用边界时回退取前 300 字，避免长引用把正文首尾淹没
+    return text[:300].strip() or text.strip()
 
 
 def normalize_subject(s):

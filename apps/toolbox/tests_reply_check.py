@@ -87,6 +87,11 @@ class ReplyCheckEngineLogicTests(SimpleTestCase):
     def test_is_verified_text_false(self):
         self.assertFalse(reply_check_engine._is_verified_text('请QC检查'))
 
+    def test_is_verified_ignores_quoted_history(self):
+        body = ('hi 大家好：辛苦配置如下：\n广告ID：123\n'
+                '-------\n主　题：回复：旧邮件\n已验证\n已检查')
+        self.assertFalse(reply_check_engine._is_verified_text(body))
+
     def test_build_search_candidates_short_prefix_fallback(self):
         from apps.toolbox import push_check_engine
         cands = push_check_engine.build_search_candidates('身体有恙，腿先知?')
