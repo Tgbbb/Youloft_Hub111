@@ -148,7 +148,8 @@ def _send_progress_update_run(run_id, status, progress, message=''):
 
 @shared_task(bind=True, max_retries=0)
 def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=False,
-                          replay_index=0, clear_app_data=False, install_package_id=None):
+                          replay_index=0, clear_app_data=False, install_package_id=None,
+                          script_replay=False):
     """
     异步执行 Midscene 测试任务（纯 Python Runner）。
     """
@@ -178,7 +179,7 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
             raise ValueError('没有选择执行设备')
 
         model_config = midscene_case.ai_model_config
-        if not model_config or not model_config.api_key:
+        if not script_replay and (not model_config or not model_config.api_key):
             raise ValueError('未配置 AI 模型或 API Key')
 
         # 锁定设备
@@ -258,6 +259,7 @@ def execute_midscene_task(self, execution_id, record_mode=False, replay_mode=Fal
             replay_index=replay_index,
             clear_app_data=clear_app_data,
             app_package_override=app_package_override,
+            script_replay=script_replay,
         )
 
         # ---- 保存结果 ----

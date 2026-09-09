@@ -1136,10 +1136,8 @@ def call_vlm(png_bytes, instruction, model_config, width=1080, height=1920, cont
 
 def run_midscene_test(ai_prompt, device, model_config, execution_record, progress_callback=None,
                       record_mode=False, replay_mode=False, replay_index=0, clear_app_data=False,
-                      app_package_override='', skip_launch=False, rerun_step=None, rerun_else_slot=None):
-    steps = parse_ai_prompt(ai_prompt)
-    if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
-
+                      app_package_override='', skip_launch=False, rerun_step=None, rerun_else_slot=None,
+                      script_replay=False):
     def _user_stopped():
         """VLM 调用期间检查用户是否点了停止（避免最长 90s×3 重试无法中断）。"""
         try:
@@ -1152,7 +1150,7 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
     mc = execution_record.midscene_case
     ai_context = (mc.ai_act_context if mc and mc.ai_act_context else '')
     # 回放: 兼容旧格式(dict)和新格式(list)
-    _raw_replay = mc.replay_data if mc and replay_mode else None
+    _raw_replay = mc.replay_data if mc and (replay_mode or script_replay) else None
     if isinstance(_raw_replay, dict):
         _raw_replay = [_raw_replay]
     if _raw_replay and isinstance(_raw_replay, list) and len(_raw_replay) > 0:
@@ -1160,6 +1158,17 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
         replay_data = _raw_replay[idx]
     else:
         replay_data = None
+    # 纯动作直放：跳过 ai_prompt/VLM，按 replay_data.steps 顺序执行动作
+    if script_replay:
+        if not (replay_data and isinstance(replay_data.get('steps'), list) and replay_data['steps']):
+            raise ValueError('直放模式需要有效的回放脚本(replay_data.steps)')
+        steps = [
+            {'instruction': (s.get('instruction') or f'步骤 {i+1}')}
+            for i, s in enumerate(replay_data['steps'])
+        ]
+    else:
+        steps = parse_ai_prompt(ai_prompt)
+    if not steps: raise ValueError('ai_prompt 中没有有效的测试步骤')
     recording = []  # 录制数据：每步的 instruction + actions + after_hash
     pre_step_anomalies = []  # 启动阶段采集的异常（随第一个步骤结果落库）
 
@@ -1307,6 +1316,67 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
             # 本步骤异常采集：启动阶段异常并入第一步，纠错埋点随后追加
             step_anomalies = list(pre_step_anomalies)
             pre_step_anomalies = []
+
+            # ---- 纯动作直放：跳过 VLM/门控，直接按录制动作序列播放 ----
+            if script_replay:
+                if progress_callback:
+                    progress_callback(step_idx+1, len(steps), {
+                        'type': 'step_start', 'step': step_idx+1, 'total': len(steps),
+                        'instruction': instruction, 'progress': int(step_idx / len(steps) * 100)
+                    })
+                r_step = replay_data.get('steps')[step_idx] if replay_data and replay_data.get('steps') else {}
+                if not isinstance(r_step, dict):
+                    r_step = {}
+                actions = r_step.get('actions') or []
+                wait_after = float(r_step.get('wait_after') or 0)
+                try:
+                    if actions:
+                        r_stats = _replay_actions(device_id, ios_dev, actions, width, height,
+                                                  anomalies=step_anomalies)
+                    else:
+                        r_stats = {'played': 0, 'skipped': 0}
+                    if wait_after > 0:
+                        time.sleep(min(wait_after, 120.0))
+                    if _user_stopped():
+                        stopped = True
+                        logger.info('[Runner] 用户已停止，中断直放')
+                        results.append({'step': step_idx+1, 'instruction': instruction,
+                                        'status': 'stopped', 'screenshot': '',
+                                        'aiReasoning': ['[直放] 用户已停止执行'],
+                                        'action': 'script_replay', 'anomalies': list(step_anomalies)})
+                        break
+                    reasoning = f'[直放] 执行 {r_stats["played"]} 个动作'
+                    if r_stats.get('skipped'):
+                        reasoning += f'，跳过 {r_stats["skipped"]} 个'
+                    results.append({'step': step_idx+1, 'instruction': instruction,
+                                    'status': 'passed', 'screenshot': '',
+                                    'aiReasoning': [reasoning],
+                                    'action': 'script_replay', 'anomalies': list(step_anomalies)})
+                    if progress_callback:
+                        progress_callback(step_idx+1, len(steps), {
+                            'type': 'step_done', 'step': step_idx+1, 'total': len(steps),
+                            'instruction': instruction, 'status': 'passed', 'screenshot': '',
+                            'aiReasoning': [reasoning], 'action': 'script_replay',
+                            'anomalies': list(step_anomalies),
+                            'progress': int((step_idx+1) / len(steps) * 100)
+                        })
+                except Exception as e:
+                    logger.error(f'[Runner] 直放步骤 {step_idx+1} 失败: {e}')
+                    results.append({'step': step_idx+1, 'instruction': instruction,
+                                    'status': 'failed', 'action': 'script_replay',
+                                    'error': str(e), 'screenshot': '',
+                                    'aiReasoning': [f'[直放] 执行异常: {e}'],
+                                    'anomalies': list(step_anomalies)})
+                    if progress_callback:
+                        progress_callback(step_idx+1, len(steps), {
+                            'type': 'step_done', 'step': step_idx+1, 'total': len(steps),
+                            'instruction': instruction, 'status': 'failed', 'screenshot': '',
+                            'aiReasoning': [f'[直放] 执行异常: {e}'],
+                            'anomalies': list(step_anomalies),
+                            'progress': int((step_idx+1) / len(steps) * 100)
+                        })
+                step_idx += 1
+                continue
 
             # 补录 else：只执行分支头 + 其 else 组子步骤，其余步骤仅追加 skipped 结果
             if rerun_else_active is not None and step_idx not in rerun_else_active:

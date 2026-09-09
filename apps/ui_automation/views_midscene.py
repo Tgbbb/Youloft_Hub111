@@ -561,6 +561,178 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=500)
 
 
+class MidsceneRecordSessionViewSet(viewsets.GenericViewSet):
+    """真机手操录制会话（Android getevent 采集 -> 动作脚本预览/保存）。"""
+    permission_classes = [IsAuthenticated]
+
+    def _get_device(self, device_id):
+        try:
+            device = MidsceneDevice.objects.get(id=int(device_id))
+        except (TypeError, ValueError, MidsceneDevice.DoesNotExist):
+            return None
+        return device
+
+    @action(detail=False, methods=['post'])
+    def start(self, request):
+        """锁设备并启动 getevent 采集，返回 session_id。"""
+        device_id = request.data.get('device_id')
+        device = self._get_device(device_id)
+        if not device:
+            return Response({'error': '设备不存在'}, status=404)
+        if device.platform != 'android':
+            return Response({'error': '真机手操录制 v1 仅支持 Android 设备'}, status=400)
+        if device.status == 'locked' and device.locked_by != request.user:
+            return Response({'error': f'设备已被 {device.locked_by.username} 锁定'}, status=409)
+        if device.status in ('offline',):
+            return Response({'error': f'设备 {device.name or device.device_id} 不在线'}, status=400)
+        busy = MidsceneExecutionRecord.objects.filter(
+            device=device, status__in=['pending', 'running'],
+        ).exists()
+        if busy:
+            return Response({'error': f'设备 {device.name or device.device_id} 正在执行中，请等待完成后再发起'}, status=409)
+        try:
+            from .manual_recorder import start_session
+            session_id = start_session(device, request.user)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=409)
+        except Exception as e:
+            logger.error(f'[ManualRecorder] 启动录制失败: {e}', exc_info=True)
+            return Response({'error': f'启动录制失败: {e}'}, status=500)
+        return Response({
+            'session_id': session_id,
+            'device_id': device.id,
+            'device_name': device.name or device.device_id,
+            'started_at': timezone.now().isoformat(),
+            'message': '录制已开始，请在手机上操作（抬起停顿 1.5 秒自动切分为一步）',
+        })
+
+    @action(detail=True, methods=['post'])
+    def stop(self, request, pk=None):
+        """停止采集、解析动作脚本并返回预览（数据缓存 30 分钟供保存）。"""
+        try:
+            from .manual_recorder import stop_session
+            steps, size = stop_session(pk)
+        except KeyError:
+            return Response({'error': '录制会话不存在或已结束，请重新开始录制'}, status=404)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
+        except Exception as e:
+            logger.error(f'[ManualRecorder] 停止录制失败: {e}', exc_info=True)
+            return Response({'error': f'停止录制失败: {e}'}, status=500)
+        return Response({
+            'session_id': pk,
+            'steps': steps,
+            'step_count': len(steps),
+            'resolution': {'width': size['width'], 'height': size['height']},
+            'message': f'录制已停止，共解析 {len(steps)} 步',
+        })
+
+    @action(detail=True, methods=['post'])
+    def save(self, request, pk=None):
+        """把已停止的录制保存为独立用例（绑定项目）。
+
+        入参：name / project_id（必选）。生成 ai_prompt 占位步骤 + replay_data
+        单条目（mode='manual'），脚本库按该标记聚合；不再支持追加到现有用例。
+        """
+        try:
+            from .manual_recorder import get_stopped_preview, build_replay_data, discard_stopped
+            preview = get_stopped_preview(pk)
+        except KeyError:
+            return Response({'error': '录制会话不存在或已过期，请重新录制'}, status=404)
+        steps = preview['steps']
+        if not steps:
+            return Response({'error': '没有解析到任何动作步骤，请重新录制'}, status=400)
+        try:
+            device = MidsceneDevice.objects.get(id=preview['device_id'])
+        except MidsceneDevice.DoesNotExist:
+            return Response({'error': '录制设备不存在'}, status=404)
+
+        case_id = request.data.get('case_id')
+        name = str(request.data.get('name', '')).strip()
+        entry = build_replay_data(steps, device, preview['width'], preview['height'], name=name)
+        device_name = device.name or device.device_id
+        entry['name'] = name or f"手操录制 {timezone.now().strftime('%m-%d %H:%M')} [{device_name}]"
+
+        if case_id not in (None, '', 0, '0'):
+            return Response({'error': '手操录制已改为独立用例保存，不再追加到现有用例'}, status=400)
+
+        project_id = request.data.get('project_id')
+        if project_id in (None, '', 'null'):
+            return Response({'error': '请选择所属项目'}, status=400)
+        try:
+            project_id = int(project_id)
+        except (TypeError, ValueError):
+            return Response({'error': '无效的项目 ID'}, status=400)
+
+        # 占位 ai_prompt 每步一行，回放/直放都按 replay_data 执行
+        ai_prompt = '\n'.join(f'步骤 {i+1}' for i in range(len(steps)))
+        midscene_case = MidsceneCase.objects.create(
+            name=name or f"手操录制 {timezone.now().strftime('%m-%d %H:%M')} [{device_name}]",
+            ai_prompt=ai_prompt,
+            project_id=project_id,
+            replay_data=[entry],
+            created_by=request.user,
+        )
+        discard_stopped(pk)
+        return Response({
+            'case_id': midscene_case.id,
+            'case_name': midscene_case.name,
+            'replay_index': 0,
+            'step_count': len(steps),
+            'message': f'已新建用例「{midscene_case.name}」（回放脚本 #0）',
+        })
+
+    @action(detail=False, methods=['get'])
+    def scripts(self, request):
+        """手操脚本库：聚合 replay_data 中含 mode=='manual' 条目的用例。
+
+        查询参数 project（可选）：按项目过滤。返回每条 manual 条目的
+        entry_index 供执行/重命名/删除定位；历史"追加到普通用例"的数据
+        同样列出（兼容旧保存方式）。latest_result 为该用例最近一次执行。
+        """
+        qs = MidsceneCase.objects.all()
+        project_id = request.query_params.get('project')
+        if project_id not in (None, '', 'null'):
+            try:
+                qs = qs.filter(project_id=int(project_id))
+            except (TypeError, ValueError):
+                return Response({'error': '无效的项目 ID'}, status=400)
+        results = []
+        for case in qs:
+            raw = case.replay_data
+            entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            for idx, entry in enumerate(entries):
+                if not isinstance(entry, dict) or entry.get('mode') != 'manual':
+                    continue
+                dev = entry.get('device') or {}
+                res = dev.get('resolution') if isinstance(dev, dict) else None
+                steps = entry.get('steps')
+                latest = case.execution_records.first()
+                results.append({
+                    'case_id': case.id,
+                    'entry_index': idx,
+                    'name': entry.get('name') or case.name,
+                    'project': case.project.name if case.project else '',
+                    'project_id': case.project_id,
+                    'device': (dev or {}).get('name') or '',
+                    'platform': (dev or {}).get('platform') or 'android',
+                    'resolution': {
+                        'width': res.get('width') if isinstance(res, dict) else None,
+                        'height': res.get('height') if isinstance(res, dict) else None,
+                    } if isinstance(res, dict) else None,
+                    'step_count': len(steps) if isinstance(steps, list) else 0,
+                    'entry_count': len(entries),
+                    'recorded_at': entry.get('recorded_at') or case.updated_at.isoformat(),
+                    'latest_result': {
+                        'status': latest.status,
+                        'pass_rate': latest.pass_rate,
+                        'finished_at': latest.finished_at,
+                    } if latest else None,
+                })
+        results.sort(key=lambda r: str(r['recorded_at'] or ''), reverse=True)
+        return Response(results)
+
+
 class MidsceneCaseViewSet(viewsets.ModelViewSet):
     """Midscene AI 用例"""
     queryset = MidsceneCase.objects.all()
@@ -839,6 +1011,11 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         record_mode = request.data.get('record', False)
         replay_mode = request.data.get('replay', False)
         clear_app_data = request.data.get('clear_app_data', False)
+        script_replay = bool(request.data.get('script_replay', False))
+        if script_replay:
+            if not replay_mode:
+                return Response({'error': '纯动作直放需要开启回放模式'}, status=400)
+            auto_plan = False
 
         # 安装包（可选）：选了执行前覆盖安装并清数据；包平台需与设备平台一致
         install_package_id = request.data.get('install_package_id')
@@ -892,7 +1069,18 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
         # 校验无 pending/running 任务后才创建；失败设备带 error 不阻断其余。
         # Celery 任务在事务提交后再投递，避免 worker 抢先执行读不到记录。
         from .midscene_runner import parse_ai_prompt
-        steps = parse_ai_prompt(midscene_case.ai_prompt)
+        if script_replay:
+            raw = midscene_case.replay_data
+            entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            if not entries or default_replay_index >= len(entries):
+                return Response({'error': '无效的录制索引'}, status=400)
+            entry = entries[default_replay_index] if isinstance(entries[default_replay_index], dict) else {}
+            entry_steps = entry.get('steps') if isinstance(entry, dict) else None
+            if not isinstance(entry_steps, list) or not entry_steps:
+                return Response({'error': '回放脚本没有有效的步骤'}, status=400)
+            steps = entry_steps
+        else:
+            steps = parse_ai_prompt(midscene_case.ai_prompt)
         created = []
         failed = []
         with transaction.atomic():
@@ -951,6 +1139,7 @@ class MidsceneCaseViewSet(viewsets.ModelViewSet):
                 execution.id, record_mode=record_mode, replay_mode=replay_mode,
                 replay_index=ridx, clear_app_data=clear_app_data,
                 install_package_id=install_package_id,
+                script_replay=script_replay,
             )
             execution.task_id = task.id
             execution.save(update_fields=['task_id'])

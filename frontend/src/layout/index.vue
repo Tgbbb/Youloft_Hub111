@@ -92,6 +92,7 @@
               <el-menu-item index="/ai-intelligent-mode/midscene/executions"><el-icon><Timer /></el-icon><span>Midscene 执行历史</span></el-menu-item>
               <el-menu-item index="/ai-intelligent-mode/midscene/devices"><el-icon><Cellphone /></el-icon><span>Midscene 设备管理</span></el-menu-item>
               <el-menu-item index="/ai-intelligent-mode/midscene/packages"><el-icon><Box /></el-icon><span>Midscene 安装包管理</span></el-menu-item>
+              <el-menu-item index="/ai-intelligent-mode/midscene/record"><el-icon><Edit /></el-icon><span>真机录制工作台</span></el-menu-item>
             </template>
 
             <!-- 配置中心 -->
@@ -275,6 +276,7 @@ const breadcrumbTitle = computed(() => {
     '/ai-intelligent-mode/midscene/executions': 'Midscene 执行历史',
     '/ai-intelligent-mode/midscene/devices': 'Midscene 设备管理',
     '/ai-intelligent-mode/midscene/packages': 'Midscene 安装包管理',
+    '/ai-intelligent-mode/midscene/record': '真机录制工作台',
     '/configuration/ai-model': t('menu.aiModelConfig'),
     '/configuration/prompt-config': t('menu.promptConfig'),
     '/configuration/generation-config': t('menu.generationConfig'),

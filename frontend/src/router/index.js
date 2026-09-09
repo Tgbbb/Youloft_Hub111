@@ -301,6 +301,11 @@ const routes = [
                 path: 'midscene/packages',
                 name: 'MidscenePackages',
                 component: () => import('@/views/ui-automation/ai/MidscenePackageList.vue')
+            },
+            {
+                path: 'midscene/record',
+                name: 'MidsceneRecorder',
+                component: () => import('@/views/ui-automation/ai/MidsceneRecorder.vue')
             }
         ]
     },

@@ -28,7 +28,7 @@ from .views_midscene import (
     MidsceneProjectViewSet, MidsceneDeviceViewSet,
     MidsceneCaseViewSet, MidsceneCaseFolderViewSet, MidsceneExecutionRecordViewSet,
     MidsceneAppPackageViewSet, MidsceneAppInstallRecordViewSet, MidsceneConfigView,
-    MidsceneSequenceViewSet, MidsceneSequenceRunViewSet,
+    MidsceneSequenceViewSet, MidsceneSequenceRunViewSet, MidsceneRecordSessionViewSet,
 )
 
 router = DefaultRouter()
@@ -69,6 +69,7 @@ router.register(r'midscene/sequences', MidsceneSequenceViewSet, basename='midsce
 router.register(r'midscene/sequence-runs', MidsceneSequenceRunViewSet, basename='midscene-sequence-runs')
 router.register(r'midscene/packages', MidsceneAppPackageViewSet, basename='midscene-packages')
 router.register(r'midscene/install-records', MidsceneAppInstallRecordViewSet, basename='midscene-install-records')
+router.register(r'midscene/record-sessions', MidsceneRecordSessionViewSet, basename='midscene-record-sessions')
 
 urlpatterns = [
     path('', include(router.urls)),
