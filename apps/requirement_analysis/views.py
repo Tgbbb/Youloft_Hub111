@@ -859,25 +859,30 @@ class SmokeCaseViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export')
     def export(self, request, pk=None):
-        """导出为 ZenTao 兼容 CSV：一行记录，步骤/预期多行逐行对应，UTF-8 BOM，带表头。"""
+        """导出为 ZenTao 兼容 CSV：一行记录，步骤/预期多行逐行对应，GBK 编码（禅道可直接导入）。"""
         from django.http import HttpResponse
         import urllib.parse
         import csv as csv_mod
+        import io
         sc = self.get_object()
-        response = HttpResponse(content_type='text/csv; charset=utf-8')
         filename = (sc.title or '冒烟测试用例').replace('"', '')
+        buf = io.StringIO()
+        writer = csv_mod.writer(buf, lineterminator='\n')
+        writer.writerow(['用例标题', '前置条件', '步骤', '预期', '实际情况'])
+        steps = '\n'.join(f"{st.get('no', '')}. {st.get('step', '')}" for st in sc.steps)
+        expects = '\n'.join(f"{st.get('no', '')}. {st.get('expected', '')}" for st in sc.steps)
+        writer.writerow([sc.title or '', sc.preconditions or '', steps, expects, ''])
+        csv_bytes = buf.getvalue().encode('gbk')
+
+        response = HttpResponse(content_type='text/csv; charset=gbk')
         try:
             response['Content-Disposition'] = (
                 "attachment; filename*=UTF-8''" +
                 urllib.parse.quote(filename) + '.csv')
         except Exception:
             response['Content-Disposition'] = 'attachment; filename="smoke_case.csv"'
-        response.write('\ufeff')
-        writer = csv_mod.writer(response, lineterminator='\n')
-        writer.writerow(['用例标题', '前置条件', '步骤', '预期', '实际情况'])
-        steps = '\n'.join(f"{st.get('no', '')}. {st.get('step', '')}" for st in sc.steps)
-        expects = '\n'.join(f"{st.get('no', '')}. {st.get('expected', '')}" for st in sc.steps)
-        writer.writerow([sc.title or '', sc.preconditions or '', steps, expects, ''])
+        response['Content-Length'] = str(len(csv_bytes))
+        response.content = csv_bytes
         return response
 
 

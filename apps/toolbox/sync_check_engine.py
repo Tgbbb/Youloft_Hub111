@@ -229,8 +229,13 @@ def _pick_backend_record(records, target_codes):
     return best
 
 
-def _fuzzy_contains(needle, haystack, min_ratio=0.72):
-    """容错包含匹配：归一化子串命中，或允许少量 OCR 误识（含单字变多字）。"""
+def _fuzzy_contains(needle, haystack, min_ratio=0.66):
+    """容错包含匹配：归一化子串命中，或允许少量 OCR 误识（含单字变多字）。
+
+    阈值说明：短中文标题（约 8-13 字）常见 OCR 将 2-3 个字识别错，
+    SequenceMatcher 比率会掉到 0.70 附近；而真实差异通常错 4 字以上（比率 <=0.60）。
+    故取 0.66：放过含 3 字 OCR 噪声的近似，仍拦截明显不同的标题/内容。
+    """
     n = pce.normalize_title(needle or '').lower()
     h = pce.normalize_title(haystack or '').lower()
     if not n or not h:
@@ -403,8 +408,82 @@ def _vision_rows_to_parsed(vrows):
     return {'raw': '', 'rows': out}
 
 
+_VISION_MAX_DIM = 1568  # 超长边压到该像素，避免大图 base64 请求体过大 / 处理超时
+
+
+def _detect_image_mime(image_bytes):
+    """按文件头探测真实图片类型，避免始终硬编码 image/png。"""
+    head = (image_bytes or b'')[:16]
+    if head.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if head.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if head.startswith(b'GIF87a') or head.startswith(b'GIF89a'):
+        return 'image/gif'
+    if head[0:4] == b'RIFF' and head[8:12] == b'WEBP':
+        return 'image/webp'
+    if head[0:2] == b'BM':
+        return 'image/bmp'
+    return 'image/png'
+
+
+def _prepare_image_data(image_bytes):
+    """压缩并识别图片：超长边缩小、转 JPEG q85，显著降低请求体与处理耗时。
+
+    返回 (base64_str, mime)。图片无法解码时原样返回 + 按文件头猜测类型。
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        import base64 as _b64
+        img = Image.open(_io.BytesIO(image_bytes))
+        # 只缩小不放大，保留小图精度
+        max_side = max(img.size) if img.size else 0
+        if max_side > _VISION_MAX_DIM:
+            ratio = _VISION_MAX_DIM / float(max_side)
+            new_size = (max(1, int(img.size[0] * ratio)),
+                        max(1, int(img.size[1] * ratio)))
+            img = img.convert('RGB').resize(new_size, Image.LANCZOS)
+        buf = _io.BytesIO()
+        img.convert('RGB').save(buf, format='JPEG', quality=85)
+        return _b64.b64encode(buf.getvalue()).decode('utf-8'), 'image/jpeg'
+    except Exception:
+        import base64 as _b64
+        return _b64.b64encode(image_bytes).decode('utf-8'), _detect_image_mime(image_bytes)
+
+
 def extract_rows_vision(image_bytes):
     """复用 TestHub Agent 配置的视觉模型从截图提取推送配置行；失败返回 None（调用方回退 OCR）。"""
+    try:
+        from apps.assistant import sdk_runtime
+        from openai import OpenAI
+    except Exception:
+        return None
+    try:
+        cfg = sdk_runtime.load_llm_config()
+        if not cfg.get('api_key'):
+            return None
+        b64, mime = _prepare_image_data(image_bytes)
+        base_url = (cfg.get('base_url') or '').rstrip('/') or None
+        client = OpenAI(api_key=cfg['api_key'], base_url=base_url, timeout=120, max_retries=2)
+        resp = client.chat.completions.create(
+            model=cfg['model'],
+            messages=[{
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': _VISION_PROMPT},
+                    {'type': 'image_url',
+                     'image_url': {'url': 'data:%s;base64,' % mime + b64}},
+                ],
+            }],
+            temperature=0,
+        )
+        text = (resp.choices[0].message.content) or ''
+        rows = _parse_vision_rows(text)
+        return _vision_rows_to_parsed(rows) if rows else None
+    except Exception as exc:
+        log('视觉模型提取失败，回退 OCR：%s' % exc)
+        return None
     try:
         from apps.assistant import sdk_runtime
         from openai import OpenAI

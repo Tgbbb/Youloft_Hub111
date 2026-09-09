@@ -1377,6 +1377,10 @@ export default {
       this.$router.push('/ai-generation/smoke-test-cases')
     },
     exportSmokeCsv() {
+      if (this.smokeCaseId) {
+        window.open(`/api/requirement-analysis/smoke-cases/${this.smokeCaseId}/export/`, '_blank')
+        return
+      }
       const r = this.smokeResult
       if (!r) return
       const steps = (r.steps || []).map(s => `${s.no}. ${s.step}`).join('\n')
