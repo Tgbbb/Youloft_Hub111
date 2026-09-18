@@ -20,7 +20,6 @@
             :disabled="isDeleting">
             {{ $t('testcase.batchDelete') }} ({{ selectedTestCases.length }})
           </button>
-          <button class="ag-btn ag-btn--ok" @click="startContinuousExecution">▶ 连续执行</button>
           <button class="ag-btn ag-btn--ghost" @click="exportToExcel">{{ $t('testcase.exportExcel') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="downloadImportTemplate">{{ $t('testcase.downloadImportTemplate') }}</button>
           <button class="ag-btn ag-btn--ghost" @click="openImportDialog">{{ $t('testcase.importCases') }}</button>
@@ -108,6 +107,20 @@
             <el-option label="边界" value="boundary" />
             <el-option label="权限" value="permission" />
             <el-option label="风险" value="risk" />
+          </el-select>
+        </div>
+        <div class="ag-filter__field">
+          <span class="ag-filter__label">EXEC</span>
+          <el-select
+            v-model="executionFilter"
+            :placeholder="'执行情况'"
+            clearable
+            popper-class="ag-dropdown"
+            @change="handleFilter"
+            class="ag-select-el ag-select-el--sm">
+            <el-option label="通过" value="passed" />
+            <el-option label="不通过" value="failed" />
+            <el-option label="未执行" value="unexecuted" />
           </el-select>
         </div>
         <div class="ag-filter__field ag-filter__field--search">
@@ -292,6 +305,7 @@ const priorityFilter = ref('')
 const versionFilter = ref('')
 const moduleFilter = ref('')
 const sceneTypeFilter = ref('')
+const executionFilter = ref('')
 const filterModules = ref([])
 const versions = ref([])
 const selectedTestCases = ref([])
@@ -327,6 +341,9 @@ const activeFilters = computed(() => {
   if (sceneTypeFilter.value) {
     f.push({ key: 'scene_type', label: '场景类型: ' + getSceneTypeText(sceneTypeFilter.value) })
   }
+  if (executionFilter.value) {
+    f.push({ key: 'execution_status', label: '执行情况: ' + getExecStatusText(executionFilter.value) })
+  }
   if (searchText.value) {
     f.push({ key: 'search', label: '搜索: ' + searchText.value })
   }
@@ -340,6 +357,7 @@ const removeFilter = (key) => {
     case 'module': moduleFilter.value = ''; handleFilter(); break
     case 'priority': priorityFilter.value = ''; handleFilter(); break
     case 'scene_type': sceneTypeFilter.value = ''; handleFilter(); break
+    case 'execution_status': executionFilter.value = ''; handleFilter(); break
     case 'search': searchText.value = ''; handleSearch(); break
   }
 }
@@ -350,6 +368,7 @@ const clearAllFilters = () => {
   moduleFilter.value = ''
   priorityFilter.value = ''
   sceneTypeFilter.value = ''
+  executionFilter.value = ''
   searchText.value = ''
   filterModules.value = []
   currentPage.value = 1
@@ -384,6 +403,7 @@ const fetchTestCases = async () => {
     if (projectFilter.value) params.project = projectFilter.value
     if (priorityFilter.value) params.priority = priorityFilter.value
     if (sceneTypeFilter.value) params.scene_type = sceneTypeFilter.value
+    if (executionFilter.value) params.execution_status = executionFilter.value
     if (versionFilter.value) params.versions = versionFilter.value
     if (moduleFilter.value) params.function_module = moduleFilter.value
     const response = await api.get('/testcases/', { params })
@@ -437,6 +457,7 @@ const goToTestCase = (id) => {
   if (moduleFilter.value) query.function_module = moduleFilter.value
   if (priorityFilter.value) query.priority = priorityFilter.value
   if (sceneTypeFilter.value) query.scene_type = sceneTypeFilter.value
+  if (executionFilter.value) query.execution_status = executionFilter.value
   if (searchText.value) query.search = searchText.value
   query.page = currentPage.value
   router.push({ path: `/ai-generation/testcases/${id}`, query })
@@ -449,6 +470,7 @@ const editTestCase = (tc) => {
   if (moduleFilter.value) query.function_module = moduleFilter.value
   if (priorityFilter.value) query.priority = priorityFilter.value
   if (sceneTypeFilter.value) query.scene_type = sceneTypeFilter.value
+  if (executionFilter.value) query.execution_status = executionFilter.value
   if (searchText.value) query.search = searchText.value
   query.page = currentPage.value
   router.push({ path: `/ai-generation/testcases/${tc.id}/edit`, query })
@@ -474,6 +496,7 @@ const startContinuousExecution = async () => {
   if (projectFilter.value) params.project = projectFilter.value
   if (priorityFilter.value) params.priority = priorityFilter.value
   if (sceneTypeFilter.value) params.scene_type = sceneTypeFilter.value
+  if (executionFilter.value) params.execution_status = executionFilter.value
   if (versionFilter.value) params.versions = versionFilter.value
   if (moduleFilter.value) params.function_module = moduleFilter.value
   loading.value = true
@@ -565,6 +588,7 @@ const batchDeleteTestCases = async () => {
 
 const getPriorityText = (p) => ({ low: t('testcase.low'), medium: t('testcase.medium'), high: t('testcase.high'), critical: t('testcase.critical') }[p] || p)
 const getSceneTypeText = (s) => ({ main_flow: '主流程', exception: '异常', boundary: '边界', permission: '权限', risk: '风险' }[s] || s)
+const getExecStatusText = (s) => ({ passed: '通过', failed: '不通过', unexecuted: '未执行' }[s] || s)
 const SCENE_TYPE_ORDER = { main_flow: 0, exception: 1, boundary: 2, permission: 3, risk: 4 }
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 }
 const sortByScenePriority = (a, b) => {
@@ -589,6 +613,7 @@ const exportToExcel = async () => {
         if (searchText.value) params.search = searchText.value
         if (projectFilter.value) params.project = projectFilter.value
         if (priorityFilter.value) params.priority = priorityFilter.value
+        if (executionFilter.value) params.execution_status = executionFilter.value
         if (versionFilter.value) params.versions = versionFilter.value
         const res = await api.get('/testcases/', { params })
         const results = res.data.results || []
@@ -634,7 +659,7 @@ const fetchProjects = async () => {
   try { const r = await api.get('/projects/'); projects.value = r.data.results || r.data || [] }
   catch (e) { ElMessage.error(t('testcase.fetchProjectsFailed')) }
 }
-const hasAnyFilter = () => projectFilter.value || versionFilter.value || moduleFilter.value || priorityFilter.value || sceneTypeFilter.value || searchText.value
+const hasAnyFilter = () => projectFilter.value || versionFilter.value || moduleFilter.value || priorityFilter.value || sceneTypeFilter.value || executionFilter.value || searchText.value
 
 onMounted(() => {
   fetchProjects(); fetchVersions()
@@ -643,6 +668,7 @@ onMounted(() => {
   if (route.query.function_module) moduleFilter.value = Number(route.query.function_module)
   if (route.query.priority) priorityFilter.value = route.query.priority
   if (route.query.scene_type) sceneTypeFilter.value = route.query.scene_type
+  if (route.query.execution_status) executionFilter.value = route.query.execution_status
   if (route.query.search) searchText.value = route.query.search
   if (route.query.page) currentPage.value = Number(route.query.page)
   if (hasAnyFilter()) fetchTestCases()

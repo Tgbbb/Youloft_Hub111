@@ -34,7 +34,7 @@ from django.db import models
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
     GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService, ModaoImport, SmokeCase,
+    GenerationConfig, AIModelService, ModaoImport, AxureImport, PrdImport, SmokeCase,
     check_image_pixel_limits, SMOKE_GENERATE_DEFAULT_PROMPT
 )
 from .serializers import (
@@ -2161,6 +2161,82 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             'message': '任务已提交，正在后台导入',
         })
 
+    @action(detail=False, methods=['post'], url_path='import-from-axure')
+    def import_from_axure(self, request):
+        """从 Axure 导出原型包导入——异步 Celery 任务，不整页截图，提取原生文字+UI图片"""
+        url = request.data.get('url', '').strip()
+        if not url:
+            return Response({'error': '请输入 Axure 原型入口链接'}, status=400)
+        if not re.match(r'^https?://', url, re.IGNORECASE):
+            return Response({'error': '仅支持 http/https 链接'}, status=400)
+
+        m = AxureImport.objects.create(
+            title=url[:50],
+            url=url,
+            status='pending',
+            stage='prepare',
+            progress=0,
+            progress_detail={
+                'stage': 'prepare',
+                'message': '任务已提交，等待执行',
+                'current': 0,
+                'total': 1,
+                'canvases': [],
+            },
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+
+        from .tasks import import_axure_task
+        celery_task = import_axure_task.delay(m.id, url)
+        m.celery_task_id = celery_task.id
+        m.save(update_fields=['celery_task_id'])
+
+        return Response({
+            'success': True,
+            'import_id': m.id,
+            'status': 'pending',
+            'message': '任务已提交，正在后台导入',
+        })
+
+    @action(detail=False, methods=['post'], url_path='import-from-prd')
+    def import_from_prd(self, request):
+        """从单文件 HTML PRD 文档导入——异步 Celery 任务，解析模块正文与内嵌原型图"""
+        url = request.data.get('url', '').strip()
+        if not url:
+            return Response({'error': '请输入 PRD 文档链接'}, status=400)
+        if not re.match(r'^https?://', url, re.IGNORECASE):
+            return Response({'error': '仅支持 http/https 链接'}, status=400)
+
+        m = PrdImport.objects.create(
+            title=url[:50],
+            url=url,
+            status='pending',
+            stage='prepare',
+            progress=0,
+            progress_detail={
+                'stage': 'prepare',
+                'message': '任务已提交，等待执行',
+                'current': 0,
+                'total': 1,
+                'canvases': [],
+            },
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+
+        from .tasks import import_prd_task
+        celery_task = import_prd_task.delay(m.id, url)
+        m.celery_task_id = celery_task.id
+        m.save(update_fields=['celery_task_id'])
+
+        return Response({
+            'success': True,
+            'import_id': m.id,
+            'status': 'pending',
+            'message': '任务已提交，正在后台导入',
+        })
+
     @action(detail=False, methods=['post'], url_path='replace-modao-screenshot')
     def replace_modao_screenshot(self, request):
         """替换墨刀画布截图"""
@@ -2379,7 +2455,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 questions = _run_with_timeout(run_clarify_multimodal, 300, '多模态需求澄清')
 
                 # 保存澄清结果到 task（含图片引用，便于断线恢复）
-                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
+                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q.get('question', '')} for i, q in enumerate(questions)]
                 task.multimodal_mode = True
                 # 优先存 URL 引用（modao 截图已在磁盘），base64 的才存 data
                 task_images = []
@@ -2478,7 +2554,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                 questions = _run_with_timeout(run_clarify, 120, '需求澄清')
 
                 # 保存澄清结果到 task
-                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q['question']} for i, q in enumerate(questions)]
+                task.clarification_questions = [{'id': q.get('id', i+1), 'question': q.get('question', '')} for i, q in enumerate(questions)]
                 task.pipeline_stage = 'awaiting_answers'
                 task.save(update_fields=['clarification_questions', 'pipeline_stage'])
 
@@ -5558,6 +5634,238 @@ class ModaoImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixin
                 continue
             screenshot_dir = os.path.join(settings.MEDIA_ROOT, 'modao_screenshots', folder_id)
             _remove_modao_screenshot_dir(screenshot_dir)
+
+        m.delete()
+        return Response({'message': '已删除'})
+
+
+def _prd_dir_referenced_by_others(import_dir, exclude_pk=None):
+    """检查 prd_screenshots/<import_dir> 是否被其他导入记录引用"""
+    qs = PrdImport.objects.exclude(pk=exclude_pk) if exclude_pk else PrdImport.objects.all()
+    for o in qs.only('id', 'data'):
+        data = o.data or {}
+        if data.get('import_id') == import_dir:
+            return True
+        for p in (data.get('pages') or []):
+            for s in (p.get('screenshots') or []):
+                url = s.get('url') or ''
+                if f'prd_screenshots/{import_dir}/' in url:
+                    return True
+    return False
+
+
+def _remove_prd_screenshot_dir(screenshot_dir):
+    """删除 PRD 图片目录（Windows 文件占用容错版，同墨刀/Axure 实现）"""
+    import shutil
+
+    if not screenshot_dir or not os.path.isdir(screenshot_dir):
+        return
+    for attempt in range(5):
+        try:
+            shutil.rmtree(screenshot_dir)
+            logger.info(f'[PRD] 删除图片文件夹: {screenshot_dir}')
+            return
+        except PermissionError as e:
+            logger.warning(f'[PRD] 图片文件夹被占用(第{attempt + 1}次): {e}')
+            if attempt < 4:
+                time.sleep(1)
+                continue
+            def _skip_locked(func, path, exc_info):
+                logger.warning(f'[PRD] 跳过无法删除的文件: {path}: {exc_info[1]}')
+            try:
+                shutil.rmtree(screenshot_dir, onexc=_skip_locked)
+                logger.info(f'[PRD] 图片文件夹已删除(跳过占用文件): {screenshot_dir}')
+            except Exception as e2:
+                logger.warning(f'[PRD] 图片目录删除失败，残留待清理: {screenshot_dir}: {e2}')
+        except Exception as e:
+            logger.warning(f'[PRD] 删除图片文件夹失败: {screenshot_dir}: {e}')
+            return
+
+
+class PrdImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixins.ListModelMixin,
+                       mixins.RetrieveModelMixin, mixins.UpdateModelMixin,
+                       mixins.DestroyModelMixin):
+    """PRD 文档导入记录（历史列表/进度轮询/保存/删除）"""
+    queryset = PrdImport.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        qs = PrdImport.objects.filter(created_by=request.user).only(
+            'id', 'title', 'url', 'status', 'stage', 'progress', 'created_at'
+        ).order_by('-created_at')
+        data = [{
+            'id': m.id, 'title': m.title, 'url': m.url,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
+            'canvas_count': len((m.data or {}).get('pages', [])),
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        } for m in qs]
+        return Response(data)
+
+    def retrieve(self, request, pk=None):
+        m = PrdImport.objects.get(pk=pk, created_by=request.user)
+        return Response({
+            'id': m.id, 'title': m.title, 'url': m.url, 'data': m.data,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
+            'progress_detail': m.progress_detail,
+            'error_message': m.error_message,
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        })
+
+    def update(self, request, pk=None):
+        m = PrdImport.objects.get(pk=pk, created_by=request.user)
+        m.title = request.data.get('title', m.title)
+        m.url = request.data.get('url', m.url)
+        m.data = request.data.get('data', m.data)
+        if request.data.get('project_id'):
+            m.project_id = request.data.get('project_id')
+        m.save()
+        return Response({'id': m.id, 'message': '已更新'})
+
+    def create(self, request):
+        m = PrdImport.objects.create(
+            title=request.data.get('title', ''),
+            url=request.data.get('url', ''),
+            data=request.data.get('data', {}),
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        return Response({'id': m.id, 'message': '已保存'}, status=201)
+
+    def destroy(self, request, pk=None):
+        import re as _re
+        try:
+            m = PrdImport.objects.get(pk=pk, created_by=request.user)
+        except PrdImport.DoesNotExist:
+            return Response({'error': '记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = m.data or {}
+        folder_ids = set()
+        import_id = str(data.get('import_id') or '')
+        if _re.fullmatch(r'[A-Za-z0-9_-]{1,64}', import_id):
+            folder_ids.add(import_id)
+
+        for folder_id in folder_ids:
+            if _prd_dir_referenced_by_others(folder_id, exclude_pk=m.pk):
+                logger.warning(f'[PRD] 图片目录被其他记录引用，跳过删除: {folder_id}')
+                continue
+            img_dir = os.path.join(settings.MEDIA_ROOT, 'prd_screenshots', folder_id)
+            _remove_prd_screenshot_dir(img_dir)
+
+        m.delete()
+        return Response({'message': '已删除'})
+
+
+def _axure_dir_referenced_by_others(import_dir, exclude_pk=None):
+    """检查 axure_screenshots/<import_dir> 是否被其他导入记录引用"""
+    qs = AxureImport.objects.exclude(pk=exclude_pk) if exclude_pk else AxureImport.objects.all()
+    for o in qs.only('id', 'data'):
+        data = o.data or {}
+        if data.get('import_id') == import_dir:
+            return True
+        for p in (data.get('pages') or []):
+            for s in (p.get('screenshots') or []):
+                url = s.get('url') or ''
+                if f'axure_screenshots/{import_dir}/' in url:
+                    return True
+    return False
+
+
+def _remove_axure_screenshot_dir(screenshot_dir):
+    """删除 Axure 图片目录（Windows 文件占用容错版，同墨刀实现）"""
+    import shutil
+
+    if not screenshot_dir or not os.path.isdir(screenshot_dir):
+        return
+    for attempt in range(5):
+        try:
+            shutil.rmtree(screenshot_dir)
+            logger.info(f'[Axure] 删除图片文件夹: {screenshot_dir}')
+            return
+        except PermissionError as e:
+            logger.warning(f'[Axure] 图片文件夹被占用(第{attempt + 1}次): {e}')
+            if attempt < 4:
+                time.sleep(1)
+                continue
+            def _skip_locked(func, path, exc_info):
+                logger.warning(f'[Axure] 跳过无法删除的文件: {path}: {exc_info[1]}')
+            try:
+                shutil.rmtree(screenshot_dir, onexc=_skip_locked)
+                logger.info(f'[Axure] 图片文件夹已删除(跳过占用文件): {screenshot_dir}')
+            except Exception as e2:
+                logger.warning(f'[Axure] 图片目录删除失败，残留待清理: {screenshot_dir}: {e2}')
+        except Exception as e:
+            logger.warning(f'[Axure] 删除图片文件夹失败: {screenshot_dir}: {e}')
+            return
+
+
+class AxureImportViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin, mixins.ListModelMixin,
+                         mixins.RetrieveModelMixin, mixins.UpdateModelMixin,
+                         mixins.DestroyModelMixin):
+    """Axure 原型导入记录（历史列表/进度轮询/保存/删除）"""
+    queryset = AxureImport.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        qs = AxureImport.objects.filter(created_by=request.user).only(
+            'id', 'title', 'url', 'status', 'stage', 'progress', 'created_at'
+        ).order_by('-created_at')
+        data = [{
+            'id': m.id, 'title': m.title, 'url': m.url,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
+            'canvas_count': len((m.data or {}).get('pages', [])),
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        } for m in qs]
+        return Response(data)
+
+    def retrieve(self, request, pk=None):
+        m = AxureImport.objects.get(pk=pk, created_by=request.user)
+        return Response({
+            'id': m.id, 'title': m.title, 'url': m.url, 'data': m.data,
+            'status': m.status, 'stage': m.stage, 'progress': m.progress,
+            'progress_detail': m.progress_detail,
+            'error_message': m.error_message,
+            'created_at': m.created_at.isoformat() if m.created_at else '',
+        })
+
+    def update(self, request, pk=None):
+        m = AxureImport.objects.get(pk=pk, created_by=request.user)
+        m.title = request.data.get('title', m.title)
+        m.url = request.data.get('url', m.url)
+        m.data = request.data.get('data', m.data)
+        if request.data.get('project_id'):
+            m.project_id = request.data.get('project_id')
+        m.save()
+        return Response({'id': m.id, 'message': '已更新'})
+
+    def create(self, request):
+        m = AxureImport.objects.create(
+            title=request.data.get('title', ''),
+            url=request.data.get('url', ''),
+            data=request.data.get('data', {}),
+            project_id=request.data.get('project_id') or request.data.get('project') or None,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        return Response({'id': m.id, 'message': '已保存'}, status=201)
+
+    def destroy(self, request, pk=None):
+        import re as _re
+        try:
+            m = AxureImport.objects.get(pk=pk, created_by=request.user)
+        except AxureImport.DoesNotExist:
+            return Response({'error': '记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = m.data or {}
+        folder_ids = set()
+        import_id = str(data.get('import_id') or '')
+        if _re.fullmatch(r'[A-Za-z0-9_-]{1,64}', import_id):
+            folder_ids.add(import_id)
+
+        for folder_id in folder_ids:
+            if _axure_dir_referenced_by_others(folder_id, exclude_pk=m.pk):
+                logger.warning(f'[Axure] 图片目录被其他记录引用，跳过删除: {folder_id}')
+                continue
+            img_dir = os.path.join(settings.MEDIA_ROOT, 'axure_screenshots', folder_id)
+            _remove_axure_screenshot_dir(img_dir)
 
         m.delete()
         return Response({'message': '已删除'})

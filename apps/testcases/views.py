@@ -54,13 +54,19 @@ class TestCaseListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         accessible_projects = get_user_accessible_projects(user)
-        return TestCase.objects.filter(
+        qs = TestCase.objects.filter(
             project__in=accessible_projects
         ).select_related(
             'author', 'assignee', 'project'
         ).prefetch_related(
             'versions'
         ).distinct()
+        exec_status = self.request.query_params.get('execution_status')
+        if exec_status == 'unexecuted':
+            qs = qs.filter(Q(execution_status__isnull=True) | Q(execution_status=''))
+        elif exec_status in ('passed', 'failed'):
+            qs = qs.filter(execution_status=exec_status)
+        return qs
     
     def get_user_accessible_projects(self, user):
         """获取用户有权限访问的项目"""
@@ -268,6 +274,13 @@ def testcase_neighbors(request, pk):
     if search:
         qs = qs.filter(Q(title__icontains=search) | Q(description__icontains=search))
 
+    # 执行情况筛选（与列表页一致）
+    exec_status = request.query_params.get('execution_status')
+    if exec_status == 'unexecuted':
+        qs = qs.filter(Q(execution_status__isnull=True) | Q(execution_status=''))
+    elif exec_status in ('passed', 'failed'):
+        qs = qs.filter(execution_status=exec_status)
+
     # 同一排序（按 ID 正序）
     qs = qs.order_by('id')
 
@@ -285,6 +298,7 @@ def testcase_neighbors(request, pk):
         'current': {'id': current.id, 'title': current.title, 'position': position, 'total': total},
         'previous': prev,
         'next': next_item,
+        'queue': list(qs.values_list('id', flat=True)),
     })
 
 

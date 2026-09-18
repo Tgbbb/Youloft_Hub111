@@ -179,16 +179,46 @@ const testcase = ref(null)
 const neighbors = ref({ previous: null, next: null, current: null })
 const executing = ref(false)
 const deleting = ref(false)
+// 进入详情时快照当前筛选队列，执行后只前进、不移除已执行项，保证「上一条」可回退
+const queueIds = ref([])
+const queueSig = ref('')
+
+const queueSignature = () => {
+  const q = { ...route.query }
+  delete q.page
+  return JSON.stringify(Object.entries(q).sort())
+}
+
+const applyQueueNeighbors = () => {
+  const id = Number(route.params.id)
+  const idx = queueIds.value.indexOf(id)
+  if (idx === -1) return false
+  neighbors.value = {
+    previous: idx > 0 ? { id: queueIds.value[idx - 1] } : null,
+    next: idx < queueIds.value.length - 1 ? { id: queueIds.value[idx + 1] } : null,
+    current: { id, position: idx + 1, total: queueIds.value.length }
+  }
+  return true
+}
 
 const executeCase = async (status) => {
-  if (!testcase.value) return
+  if (!testcase.value || executing.value) return
   executing.value = true
   try {
     await api.patch(`/testcases/${testcase.value.id}/execute/`, { execution_status: status })
-    // 重新获取用例数据以刷新执行历史
-    const { data } = await api.get(`/testcases/${testcase.value.id}/`)
-    testcase.value = data
-    ElMessage.success(status === 'passed' ? '已标记通过' : '已标记不通过')
+    testcase.value.execution_status = status
+    const label = status === 'passed' ? '已标记通过' : '已标记不通过'
+    // 队列已快照，执行只前进，不把已执行项从队列移除
+    const nextId = neighbors.value.next?.id
+    if (nextId) {
+      ElMessage.success(label + '，自动切换下一条')
+      goToNeighbor(nextId)
+    } else {
+      ElMessage.success(label + '（已是本批最后一条）')
+      // 已是最后一条：刷新当前用例以展示执行历史
+      const { data } = await api.get(`/testcases/${testcase.value.id}/`)
+      testcase.value = data
+    }
   } catch (error) {
     ElMessage.error('操作失败')
   } finally {
@@ -207,13 +237,23 @@ const fetchTestCase = async () => {
 }
 
 const fetchNeighbors = async () => {
+  const sig = queueSignature()
   try {
     const query = { ...route.query }
     const response = await api.get(`/testcases/${route.params.id}/neighbors/`, { params: query })
-    neighbors.value = {
-      previous: response.data.previous,
-      next: response.data.next,
-      current: response.data.current
+    const data = response.data
+    const id = Number(route.params.id)
+    // 仅在筛选条件变化（或当前用例不在快照中）时重建队列快照
+    if (queueSig.value !== sig || !queueIds.value.includes(id)) {
+      queueIds.value = Array.isArray(data.queue) ? data.queue.map(Number) : []
+      queueSig.value = sig
+    }
+    if (!applyQueueNeighbors()) {
+      neighbors.value = {
+        previous: data.previous,
+        next: data.next,
+        current: data.current
+      }
     }
   } catch (error) {
     neighbors.value = { previous: null, next: null, current: null }
@@ -263,6 +303,9 @@ const deleteTestCase = async () => {
   deleting.value = true
   try {
     await api.delete(`/testcases/${route.params.id}/`)
+    // 从队列快照中移除已删除用例，避免「上一条」跳回已删除项
+    const removedId = Number(route.params.id)
+    queueIds.value = queueIds.value.filter((x) => x !== removedId)
     ElMessage.success(t('testcase.deleteSuccess'))
     // 删除后跳转：优先下一条，没有则上一条，都没有则回列表
     const nextId = neighbors.value.next?.id

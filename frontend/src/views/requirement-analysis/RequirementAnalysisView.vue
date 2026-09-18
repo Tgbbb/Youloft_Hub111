@@ -115,6 +115,8 @@
         <div class="ef-section__body">
           <div class="ef-tabs">
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'modao' }" @click="manualTab = 'modao'">墨刀</button>
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'axure' }" @click="manualTab = 'axure'">Axure 原型</button>
+            <button class="ef-tab" :class="{ 'is-on': manualTab === 'prd' }" @click="manualTab = 'prd'">PRD 文档</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'input' }" @click="manualTab = 'input'">手动</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'doc' }" @click="manualTab = 'doc'">文档上传</button>
             <button class="ef-tab" :class="{ 'is-on': manualTab === 'smoke' }" @click="manualTab = 'smoke'">冒烟用例</button>
@@ -216,6 +218,168 @@
                   <tr v-for="s in (smokeResult.steps || [])" :key="s.no"><td>{{ s.no }}</td><td>{{ s.step }}</td><td>{{ s.expected }}</td></tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- Axure 原型 -->
+          <div v-if="manualTab === 'axure'" class="ef-tab-body">
+            <div v-if="axureHistory.length > 0" class="ef-history">
+              <span class="ef-history__label">历史</span>
+              <span v-for="(h, i) in axureHistory" :key="i" class="ef-history-pill">
+                <button class="ef-pill" @click="loadAxureHistory(i)">{{ h.title || 'Import ' + (i+1) }}</button>
+                <button class="ef-pill__del" @click.stop="deleteAxureHistory(i)" title="删除">×</button>
+              </span>
+            </div>
+            <div class="ef-fields">
+              <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select v-model="manualInput.selectedModuleId" class="ef-select" style="flex:1"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select>
+                  <button class="ef-btn ef-btn--text" @click="quickAddModule('manual')">+ 新增</button>
+                </div>
+              </div>
+            </div>
+            <div class="ef-fields">
+              <div class="ef-field ef-field--wide"><label>原型链接</label><input v-model="axureUrl" class="ef-input" placeholder="http://192.168.x.x/.../index.html" /></div>
+            </div>
+            <div class="ef-actions">
+              <button class="ef-btn ef-btn--signal" @click="importFromAxure" :disabled="isImportingAxure || !axureUrl">{{ isImportingAxure ? `导入中 ${_axureProgress}%` : '导入原型' }}</button>
+              <button v-if="axureCanvases.length > 0" class="ef-btn ef-btn--dark"
+                :disabled="isGenerating || selectedCanvasCount === 0"
+                @click="generateFromAxure">
+                生成 ({{ selectedCanvasCount }})
+              </button>
+            </div>
+            <!-- 导入进度面板 -->
+            <div v-if="isImportingAxure" class="ef-import">
+              <div class="ef-import__head">
+                <span class="ef-import__title">导入进度</span>
+                <span class="ef-import__pct">{{ _axureProgress }}%</span>
+              </div>
+              <div class="ef-import__bar"><div class="ef-import__fill" :style="{ width: Math.min(100, _axureProgress) + '%' }"></div></div>
+              <div class="ef-import__stages">
+                <span v-for="s in axureImportStages" :key="s.key" class="ef-import__stage" :class="axureStageClass(s.key)">{{ s.label }}</span>
+              </div>
+              <template v-if="_axureDetail">
+                <div class="ef-import__msg">{{ _axureDetail.message || '处理中…' }}</div>
+                <div v-if="_axureDetail.canvases && _axureDetail.canvases.length" class="ef-import__canvases">
+                  <div v-for="c in _axureDetail.canvases" :key="c.index" class="ef-import__canvas" :class="'is-' + (c.status || 'pending')">
+                    <span class="ef-import__idx">{{ String(c.index).padStart(2, '0') }}</span>
+                    <span class="ef-import__name">{{ c.name }}</span>
+                    <span class="ef-import__state">{{ c.status === 'done' ? '✓' : (c.status === 'failed' ? '✗' : '●') }}</span>
+                    <span class="ef-import__note">{{ c.message || '' }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <!-- Canvases -->
+            <div v-if="axureCanvases.length > 0" class="ef-canvas-bar">
+              <button class="ef-btn ef-btn--text" @click="selectAllCanvases">
+                {{ selectedCanvasCount === axureCanvases.length ? '取消全选' : '全选' }} ({{ selectedCanvasCount }}/{{ axureCanvases.length }})
+              </button>
+            </div>
+            <div v-if="axureCanvases.length > 0" class="ef-canvases">
+              <template v-for="row in canvasTree.rows" :key="row.type === 'folder' ? ('f-' + row.path) : ('c-' + cNum(row.c))">
+                <div v-if="row.type === 'folder'" class="ef-canvas-group__head" :class="'depth-' + row.depth">
+                  <span class="ef-canvas-group__expander" @click="toggleFolderExpanded(row.path)">
+                    <span>{{ row.expanded ? '▾' : '▸' }}</span>
+                  </span>
+                  <input type="checkbox" :checked="row.allSelected" @change="toggleFolderSelection(row.path)" />
+                  <span class="ef-canvas-group__name">{{ row.name }}（{{ row.count }}）</span>
+                </div>
+                <div
+                  v-else
+                  class="ef-canvas"
+                  :class="[{ 'is-on': row.c.selected }, depthCls(row.depth)]"
+                  @click="row.c.selected = !row.c.selected"
+                >
+                  <span class="ef-canvas__check" v-if="row.c.selected">✓</span>
+                  <span class="ef-canvas__n">{{ String(cNum(row.c)).padStart(2, '0') }}</span>
+                  <span class="ef-canvas__name">{{ row.c.name }}</span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- PRD 文档 -->
+          <div v-if="manualTab === 'prd'" class="ef-tab-body">
+            <div v-if="prdHistory.length > 0" class="ef-history">
+              <span class="ef-history__label">历史</span>
+              <span v-for="(h, i) in prdHistory" :key="i" class="ef-history-pill">
+                <button class="ef-pill" @click="loadPrdHistory(i)">{{ h.title || 'Import ' + (i+1) }}</button>
+                <button class="ef-pill__del" @click.stop="deletePrdHistory(i)" title="删除">×</button>
+              </span>
+            </div>
+            <div class="ef-fields">
+              <div class="ef-field"><label>项目</label><select v-model="manualInput.selectedProject" class="ef-select" @change="onManualProjectChange"><option value="">{{ $t('requirementAnalysis.selectProject') }}</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedProject"><label>版本</label><select v-model="manualInput.selectedVersionIds" class="ef-select" multiple size="3" @change="loadVersionModules(manualInput.selectedVersionIds, 'manual')"><option v-for="v in projectVersions" :key="v.id" :value="v.id">{{ v.name }}{{ v.is_baseline ? ' ★' : '' }}</option></select></div>
+              <div class="ef-field" v-show="manualInput.selectedVersionIds && manualInput.selectedVersionIds.length > 0"><label>模块</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select v-model="manualInput.selectedModuleId" class="ef-select" style="flex:1"><option value="">{{ $t('requirementAnalysis.selectModule') }}</option><option v-for="m in manualModules" :key="m.id" :value="m.id">{{ m.name }}</option></select>
+                  <button class="ef-btn ef-btn--text" @click="quickAddModule('manual')">+ 新增</button>
+                </div>
+              </div>
+            </div>
+            <div class="ef-fields">
+              <div class="ef-field ef-field--wide"><label>PRD 链接</label><input v-model="prdUrl" class="ef-input" placeholder="http://192.168.x.x/.../xxx-PRD.html" /></div>
+            </div>
+            <div class="ef-actions">
+              <button class="ef-btn ef-btn--signal" @click="importFromPrd" :disabled="isImportingPrd || !prdUrl">{{ isImportingPrd ? `导入中 ${_prdProgress}%` : '导入文档' }}</button>
+              <button v-if="prdCanvases.length > 0" class="ef-btn ef-btn--dark"
+                :disabled="isGenerating || selectedCanvasCount === 0"
+                @click="generateFromPrd">
+                生成 ({{ selectedCanvasCount }})
+              </button>
+            </div>
+            <!-- 导入进度面板 -->
+            <div v-if="isImportingPrd" class="ef-import">
+              <div class="ef-import__head">
+                <span class="ef-import__title">导入进度</span>
+                <span class="ef-import__pct">{{ _prdProgress }}%</span>
+              </div>
+              <div class="ef-import__bar"><div class="ef-import__fill" :style="{ width: Math.min(100, _prdProgress) + '%' }"></div></div>
+              <div class="ef-import__stages">
+                <span v-for="s in prdImportStages" :key="s.key" class="ef-import__stage" :class="prdStageClass(s.key)">{{ s.label }}</span>
+              </div>
+              <template v-if="_prdDetail">
+                <div class="ef-import__msg">{{ _prdDetail.message || '处理中…' }}</div>
+                <div v-if="_prdDetail.canvases && _prdDetail.canvases.length" class="ef-import__canvases">
+                  <div v-for="c in _prdDetail.canvases" :key="c.index" class="ef-import__canvas" :class="'is-' + (c.status || 'pending')">
+                    <span class="ef-import__idx">{{ String(c.index).padStart(2, '0') }}</span>
+                    <span class="ef-import__name">{{ c.name }}</span>
+                    <span class="ef-import__state">{{ c.status === 'done' ? '✓' : (c.status === 'failed' ? '✗' : '●') }}</span>
+                    <span class="ef-import__note">{{ c.message || '' }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <!-- Canvases -->
+            <div v-if="prdCanvases.length > 0" class="ef-canvas-bar">
+              <button class="ef-btn ef-btn--text" @click="selectAllCanvases">
+                {{ selectedCanvasCount === prdCanvases.length ? '取消全选' : '全选' }} ({{ selectedCanvasCount }}/{{ prdCanvases.length }})
+              </button>
+            </div>
+            <div v-if="prdCanvases.length > 0" class="ef-canvases">
+              <template v-for="row in canvasTree.rows" :key="row.type === 'folder' ? ('f-' + row.path) : ('c-' + cNum(row.c))">
+                <div v-if="row.type === 'folder'" class="ef-canvas-group__head" :class="'depth-' + row.depth">
+                  <span class="ef-canvas-group__expander" @click="toggleFolderExpanded(row.path)">
+                    <span>{{ row.expanded ? '▾' : '▸' }}</span>
+                  </span>
+                  <input type="checkbox" :checked="row.allSelected" @change="toggleFolderSelection(row.path)" />
+                  <span class="ef-canvas-group__name">{{ row.name }}（{{ row.count }}）</span>
+                </div>
+                <div
+                  v-else
+                  class="ef-canvas"
+                  :class="[{ 'is-on': row.c.selected }, depthCls(row.depth)]"
+                  @click="row.c.selected = !row.c.selected"
+                >
+                  <span class="ef-canvas__check" v-if="row.c.selected">✓</span>
+                  <span class="ef-canvas__n">{{ String(cNum(row.c)).padStart(2, '0') }}</span>
+                  <span class="ef-canvas__name">{{ row.c.name }}</span>
+                </div>
+              </template>
             </div>
           </div>
 
@@ -515,10 +679,35 @@ export default {
       modaoHistory: [],
       replaceInputs: {},       // 添加截图的 file input refs
       isImportingModao: false,
+      // Axure 原型导入
+      axureUrl: '',
+      axureTitle: '',
+      _axureHistoryId: null,   // 当前历史记录ID（更新用）
+      _axureImportId: '',      // 导入批次ID（图片文件夹）
+      axureCanvases: [],       // [{name, texts, screenshots, folder, selected}]
+      axureHistory: [],
+      isImportingAxure: false,
       _importProgress: 0,          // 导入进度（0-100）
       _importStage: '',            // 当前阶段 prepare/login/list/canvas/done/failed
       _importDetail: null,         // 导入进度明细 {stage, message, current, total, canvases: []}
       _importPollTimer: null,      // 导入进度轮询定时器
+      // Axure 导入进度（独立字段，避免与墨刀进度互相覆盖）
+      _axureProgress: 0,
+      _axureStage: '',
+      _axureDetail: null,
+      _axurePollTimer: null,
+      // PRD 文档导入
+      prdUrl: '',
+      prdTitle: '',
+      _prdHistoryId: null,
+      _prdImportId: '',
+      prdCanvases: [],       // [{name, texts, screenshots, folder, selected}]
+      prdHistory: [],
+      isImportingPrd: false,
+      _prdProgress: 0,
+      _prdStage: '',
+      _prdDetail: null,
+      _prdPollTimer: null,
       expandedFolders: {},         // 文件夹展开状态 {path: bool}，缺省展开
       smokeResult: null,           // 冒烟用例生成结果 {title, preconditions, steps}
       isGeneratingSmoke: false,    // 冒烟用例生成中
@@ -537,14 +726,20 @@ export default {
 
   computed: {
     versionModules() { return this.manualModules },
+    activeCanvases() {
+      // 画布树按当前 tab 读取（墨刀/冒烟用 modaoCanvases，Axure/PRD 用各自数组）
+      if (this.manualTab === 'axure') return this.axureCanvases
+      if (this.manualTab === 'prd') return this.prdCanvases
+      return this.modaoCanvases
+    },
     selectedCanvasCount() {
-      return this.modaoCanvases.filter(c => c.selected).length
+      return this.activeCanvases.filter(c => c.selected).length
     },
     canvasTree() {
       // 按 folder 路径（如 首页板块/首页）构建层级树，再拍平为可渲染行
       const tree = { children: {}, canvases: [] }
       const ungrouped = []
-      for (const c of this.modaoCanvases) {
+      for (const c of this.activeCanvases) {
         const parts = (c.folder || '').split('/').filter(p => p && p.trim())
         if (!parts.length) { ungrouped.push(c); continue }
         let node = tree
@@ -604,6 +799,24 @@ export default {
       ]
     },
 
+    axureImportStages() {
+      return [
+        { key: 'prepare', label: '启动' },
+        { key: 'list', label: '页面列表' },
+        { key: 'canvas', label: '提取' },
+        { key: 'done', label: '完成' },
+      ]
+    },
+
+    prdImportStages() {
+      return [
+        { key: 'prepare', label: '启动' },
+        { key: 'list', label: '下载' },
+        { key: 'canvas', label: '解析' },
+        { key: 'done', label: '完成' },
+      ]
+    },
+
     isMultimodalFile() {
       if (this.selectedFiles.length === 0) return false
       return this.selectedFiles.some(f => /\.(pdf|png|jpg|jpeg|webp)$/i.test(f.name))
@@ -645,6 +858,21 @@ export default {
     },
     finalTestCases(v, old) {
       if (v && !old) this.activeResultView = 'final'
+    },
+    // 澄清答案实时备份到 localStorage，刷新后恢复未提交的半成品
+    clarificationAnswers: {
+      deep: true,
+      handler() {
+        if (!this.clarificationTaskId) return
+        clearTimeout(this._clarifyPersistTimer)
+        this._clarifyPersistTimer = setTimeout(() => {
+          try {
+            localStorage.setItem('clarify_answers_' + this.clarificationTaskId, JSON.stringify(this.clarificationAnswers))
+          } catch (e) {
+            console.warn('澄清答案本地备份失败', e)
+          }
+        }, 200)
+      }
     }
   },
 
@@ -653,6 +881,8 @@ export default {
     const savedCookie = localStorage.getItem('modao_cookie')
     if (savedCookie) this.modaoToken = savedCookie
     this.loadModaoHistoryList()
+    this.loadAxureHistoryList()
+    this.loadPrdHistoryList()
     this.progressText = this.$t('requirementAnalysis.preparing')
     this.loadProjects()
     this.checkConfigStatus()
@@ -685,12 +915,51 @@ export default {
       clearTimeout(this._importPollTimer)
       this._importPollTimer = null
     }
+    if (this._axurePollTimer) {
+      clearTimeout(this._axurePollTimer)
+      this._axurePollTimer = null
+    }
+    if (this._prdPollTimer) {
+      clearTimeout(this._prdPollTimer)
+      this._prdPollTimer = null
+    }
+    clearTimeout(this._clarifyPersistTimer)
     // 停止token自动刷新定时器
     const userStore = useUserStore()
     userStore.stopAutoRefresh()
   },
 
   methods: {
+    // 把澄清 task_id 写入 URL，刷新后可恢复澄清问答
+    setClarifyTaskInUrl() {
+      if (!this.clarificationTaskId) return
+      if (this.$route.query.taskId === this.clarificationTaskId) return
+      const q = { ...this.$route.query, taskId: this.clarificationTaskId }
+      this.$router.replace({ query: q }).catch(() => {})
+    },
+    clearClarifyTaskFromUrl() {
+      if (!this.$route.query.taskId) return
+      const q = { ...this.$route.query }
+      delete q.taskId
+      this.$router.replace({ query: q }).catch(() => {})
+    },
+    loadClarifyAnswers(taskId) {
+      try {
+        const raw = localStorage.getItem('clarify_answers_' + taskId)
+        return raw ? JSON.parse(raw) : {}
+      } catch (e) {
+        return {}
+      }
+    },
+    clearClarifyAnswersStorage(taskId) {
+      if (!taskId) return
+      try {
+        localStorage.removeItem('clarify_answers_' + taskId)
+      } catch (e) {
+        /* ignore */
+      }
+    },
+
     async loadProjects() {
       try {
         const response = await api.get('/projects/')
@@ -1023,8 +1292,8 @@ export default {
     },
 
     selectAllCanvases() {
-      const all = this.selectedCanvasCount === this.modaoCanvases.length
-      this.modaoCanvases.forEach(c => c.selected = !all)
+      const all = this.selectedCanvasCount === this.activeCanvases.length
+      this.activeCanvases.forEach(c => c.selected = !all)
     },
     toggleFolderSelection(path) {
       const items = this.canvasTree.folderMap[path] || []
@@ -1038,7 +1307,7 @@ export default {
       // 所有文件夹（含未分组）默认收起
       this.expandedFolders = {}
       const folders = new Set()
-      for (const c of this.modaoCanvases) {
+      for (const c of this.activeCanvases) {
         const parts = (c.folder || '').split('/').filter(p => p && p.trim())
         let cur = ''
         for (const seg of parts) {
@@ -1047,12 +1316,12 @@ export default {
         }
       }
       for (const f of folders) this.expandedFolders[f] = false
-      if (this.modaoCanvases.some(c => !(c.folder || '').trim())) {
+      if (this.activeCanvases.some(c => !(c.folder || '').trim())) {
         this.expandedFolders['未分组'] = false
       }
     },
     cNum(c) {
-      return this.modaoCanvases.indexOf(c) + 1
+      return this.activeCanvases.indexOf(c) + 1
     },
     depthCls(d) {
       return 'depth-' + d
@@ -1177,6 +1446,204 @@ export default {
       } catch (e) { this.modaoHistory = [] }
     },
 
+    async loadAxureHistoryList() {
+      try {
+        const { data } = await api.get('/requirement-analysis/axure/')
+        this.axureHistory = data || []
+      } catch (e) { this.axureHistory = [] }
+    },
+
+    async saveAxureHistory(silent = false) {
+      if (!this.axureUrl || !this.axureCanvases.length) return
+      try {
+        const pages = this.axureCanvases.map(c => ({
+          name: c.name,
+          texts: c.texts || [],
+          screenshots: c.screenshots,
+          folder: c.folder || '',
+        }))
+        const pId = this.manualInput.selectedProject || this.selectedProject || null
+        const vIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
+        const payload = {
+          title: this.axureTitle,
+          url: this.axureUrl,
+          data: { pages, import_id: this._axureImportId, project_id: pId, version_ids: vIds },
+          project_id: pId,
+          version_ids: vIds,
+        }
+        if (this._axureHistoryId) {
+          await api.put(`/requirement-analysis/axure/${this._axureHistoryId}/`, payload)
+        } else {
+          const { data } = await api.post('/requirement-analysis/axure/', payload)
+          this._axureHistoryId = data.id
+        }
+        if (!silent) this.loadAxureHistoryList()
+      } catch (e) { console.error('保存Axure历史失败', e) }
+    },
+
+    async loadAxureHistory(i) {
+      this.manualTab = 'axure'
+      const h = this.axureHistory[i]
+      if (!h?.id) return
+      try {
+        const { data } = await api.get(`/requirement-analysis/axure/${h.id}/`)
+        this.axureUrl = data.url
+        this.axureTitle = data.title
+        this._axureHistoryId = data.id
+        this._axureImportId = data.data?.import_id || ''
+        if (data.data?.project_id) {
+          this.manualInput.selectedProject = data.data.project_id
+          this.loadProjectVersions(data.data.project_id)
+        }
+        if (data.data?.version_ids?.length) {
+          this.manualInput.selectedVersionIds = data.data.version_ids
+          this.loadVersionModules(data.data.version_ids, 'manual')
+        }
+        this.axureCanvases = (data.data?.pages || []).map(p => ({
+          name: p.name,
+          texts: p.texts || [],
+          screenshots: p.screenshots || [],
+          folder: p.folder || '',
+          selected: true,
+        }))
+        this.collapseAllFolders()
+      } catch (e) { ElMessage.error('加载历史失败') }
+    },
+
+    async deleteAxureHistory(i) {
+      const h = this.axureHistory[i]
+      if (!h?.id) return
+      try {
+        await ElMessageBox.confirm(`确定删除「${h.title || h.url}」？`, '确认删除', { type: 'warning' })
+        await api.delete(`/requirement-analysis/axure/${h.id}/`)
+        this.loadAxureHistoryList()
+        ElMessage.success('已删除')
+      } catch (e) {
+        if (e !== 'cancel') ElMessage.error('删除失败')
+      }
+    },
+
+    async importFromAxure() {
+      if (!this.axureUrl) return
+      this.isImportingAxure = true
+      this._axureProgress = 0
+      this._axureStage = 'prepare'
+      this._axureDetail = { stage: 'prepare', message: '任务已提交，等待执行', current: 0, total: 1, canvases: [] }
+      try {
+        const { data } = await api.post('/requirement-analysis/testcase-generation/import-from-axure/', {
+          url: this.axureUrl,
+        }, { timeout: 30000 })
+        if (!data.success || !data.import_id) {
+          ElMessage.error(data.error || '提交失败')
+          this.isImportingAxure = false
+          return
+        }
+        const importId = data.import_id
+
+        const poll = async () => {
+          try {
+            const { data: r } = await api.get(`/requirement-analysis/axure/${importId}/`)
+            this._axureProgress = r.progress || 0
+            this._axureStage = r.stage || ''
+            this._axureDetail = r.progress_detail || this._axureDetail
+            if (r.status === 'completed') {
+              this.axureTitle = r.title || ''
+              this._axureHistoryId = r.id
+              this._axureImportId = r.data?.import_id || ''
+              this.axureCanvases = (r.data?.pages || []).map(p => ({
+                name: p.name,
+                texts: p.texts || [],
+                screenshots: p.screenshots || [],
+                folder: p.folder || '',
+                selected: true,
+              }))
+              this.collapseAllFolders()
+              this.isImportingAxure = false
+              const detail = r.progress_detail || {}
+              const failedCount = (detail.canvases || []).filter(c => c.status === 'failed').length
+              if (failedCount > 0) {
+                ElMessage.warning(`导入完成: 成功 ${this.axureCanvases.length} 个画布，${failedCount} 个失败`)
+              } else {
+                ElMessage.success(`导入成功: ${this.axureCanvases.length}个画布`)
+              }
+              this.loadAxureHistoryList()
+              return
+            }
+            if (r.status === 'failed') {
+              this.isImportingAxure = false
+              ElMessage.error('导入失败: ' + (r.error_message || '未知错误'))
+              return
+            }
+            this._axurePollTimer = setTimeout(poll, 1000)
+          } catch (e) {
+            this.isImportingAxure = false
+            ElMessage.error('查询进度失败')
+          }
+        }
+        this._axurePollTimer = setTimeout(poll, 1000)
+      } catch (e) {
+        this.isImportingAxure = false
+        const msg = e.response?.data?.error || e.message || ''
+        ElMessage.error('导入失败: ' + msg)
+      }
+    },
+
+    async generateFromAxure() {
+      if (this.selectedCanvasCount === 0) {
+        ElMessage.warning('请至少选择一个画布')
+        return
+      }
+      const selected = this.axureCanvases.filter(c => c.selected)
+      this.isClarifying = true
+      this.showClarificationPanel = true
+      const projectId = this.manualInput.selectedProject || this.selectedProject || null
+      const versionIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
+      // 每画布多张 UI 截图：texts 只挂在该画布最后一张截图上，避免重复
+      const flatImages = selected.flatMap(c => {
+        const shots = (c.screenshots || []).filter(s => s.url)
+        return shots.map((s, i) => ({
+          screenshot_url: s.url,
+          media_type: 'image/png',
+          name: c.name,
+          ...(i === shots.length - 1 && c.texts && (Array.isArray(c.texts) ? c.texts.length : Object.keys(c.texts).length) ? { texts: c.texts } : {}),
+        }))
+      })
+      this.pendingGeneration = {
+        type: 'axure',
+        title: this.axureTitle || 'Axure原型需求',
+        requirementText: `Axure原型「${this.axureTitle || '需求'}」，共 ${selected.length} 个画布`,
+        projectId: projectId,
+        versionIds: versionIds,
+        functionModuleId: this.manualInput.selectedModuleId || '',
+        outputMode: 'stream',
+        pageImages: flatImages,
+      }
+      // 更新历史记录中的项目/版本选择
+      this.saveAxureHistory(true)
+      try {
+        const payload = {
+          requirement_text: this.pendingGeneration.requirementText,
+          project_id: projectId,
+          version_ids: versionIds,
+          function_module_id: this.manualInput.selectedModuleId || undefined,
+          page_images: flatImages,
+        }
+        const { data } = await api.post('/requirement-analysis/testcase-generation/clarify/', payload, { timeout: 300000 })
+        this.clarificationQuestions = data.questions || []
+        this.clarificationTaskId = data.task_id
+        this.currentTaskId = data.task_id
+        this.setClarifyTaskInUrl()
+        if (this.clarificationQuestions.length === 0) {
+          this.skipClarification()
+        }
+      } catch (e) {
+        this.showClarificationPanel = false
+        ElMessage.error('澄清失败: ' + (e.response?.data?.error || e.message))
+      } finally {
+        this.isClarifying = false
+      }
+    },
+
     importStageClass(key) {
       const order = ['prepare', 'login', 'list', 'canvas', 'done']
       if (this._importStage === 'failed') return 'is-failed'
@@ -1186,6 +1653,225 @@ export default {
       if (idx < cur) return 'is-done'
       if (idx === cur) return 'is-on'
       return ''
+    },
+
+    axureStageClass(key) {
+      const order = ['prepare', 'list', 'canvas', 'done']
+      if (this._axureStage === 'failed') return 'is-failed'
+      if (this._axureStage === 'done') return 'is-done'
+      const cur = order.indexOf(this._axureStage)
+      const idx = order.indexOf(key)
+      if (idx < cur) return 'is-done'
+      if (idx === cur) return 'is-on'
+      return ''
+    },
+
+    prdStageClass(key) {
+      const order = ['prepare', 'list', 'canvas', 'done']
+      if (this._prdStage === 'failed') return 'is-failed'
+      if (this._prdStage === 'done') return 'is-done'
+      const cur = order.indexOf(this._prdStage)
+      const idx = order.indexOf(key)
+      if (idx < cur) return 'is-done'
+      if (idx === cur) return 'is-on'
+      return ''
+    },
+
+    async loadPrdHistoryList() {
+      try {
+        const { data } = await api.get('/requirement-analysis/prd/')
+        this.prdHistory = data || []
+      } catch (e) { this.prdHistory = [] }
+    },
+
+    async savePrdHistory(silent = false) {
+      if (!this.prdUrl || !this.prdCanvases.length) return
+      try {
+        const pages = this.prdCanvases.map(c => ({
+          name: c.name,
+          texts: c.texts || [],
+          screenshots: c.screenshots,
+          folder: c.folder || '',
+        }))
+        const pId = this.manualInput.selectedProject || this.selectedProject || null
+        const vIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
+        const payload = {
+          title: this.prdTitle,
+          url: this.prdUrl,
+          data: { pages, import_id: this._prdImportId, project_id: pId, version_ids: vIds },
+          project_id: pId,
+          version_ids: vIds,
+        }
+        if (this._prdHistoryId) {
+          await api.put(`/requirement-analysis/prd/${this._prdHistoryId}/`, payload)
+        } else {
+          const { data } = await api.post('/requirement-analysis/prd/', payload)
+          this._prdHistoryId = data.id
+        }
+        if (!silent) this.loadPrdHistoryList()
+      } catch (e) { console.error('保存PRD历史失败', e) }
+    },
+
+    async loadPrdHistory(i) {
+      this.manualTab = 'prd'
+      const h = this.prdHistory[i]
+      if (!h?.id) return
+      try {
+        const { data } = await api.get(`/requirement-analysis/prd/${h.id}/`)
+        this.prdUrl = data.url
+        this.prdTitle = data.title
+        this._prdHistoryId = data.id
+        this._prdImportId = data.data?.import_id || ''
+        if (data.data?.project_id) {
+          this.manualInput.selectedProject = data.data.project_id
+          this.loadProjectVersions(data.data.project_id)
+        }
+        if (data.data?.version_ids?.length) {
+          this.manualInput.selectedVersionIds = data.data.version_ids
+          this.loadVersionModules(data.data.version_ids, 'manual')
+        }
+        this.prdCanvases = (data.data?.pages || []).map(p => ({
+          name: p.name,
+          texts: p.texts || [],
+          screenshots: p.screenshots || [],
+          folder: p.folder || '',
+          selected: true,
+        }))
+        this.collapseAllFolders()
+      } catch (e) { ElMessage.error('加载历史失败') }
+    },
+
+    async deletePrdHistory(i) {
+      const h = this.prdHistory[i]
+      if (!h?.id) return
+      try {
+        await ElMessageBox.confirm(`确定删除「${h.title || h.url}」？`, '确认删除', { type: 'warning' })
+        await api.delete(`/requirement-analysis/prd/${h.id}/`)
+        this.loadPrdHistoryList()
+        ElMessage.success('已删除')
+      } catch (e) {
+        if (e !== 'cancel') ElMessage.error('删除失败')
+      }
+    },
+
+    async importFromPrd() {
+      if (!this.prdUrl) return
+      this.isImportingPrd = true
+      this._prdProgress = 0
+      this._prdStage = 'prepare'
+      this._prdDetail = { stage: 'prepare', message: '任务已提交，等待执行', current: 0, total: 1, canvases: [] }
+      try {
+        const { data } = await api.post('/requirement-analysis/testcase-generation/import-from-prd/', {
+          url: this.prdUrl,
+        }, { timeout: 30000 })
+        if (!data.success || !data.import_id) {
+          ElMessage.error(data.error || '提交失败')
+          this.isImportingPrd = false
+          return
+        }
+        const importId = data.import_id
+
+        const poll = async () => {
+          try {
+            const { data: r } = await api.get(`/requirement-analysis/prd/${importId}/`)
+            this._prdProgress = r.progress || 0
+            this._prdStage = r.stage || ''
+            this._prdDetail = r.progress_detail || this._prdDetail
+            if (r.status === 'completed') {
+              this.prdTitle = r.title || ''
+              this._prdHistoryId = r.id
+              this._prdImportId = r.data?.import_id || ''
+              this.prdCanvases = (r.data?.pages || []).map(p => ({
+                name: p.name,
+                texts: p.texts || [],
+                screenshots: p.screenshots || [],
+                folder: p.folder || '',
+                selected: true,
+              }))
+              this.collapseAllFolders()
+              this.isImportingPrd = false
+              const detail = r.progress_detail || {}
+              const failedCount = (detail.canvases || []).filter(c => c.status === 'failed').length
+              if (failedCount > 0) {
+                ElMessage.warning(`导入完成: 成功 ${this.prdCanvases.length} 个页面，${failedCount} 个失败`)
+              } else {
+                ElMessage.success(`导入成功: ${this.prdCanvases.length}个原型页`)
+              }
+              this.loadPrdHistoryList()
+              return
+            }
+            if (r.status === 'failed') {
+              this.isImportingPrd = false
+              ElMessage.error('导入失败: ' + (r.error_message || '未知错误'))
+              return
+            }
+            this._prdPollTimer = setTimeout(poll, 1000)
+          } catch (e) {
+            this.isImportingPrd = false
+            ElMessage.error('查询进度失败')
+          }
+        }
+        this._prdPollTimer = setTimeout(poll, 1000)
+      } catch (e) {
+        this.isImportingPrd = false
+        const msg = e.response?.data?.error || e.message || ''
+        ElMessage.error('导入失败: ' + msg)
+      }
+    },
+
+    async generateFromPrd() {
+      if (this.selectedCanvasCount === 0) {
+        ElMessage.warning('请至少选择一个画布')
+        return
+      }
+      const selected = this.prdCanvases.filter(c => c.selected)
+      this.isClarifying = true
+      this.showClarificationPanel = true
+      const projectId = this.manualInput.selectedProject || this.selectedProject || null
+      const versionIds = this.manualInput.selectedVersionIds?.length ? this.manualInput.selectedVersionIds : (this.selectedVersionIds || [])
+      // 文本已在导入时挂在模块最后一个原型页，沿用「每画布最后一张截图挂 texts」逻辑
+      const flatImages = selected.flatMap(c => {
+        const shots = (c.screenshots || []).filter(s => s.url)
+        return shots.map((s, i) => ({
+          screenshot_url: s.url,
+          media_type: 'image/png',
+          name: c.name,
+          ...(i === shots.length - 1 && c.texts && (Array.isArray(c.texts) ? c.texts.length : Object.keys(c.texts).length) ? { texts: c.texts } : {}),
+        }))
+      })
+      this.pendingGeneration = {
+        type: 'prd',
+        title: this.prdTitle || 'PRD需求',
+        requirementText: `PRD文档「${this.prdTitle || '需求'}」，共 ${selected.length} 个原型页`,
+        projectId: projectId,
+        versionIds: versionIds,
+        functionModuleId: this.manualInput.selectedModuleId || '',
+        outputMode: 'stream',
+        pageImages: flatImages,
+      }
+      this.savePrdHistory(true)
+      try {
+        const payload = {
+          requirement_text: this.pendingGeneration.requirementText,
+          project_id: projectId,
+          version_ids: versionIds,
+          function_module_id: this.manualInput.selectedModuleId || undefined,
+          page_images: flatImages,
+        }
+        const { data } = await api.post('/requirement-analysis/testcase-generation/clarify/', payload, { timeout: 300000 })
+        this.clarificationQuestions = data.questions || []
+        this.clarificationTaskId = data.task_id
+        this.currentTaskId = data.task_id
+        this.setClarifyTaskInUrl()
+        if (this.clarificationQuestions.length === 0) {
+          this.skipClarification()
+        }
+      } catch (e) {
+        this.showClarificationPanel = false
+        ElMessage.error('澄清失败: ' + (e.response?.data?.error || e.message))
+      } finally {
+        this.isClarifying = false
+      }
     },
 
     async importFromModao() {
@@ -1320,6 +2006,7 @@ export default {
         this.clarificationQuestions = data.questions || []
         this.clarificationTaskId = data.task_id
         this.currentTaskId = data.task_id
+        this.setClarifyTaskInUrl()
         if (this.clarificationQuestions.length === 0) {
           this.skipClarification()
         }
@@ -1455,6 +2142,12 @@ export default {
               }
             }
           }
+          // 合并本地备份的未提交答案（本地比后端更新鲜）
+          const localAnswers = this.loadClarifyAnswers(task.task_id)
+          if (localAnswers && Object.keys(localAnswers).length > 0) {
+            Object.assign(this.clarificationAnswers, localAnswers)
+          }
+          this.setClarifyTaskInUrl()
 
           // 构建生成上下文，确保确认生成时可用
           // 多模态任务带上图片引用（screenshot_url），startGeneration 走 JSON 传
@@ -1521,6 +2214,7 @@ export default {
         this.clarificationQuestions = questions
         this.clarificationRaw = response.data.raw || ''
         this.clarificationTaskId = response.data.task_id || null
+        this.setClarifyTaskInUrl()
 
         if (questions.length === 0) {
           // 没有不明确点，提示用户可以跳过
@@ -1570,6 +2264,7 @@ export default {
         this.clarificationQuestions = questions
         this.clarificationRaw = response.data.raw || ''
         this.clarificationTaskId = response.data.task_id || null
+        this.setClarifyTaskInUrl()
 
         if (questions.length === 0) {
           ElMessage.info(this.$t('requirementAnalysis.clarificationNoQuestions'))
@@ -1827,6 +2522,8 @@ export default {
 
         this.currentTaskId = response.data.task_id
         this.progressText = '视觉模型正在分析文档图片...'
+        this.clearClarifyTaskFromUrl()
+        this.clearClarifyAnswersStorage(this.clarificationTaskId)
 
         if (this.globalOutputMode === 'stream') {
           this.startStreamingProgress()
@@ -1916,6 +2613,8 @@ export default {
 
         this.currentTaskId = response.data.task_id
         this.progressText = this.$t('requirementAnalysis.taskCreated')
+        this.clearClarifyTaskFromUrl()
+        this.clearClarifyAnswersStorage(this.clarificationTaskId)
 
         ElMessage.success(this.$t('requirementAnalysis.generateSuccess'))
 

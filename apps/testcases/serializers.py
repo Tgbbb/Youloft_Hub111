@@ -146,6 +146,8 @@ class TestCaseUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         version_ids = validated_data.pop('version_ids', None)
+        # 显式传 null/空 时清空功能模块
+        function_module_changed = 'function_module_id' in validated_data
         function_module_id = validated_data.pop('function_module_id', None)
         # project_id会在视图中处理
         validated_data.pop('project_id', None)
@@ -157,8 +159,8 @@ class TestCaseUpdateSerializer(serializers.ModelSerializer):
             instance.versions.set(version_ids)
 
         # 更新功能模块
-        if function_module_id is not None:
-            instance.function_module_id = function_module_id
+        if function_module_changed:
+            instance.function_module_id = function_module_id or None
             instance.save(update_fields=['function_module'])
 
         return instance

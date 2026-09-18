@@ -275,6 +275,58 @@ class ModaoImport(models.Model):
         ordering = ['-created_at']
 
 
+class AxureImport(models.Model):
+    """Axure 导出原型包导入记录（结构对齐 ModaoImport）"""
+    STATUS_CHOICES = ModaoImport.STATUS_CHOICES
+    title = models.CharField(max_length=300, verbose_name='标题')
+    url = models.URLField(max_length=1000, verbose_name='入口URL')
+    data = models.JSONField(default=dict, verbose_name='导入数据', help_text='{import_id, pages: [...]}')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    progress = models.IntegerField(default=0, verbose_name='进度(0-100)')
+    stage = models.CharField(max_length=30, blank=True, default='', verbose_name='当前阶段')
+    progress_detail = models.JSONField(default=dict, blank=True, verbose_name='进度明细')
+    celery_task_id = models.CharField(max_length=100, blank=True, default='', verbose_name='Celery任务ID')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='axure_imports', verbose_name='关联项目')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='axure_imports',
+                                    verbose_name='创建者', null=True)
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'axure_imports'
+        verbose_name = 'Axure原型导入'
+        verbose_name_plural = 'Axure原型导入'
+        ordering = ['-created_at']
+
+
+class PrdImport(models.Model):
+    """单文件 HTML PRD 文档导入记录（结构对齐 AxureImport）"""
+    STATUS_CHOICES = ModaoImport.STATUS_CHOICES
+    title = models.CharField(max_length=300, verbose_name='标题')
+    url = models.URLField(max_length=1000, verbose_name='入口URL')
+    data = models.JSONField(default=dict, verbose_name='导入数据', help_text='{import_id, pages, modules, version_info}')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    progress = models.IntegerField(default=0, verbose_name='进度(0-100)')
+    stage = models.CharField(max_length=30, blank=True, default='', verbose_name='当前阶段')
+    progress_detail = models.JSONField(default=dict, blank=True, verbose_name='进度明细')
+    celery_task_id = models.CharField(max_length=100, blank=True, default='', verbose_name='Celery任务ID')
+    error_message = models.TextField(blank=True, default='', verbose_name='错误信息')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='prd_imports', verbose_name='关联项目')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='prd_imports',
+                                    verbose_name='创建者', null=True)
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'prd_imports'
+        verbose_name = 'PRD文档导入'
+        verbose_name_plural = 'PRD文档导入'
+        ordering = ['-created_at']
+
+
 class RequirementDocument(models.Model):
     """需求文档模型"""
     DOCUMENT_TYPE_CHOICES = [
@@ -983,7 +1035,11 @@ def _canvas_text_block(img, fallback_index=None):
         return '\n'.join(f'- {t}' for t in items)
 
     def _to_list(items):
-        return [x.get('text') or x for x in items]
+        # 兼容两种来源：{text, x, y} 对象数组（墨刀）与纯字符串数组（Axure 等）
+        return [
+            (x.get('text') or '') if isinstance(x, dict) else str(x)
+            for x in items
+        ]
 
     # 新版结构化格式：{body: [{text,x,y}], sticky: [{text,x,y}]}
     # body=画布正文全部文字（含界面元素与说明文字，未做语义分类），sticky=便利贴批注
@@ -1583,7 +1639,7 @@ class AIModelService:
         try:
             questions = json.loads(raw_text.strip())
             if isinstance(questions, list):
-                return questions
+                return AIModelService._normalize_clarification_questions(questions)
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -1593,7 +1649,7 @@ class AIModelService:
             try:
                 questions = json.loads(json_match.group(0))
                 if isinstance(questions, list):
-                    return questions
+                    return AIModelService._normalize_clarification_questions(questions)
             except (json.JSONDecodeError, ValueError):
                 pass
 
@@ -1614,6 +1670,23 @@ class AIModelService:
                     qid += 1
 
         return questions if questions else [{'id': 1, 'question': 'AI未能解析出结构化问题，请查看原始输出', 'raw': raw_text[:500]}]
+
+    @staticmethod
+    def _normalize_clarification_questions(questions: list) -> list:
+        """把模型返回的问题列表规整为 [{'id','question'}]。
+        部分模型会直接输出字符串数组（如 ["xxx?", "yyy?"]），需要转成对象。"""
+        if not questions:
+            return []
+        normalized = []
+        for i, q in enumerate(questions, 1):
+            if isinstance(q, dict):
+                qid = q.get('id', i)
+                text = (q.get('question') or q.get('text') or '').strip()
+                if text:
+                    normalized.append({'id': qid, 'question': text})
+            elif isinstance(q, str) and q.strip():
+                normalized.append({'id': i, 'question': q.strip()})
+        return normalized or [{'id': 1, 'question': 'AI未能解析出结构化问题，请查看原始输出', 'raw': ''}]
 
     @staticmethod
     async def clarify_requirements(
