@@ -7,6 +7,7 @@ import logging
 import platform as sys_platform
 import subprocess
 import time
+from datetime import timedelta
 from celery import shared_task
 from django.utils import timezone
 
@@ -932,3 +933,22 @@ def install_app_package_task(self, install_id):
                 logger.error(f'[Install] 解锁设备失败: {e}')
 
     return record.status
+
+
+@shared_task(bind=True, max_retries=0)
+def mark_stale_midscene_devices(self, threshold_seconds=120):
+    """把超时未上报心跳的 iOS 设备置为 offline（`locked` 状态不动）。
+
+    幂等；返回本次被置为离线的设备数。由 Celery beat 每分钟触发。
+    """
+    from .models import MidsceneDevice
+
+    cutoff = timezone.now() - timedelta(seconds=int(threshold_seconds or 120))
+    stale = (MidsceneDevice.objects
+             .filter(platform='ios', last_seen_at__isnull=False, last_seen_at__lt=cutoff)
+             .exclude(status__in=['offline', 'locked']))
+    ids = list(stale.values_list('id', flat=True))
+    if ids:
+        MidsceneDevice.objects.filter(id__in=ids).update(status='offline')
+        logger.warning(f'[Agent] 心跳超时置离线: {len(ids)} 台 ({ids})')
+    return len(ids)

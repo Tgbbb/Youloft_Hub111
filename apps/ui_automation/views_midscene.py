@@ -261,6 +261,67 @@ class MidsceneDeviceViewSet(viewsets.ModelViewSet):
         serializer = MidsceneDeviceSimpleSerializer(devices, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['post'], url_path='agent_report')
+    def agent_report(self, request):
+        """iOS agent 上报（注册 + 心跳）。
+
+        body: {device_id, platform?, name?, wda_host?, ios_version?, agent_host?, status?}
+        幂等：按 device_id 建或更新，每次刷新 last_seen_at。
+        """
+        device_id = str(request.data.get('device_id', '') or '').strip()
+        if not device_id:
+            return Response({'error': '缺少 device_id'}, status=400)
+
+        platform = str(request.data.get('platform', 'ios') or 'ios').strip() or 'ios'
+        status_value = str(request.data.get('status', 'online') or 'online').strip() or 'online'
+        if status_value not in dict(MidsceneDevice.DEVICE_STATUS_CHOICES):
+            status_value = 'online'
+
+        defaults = {
+            'platform': platform,
+            'status': status_value,
+            'agent_host': str(request.data.get('agent_host', '') or '').strip(),
+            'last_seen_at': timezone.now(),
+        }
+        name = str(request.data.get('name', '') or '').strip()
+        wda_host = str(request.data.get('wda_host', '') or '').strip()
+        ios_version = str(request.data.get('ios_version', '') or '').strip()
+        if name:
+            defaults['name'] = name
+        if wda_host:
+            defaults['wda_host'] = wda_host
+        if ios_version:
+            defaults['ios_version'] = ios_version
+        if platform == 'ios':
+            defaults['tidevice_udid'] = device_id
+
+        device, created = MidsceneDevice.objects.update_or_create(
+            device_id=device_id, defaults=defaults,
+        )
+        return Response({
+            'id': device.id,
+            'device_id': device.device_id,
+            'platform': device.platform,
+            'status': device.status,
+            'agent_host': device.agent_host,
+            'last_seen_at': device.last_seen_at,
+            'created': created,
+        })
+
+    @action(detail=False, methods=['post'], url_path='agent_release')
+    def agent_release(self, request):
+        """agent 主动下线：把设备置为 offline。"""
+        device_id = str(request.data.get('device_id', '') or '').strip()
+        if not device_id:
+            return Response({'error': '缺少 device_id'}, status=400)
+        device = MidsceneDevice.objects.filter(device_id=device_id).first()
+        if not device:
+            return Response({'error': '设备不存在'}, status=404)
+        device.status = 'offline'
+        device.last_seen_at = timezone.now()
+        device.save(update_fields=['status', 'last_seen_at'])
+        return Response({'ok': True, 'device_id': device.device_id, 'status': device.status})
+
     @action(detail=False, methods=['post'], url_path='connect_network')
     def connect_network(self, request):
         """通过 WiFi ADB 连接局域网 Android 设备"""

@@ -46,11 +46,12 @@ class MidsceneDeviceSerializer(serializers.ModelSerializer):
             'id', 'platform', 'platform_display', 'device_id', 'name',
             'status', 'android_version', 'adb_serial',
             'ios_version', 'tidevice_udid', 'wda_host',
+            'agent_host', 'last_seen_at',
             'locked_by', 'locked_by_name', 'locked_at', 'max_lock_time',
             'ip_address', 'port',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'agent_host', 'last_seen_at']
 
     def get_platform_display(self, obj):
         return obj.get_platform_display()

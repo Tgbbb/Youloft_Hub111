@@ -24,6 +24,18 @@
               <span v-else class="ms-text--muted">—</span>
             </template>
           </el-table-column>
+          <el-table-column label="来源机器" width="130">
+            <template #default="{ row }">
+              <span v-if="row.platform==='ios'" class="ms-mono">{{ row.agent_host || '手工添加' }}</span>
+              <span v-else class="ms-text--muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最近心跳" width="130">
+            <template #default="{ row }">
+              <span v-if="row.platform==='ios'" class="ms-mono">{{ fmtSeen(row.last_seen_at) }}</span>
+              <span v-else class="ms-text--muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="80">
             <template #default="{ row }">
               <span class="ms-status-badge" :class="'sb-' + row.status">
@@ -85,6 +97,16 @@ const loading = ref(false); const devices = ref([])
 const formVisible = ref(false); const editingId = ref(null); const saving = ref(false)
 const testing = reactive({}); const connecting = reactive({}); const disconnecting = reactive({})
 const form = reactive({ name: '', platform: 'android', device_id: '', wda_host: '', tidevice_udid: '', ios_version: '' })
+const fmtSeen = (t) => {
+  if (!t) return '—'
+  const ts = new Date(t).getTime()
+  if (Number.isNaN(ts)) return '—'
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 60) return `${s} 秒前`
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
+}
 
 const loadDevices = async () => { loading.value = true; try { const { data } = await api.get('/ui-automation/midscene/devices/'); devices.value = data.results || [] } catch (e) { ElMessage.error('加载失败') } finally { loading.value = false } }
 const showForm = (row) => {

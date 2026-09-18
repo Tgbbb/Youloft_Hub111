@@ -1125,6 +1125,12 @@ class MidsceneDevice(models.Model):
     wda_host = models.CharField(max_length=255, blank=True, default='', verbose_name='WebDriverAgent地址',
                                 help_text='iOS WDA的HTTP地址，如 127.0.0.1:8100')
 
+    # Agent 上报（一键脚本 / 常驻看护）
+    agent_host = models.CharField(max_length=255, blank=True, default='', verbose_name='来源机器',
+                                  help_text='上报该设备的 agent 所在机器名')
+    last_seen_at = models.DateTimeField(null=True, blank=True, verbose_name='最近心跳',
+                                        help_text='agent 最近一次上报时间；超时会被判为离线')
+
     # 锁定机制
     locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
                                   related_name='locked_midscene_devices', verbose_name='锁定用户')

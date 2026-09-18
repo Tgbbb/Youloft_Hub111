@@ -312,6 +312,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.toolbox.tasks.run_reply_check_tick',
         'schedule': crontab(minute='*'),
     },
+    'midscene-device-stale-tick': {
+        'task': 'apps.ui_automation.tasks.mark_stale_midscene_devices',
+        'schedule': crontab(minute='*'),
+    },
 }
 
 # Channels Configuration
