@@ -303,6 +303,8 @@ ANOMALY_TYPES = {
     'adb_error': {'label': 'ADB 错误', 'default_layer': 'execution'},
     'wda_error': {'label': 'WDA 错误', 'default_layer': 'execution'},
     'screenshot_error': {'label': '截图错误', 'default_layer': 'execution'},
+    'verify_input_mismatch': {'label': '输入校验未通过', 'default_layer': 'app'},
+    'verify_nav_missing': {'label': '跳转校验缺元素', 'default_layer': 'app'},
 }
 
 
@@ -835,6 +837,184 @@ def _is_same_page_by_hash(png_bytes, expected_hash):
     return (h ^ expected).bit_count() < 3
 
 
+# ============================================================
+# 后校验增强：动作类型感知（OCR + 区域图像）
+# 咨询式：只追加 anomaly，不改变步骤 passed/failed。
+# v1 覆盖 input 与 导航(tap/click) 两类；不引入 UI 树 dump、不装设备端 agent。
+# ============================================================
+
+_VERIFY_OCR_LANGS = ['ch_sim', 'en']
+_VERIFY_ANCHOR_LIMIT = 6      # 导航锚点上限
+_GRID_N = 4                   # 内容区网格边长（4x4）
+_GRID_HAMMING_FLOOR = 6       # 单块“算变化”的汉明距离下限
+_GRID_MIN_CHANGED_CELLS = 2   # 至少这么多块变化才算“有实质变化”
+_NORM_STRIP_CHARS = ' \t\r\n\u3000:：,，.。;；!！?？()（）[]【】<>《》-—_|/\\"\'“”‘’'
+
+
+def _get_verify_ocr():
+    """惰性获取 easyocr 封装（复用 apps.app_automation.utils.ocr_helper）。"""
+    from apps.app_automation.utils.ocr_helper import get_ocr_helper
+    return get_ocr_helper(languages=_VERIFY_OCR_LANGS, use_gpu=False)
+
+
+def _ocr_lines(png_bytes):
+    """对截图做 OCR，返回文本行列表；OCR 不可用/失败一律返回 []（不抛异常）。"""
+    if not png_bytes:
+        return []
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(png_bytes))
+        return _get_verify_ocr().recognize_text_lines(img)
+    except Exception as e:
+        logger.warning(f'[Verify] OCR 不可用或失败: {e}')
+        return []
+
+
+def _norm_text(s):
+    """归一化文本：去掉空白与常见标点，转小写，用于包含匹配。"""
+    s = str(s or '')
+    for ch in _NORM_STRIP_CHARS:
+        s = s.replace(ch, '')
+    return s.lower()
+
+
+def _text_lines_of(png_bytes):
+    """OCR -> 归一化文本行（去重、丢弃过短行）。"""
+    out = []
+    seen = set()
+    for ln in _ocr_lines(png_bytes):
+        t = _norm_text(ln)
+        if len(t) < 2 or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _grid_hashes(png_bytes, grid=_GRID_N):
+    """把截图按 grid×grid 切块，每块算一个 64 位指纹，返回指纹列表。"""
+    import io
+    from PIL import Image
+    size = grid * 8
+    img = Image.open(io.BytesIO(png_bytes)).convert('L').resize((size, size), Image.LANCZOS)
+    px = list(img.getdata())
+    cells = []
+    for gy in range(grid):
+        for gx in range(grid):
+            vals = [px[(gy * 8 + yy) * size + (gx * 8 + xx)]
+                    for yy in range(8) for xx in range(8)]
+            avg = sum(vals) / len(vals)
+            cells.append(sum((1 << i) for i, v in enumerate(vals) if v > avg))
+    return cells
+
+
+def _grid_change(before_png, after_png, grid=_GRID_N):
+    """内容区网格哈希 + 自适应阈值，判断“是否有实质变化”。
+
+    自适应阈值 = max(下限, 本帧各块汉明距离中位数 * 2 + 2)，
+    以抑制整屏同质的细小噪声（时钟/动画）造成的误判。
+    返回 {'changed', 'changed_cells', 'total_cells', 'threshold'}；比较失败返回 None。
+    """
+    if not before_png or not after_png:
+        return None
+    try:
+        h1 = _grid_hashes(before_png, grid)
+        h2 = _grid_hashes(after_png, grid)
+    except Exception as e:
+        logger.debug(f'[Verify] 网格哈希失败: {e}')
+        return None
+    dists = [(a ^ b).bit_count() for a, b in zip(h1, h2)]
+    if not dists:
+        return None
+    median = sorted(dists)[len(dists) // 2]
+    threshold = max(_GRID_HAMMING_FLOOR, median * 2 + 2)
+    changed_cells = sum(1 for d in dists if d >= threshold)
+    return {'changed': changed_cells >= _GRID_MIN_CHANGED_CELLS,
+            'changed_cells': changed_cells,
+            'total_cells': len(dists),
+            'threshold': threshold}
+
+
+def _build_step_expect(before_png, after_png, actions):
+    """录制时按动作类型生成 expect；取不到/失败返回 None（调用方不写该字段）。
+
+    - input 步: {"kind": "input", "text": <输入值>}
+    - 导航步(tap/click): {"kind": "nav", "anchors": [该步后出现、该步前没有的文本]}
+    """
+    if not actions:
+        return None
+    last = actions[-1] or {}
+    atype = last.get('action', '')
+    try:
+        if atype == 'input':
+            val = str(last.get('text', '') or '').strip()
+            return {'kind': 'input', 'text': val} if val else None
+        if atype in ('tap', 'click'):
+            after_lines = _text_lines_of(after_png)
+            if not after_lines:
+                return None
+            before_set = set(_text_lines_of(before_png)) if before_png else set()
+            anchors = [t for t in after_lines if t not in before_set][:_VERIFY_ANCHOR_LIMIT]
+            return {'kind': 'nav', 'anchors': anchors} if anchors else None
+    except Exception as e:
+        logger.warning(f'[Verify] 生成 expect 失败: {e}')
+    return None
+
+
+def _verify_step_expect(expect, before_png, after_png):
+    """动作类型感知的咨询式后校验：返回异常列表（不改变步骤通过与否）。
+
+    - input: 页面上找不到期望输入文本 -> verify_input_mismatch
+    - nav:   内容区无实质变化时 OCR 校验锚点，命中不足 -> verify_nav_missing
+    OCR 不可用/失败时安全降级（不产生异常、不抛错）。
+    """
+    anomalies = []
+    if not isinstance(expect, dict):
+        return anomalies
+    kind = expect.get('kind')
+    try:
+        if kind == 'input':
+            want = _norm_text(expect.get('text'))
+            if not want:
+                return anomalies
+            joined = ''.join(_text_lines_of(after_png))
+            if want not in joined:
+                anomalies.append(_build_anomaly(
+                    'verify_input_mismatch',
+                    '输入校验未通过：未在页面识别到期望输入文本',
+                    evidence={'kind': 'input',
+                              'expected': str(expect.get('text', ''))[:80],
+                              'ocr_excerpt': joined[:200]},
+                    recovered=True))
+            return anomalies
+        if kind == 'nav':
+            anchors = [_norm_text(a) for a in (expect.get('anchors') or []) if _norm_text(a)]
+            if not anchors:
+                return anomalies
+            grid = _grid_change(before_png, after_png)
+            # 成本控制：内容区已有实质变化时不再 OCR（成功跳转的常规路径）
+            if grid and grid.get('changed'):
+                return anomalies
+            joined = ''.join(_text_lines_of(after_png))
+            missing = [a for a in anchors if a not in joined]
+            need = 1 if len(anchors) == 1 else (len(anchors) + 1) // 2
+            if (len(anchors) - len(missing)) < need:
+                anomalies.append(_build_anomaly(
+                    'verify_nav_missing',
+                    f'跳转校验未通过：缺少 {len(missing)}/{len(anchors)} 个期望文本',
+                    evidence={'kind': 'nav',
+                              'anchors': anchors,
+                              'missing': missing,
+                              'grid': grid,
+                              'ocr_excerpt': joined[:200]},
+                    recovered=True))
+            return anomalies
+    except Exception as e:
+        logger.warning(f'[Verify] 后校验异常（已忽略）: {e}')
+    return anomalies
+
+
 CONDITION_CONFIRM_PROMPT = (
     '当前是条件步骤，指令: {instruction}\n'
     '请观察截图，判断指令条件中描述的目标页面/元素是否出现。\n'
@@ -1329,6 +1509,13 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     r_step = {}
                 actions = r_step.get('actions') or []
                 wait_after = float(r_step.get('wait_after') or 0)
+                sr_expect = r_step.get('expect') if isinstance(r_step, dict) else None
+                sr_before = None
+                if sr_expect:
+                    try:
+                        sr_before = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                    except Exception:
+                        sr_before = None
                 try:
                     if actions:
                         r_stats = _replay_actions(device_id, ios_dev, actions, width, height,
@@ -1345,6 +1532,15 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                         'aiReasoning': ['[直放] 用户已停止执行'],
                                         'action': 'script_replay', 'anomalies': list(step_anomalies)})
                         break
+                    # 咨询式后校验（动作类型感知）：只追加异常，不改步骤通过与否
+                    if sr_expect:
+                        try:
+                            sr_after = ios_dev.screenshot() if ios_dev else adb_screenshot(device_id)
+                        except Exception:
+                            sr_after = None
+                        if sr_after:
+                            step_anomalies.extend(
+                                _verify_step_expect(sr_expect, sr_before, sr_after))
                     reasoning = f'[直放] 执行 {r_stats["played"]} 个动作'
                     if r_stats.get('skipped'):
                         reasoning += f'，跳过 {r_stats["skipped"]} 个'
@@ -1847,6 +2043,11 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                                               'current_hash': str(_phash(png))},
                                     recovered=True,
                                 ))
+                            # 咨询式后校验（动作类型感知）：只追加异常，不改步骤通过与否
+                            _expect = r_step.get('expect') if isinstance(r_step, dict) else None
+                            if _expect:
+                                step_anomalies.extend(
+                                    _verify_step_expect(_expect, before_png, png))
                             replay_pass += 1
                             screenshot_url = save_screenshot(before_png, execution_record.id, step_idx+1)
                             after_url = save_screenshot(png, execution_record.id, step_idx+1, '_after') if step_anomalies else ''
@@ -2233,6 +2434,10 @@ def run_midscene_test(ai_prompt, device, model_config, execution_record, progres
                     # 条件步骤三态模型：有动作的步骤记录动作执行前的页面指纹（无动作时 after_hash 即"跳过"指纹）
                     if step_actions and step_before_png is not None:
                         rec_data['act_before_hash'] = str(_phash(step_before_png))
+                    # 动作类型感知的期望（供回放后校验用）：input 存输入值，导航存“新出现的文本”
+                    expect = _build_step_expect(step_before_png, after_png, step_actions)
+                    if expect:
+                        rec_data['expect'] = expect
                     recording[step_idx] = rec_data
 
                 step_idx += 1

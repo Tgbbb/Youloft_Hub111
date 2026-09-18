@@ -202,6 +202,56 @@ class OCRHelper:
         except Exception as e:
             logger.error(f"OCR 识别失败: {e}")
             return ""
+
+    def recognize_text_lines(self, img, min_confidence=0.3, use_cache=False):
+        """识别图片中的文本，返回按阅读顺序（先上后下、再左到右）排序的文本行列表。
+
+        与 recognize_text 的区别：不把结果拼成一个字符串，而是保留每一行，
+        便于做“锚点/文本包含”类校验。不可用或失败时返回 []。
+
+        Args:
+            img: PIL Image 或 numpy array
+            min_confidence: 最小置信度阈值
+            use_cache: 是否使用缓存（行级结果默认不缓存）
+
+        Returns:
+            文本行列表（已去首尾空白、去掉空行）
+        """
+        if not EASYOCR_AVAILABLE:
+            logger.error("EasyOCR 未安装，无法进行文字识别")
+            return []
+
+        try:
+            reader = self.get_easyocr_reader(self.languages, self.use_gpu)
+
+            if isinstance(img, Image.Image):
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                width, height = img.size
+                if width < 1000 or height < 200:
+                    img = img.resize((width * 2, height * 2), Image.LANCZOS)
+                img_array = np.array(img)
+            else:
+                img_array = img
+
+            results = reader.readtext(img_array)
+            items = []
+            for (bbox, text, confidence) in results:
+                if float(confidence) < min_confidence:
+                    continue
+                line = str(text).strip()
+                if not line:
+                    continue
+                x_coord = float(bbox[0][0])
+                y_coord = float(bbox[0][1])
+                items.append((y_coord, x_coord, line))
+
+            items.sort(key=lambda it: (it[0], it[1]))
+            return [it[2] for it in items]
+
+        except Exception as e:
+            logger.error(f"OCR 识别(行)失败: {e}")
+            return []
     
     def recognize_number(self, img, allow_comma=True, use_cache=True) -> int:
         """
