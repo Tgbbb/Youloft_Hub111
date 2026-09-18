@@ -66,6 +66,14 @@ frontend/.DS_Store
 frontend/*.log
 frontend/dist/
 
+# iOS Agent 本机文件（含 token，不入库）
+scripts/ios-agent/agent.config.json
+scripts/ios-agent/agent.state.json
+scripts/ios-agent/agent.log
+scripts/ios-agent/agent.*.log
+scripts/ios-agent/*.lnk
+scripts/ios-agent/selfIdentity.plist
+
 # Docker
 Dockerfile*
 docker-compose*.yml

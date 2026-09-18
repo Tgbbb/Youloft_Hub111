@@ -1,0 +1,16 @@
+{
+  "testhub_base_url": "http://192.168.8.120:8000/api",
+  "agent_token": "<用 manage.py drf_create_token <服务账号> 生成后粘贴>",
+  "ios_tool_path": "E:\\iOS相关\\go-ios-win\\ios.exe",
+  "wda_bundle_id": "com.facebook.WebDriverAgentRunner.yl2.xctrunner",
+  "wda_testrunner_bundle_id": "com.facebook.WebDriverAgentRunner.yl2.xctrunner",
+  "wda_xctest_config": "WebDriverAgentRunner.xctest",
+  "forward_port": 9000,
+  "wda_target_port": 8100,
+  "share_on_lan": false,
+  "use_proxy": false,
+  "heartbeat_seconds": 30,
+  "device_udid": "",
+  "device_name": "",
+  "machine_name": ""
+}
